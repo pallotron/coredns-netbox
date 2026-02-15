@@ -1,0 +1,6 @@
+apiVersion: v2
+name: coredns-netbox
+description: CoreDNS with Netbox-backed DNS zone via sidecar zone file generator
+version: 0.1.0
+appVersion: "1.0.0"
+type: application

@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+data:
+  Corefile: |
+    . {
+        auto {
+            directory {{ .Values.zoneDir }} db\.(.*) {1}
+            reload 10s
+        }
+        {{- if .Values.transfer.to }}
+        transfer {
+            {{- range .Values.transfer.to }}
+            to {{ . }}
+            {{- end }}
+        }
+        {{- end }}
+        forward . {{ range .Values.forwardServers }}{{ . }} {{ end }}
+        cache 30
+        log
+        errors
+        health :8080
+        ready :8181
+    }
+{{- if .Values.secondary.enabled }}
+  Corefile-secondary: |
+    {{- range .Values.secondary.zones }}
+    {{ . }} {
+        secondary {
+            {{- range $.Values.secondary.transferFrom }}
+            transfer from {{ . }}
+            {{- end }}
+        }
+    }
+    {{- end }}
+    . {
+        cache 30
+        log
+        errors
+        health :8080
+        ready :8181
+    }
+{{- end }}

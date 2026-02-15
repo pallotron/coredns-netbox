@@ -1,0 +1,77 @@
+replicaCount: 1
+
+coredns:
+  image: coredns-netbox
+  tag: dev
+  pullPolicy: IfNotPresent
+
+sidecar:
+  image: coredns-netbox-sidecar
+  tag: dev
+  pullPolicy: IfNotPresent
+
+zoneDiscovery:
+  mode: zone-depth
+  depth: 2
+
+zoneDir: /zones
+
+netbox:
+  url: http://netbox.netbox.svc.cluster.local
+  # Set token directly, or use existingSecret to reference a pre-created Secret
+  token: ""
+  # Name of an existing Secret with a "token" key containing the Netbox API token
+  existingSecret: ""
+
+pollInterval: "60s"
+ttl: 300
+
+primaryNS: ns1.example.org.
+adminEmail: admin.example.org.
+
+pageSize: 1000
+maxConcurrency: 10
+
+forwardServers:
+  - 1.1.1.1
+  - 8.8.8.8
+
+# Primary: who can pull zones via AXFR
+transfer:
+  to: []
+  # Production: ["10.0.1.5", "10.0.1.6"]
+  # Dev: ["*"]
+
+# Secondary
+secondary:
+  enabled: false
+  zones: []
+  transferFrom: []
+  # Production example:
+  #   zones: ["example.org", "internal.corp"]
+  #   transferFrom: ["10.0.1.1"]
+  hostPort:
+    enabled: false
+
+service:
+  type: ClusterIP
+  port: 53
+
+hostPort:
+  enabled: true
+
+resources:
+  coredns:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  sidecar:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi

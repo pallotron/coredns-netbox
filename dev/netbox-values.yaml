@@ -1,0 +1,85 @@
+# Bootstrap admin user — used by dev/create-token.py to create v2 API tokens.
+# The apiToken below is a legacy v1 token placeholder required by the chart;
+# the actual usable v2 token is created by `make dev.token`.
+superuser:
+  name: admin
+  email: admin@example.com
+  password: admin
+  apiToken: "0123456789abcdef0123456789abcdef01234567"
+
+# API_TOKEN_PEPPERS requires integer keys, which Helm's Go templates
+# serialize as strings (known issue: netbox-chart#1021).
+# We mount our own ConfigMap via extraVolumes to preserve the YAML integer key.
+# See dev/netbox-extra-configmap.yaml (applied before helm install).
+extraVolumes:
+  - name: pepper-config
+    configMap:
+      name: netbox-extra-config
+
+extraVolumeMounts:
+  - name: pepper-config
+    mountPath: /run/config/extra/peppers
+    readOnly: true
+
+worker:
+  extraVolumes:
+    - name: pepper-config
+      configMap:
+        name: netbox-extra-config
+  extraVolumeMounts:
+    - name: pepper-config
+      mountPath: /run/config/extra/peppers
+      readOnly: true
+
+persistence:
+  enabled: false
+
+postgresql:
+  auth:
+    username: netbox
+    database: netbox
+  primary:
+    persistence:
+      enabled: false
+
+valkey:
+  enabled: true
+  sentinel:
+    enabled: false
+  master:
+    persistence:
+      enabled: false
+  replica:
+    persistence:
+      enabled: false
+
+startupProbe:
+  enabled: true
+  periodSeconds: 10
+  failureThreshold: 60
+
+livenessProbe:
+  enabled: false
+
+customLivenessProbe:
+  httpGet:
+    path: /login/
+    port: http
+  initialDelaySeconds: 120
+  periodSeconds: 10
+  timeoutSeconds: 1
+  failureThreshold: 6
+  successThreshold: 1
+
+readinessProbe:
+  initialDelaySeconds: 120
+  periodSeconds: 10
+  failureThreshold: 6
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi

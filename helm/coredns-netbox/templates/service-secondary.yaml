@@ -1,0 +1,23 @@
+{{- if .Values.secondary.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-secondary
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: dns-udp
+      port: {{ .Values.service.port }}
+      targetPort: 53
+      protocol: UDP
+    - name: dns-tcp
+      port: {{ .Values.service.port }}
+      targetPort: 53
+      protocol: TCP
+  selector:
+    {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+{{- end }}

@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- if .Values.hostPort.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "coredns-netbox.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: primary
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: primary
+    spec:
+      initContainers:
+        - name: zone-init
+          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag }}"
+          imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
+          args: ["--run-once"]
+          env:
+            - name: NETBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "coredns-netbox.tokenSecretName" . }}
+                  key: token
+            - name: NETBOX_URL
+              value: {{ .Values.netbox.url | quote }}
+            - name: DISCOVERY_MODE
+              value: {{ .Values.zoneDiscovery.mode | quote }}
+            - name: ZONE_DEPTH
+              value: {{ .Values.zoneDiscovery.depth | quote }}
+            - name: ZONE_DIR
+              value: {{ .Values.zoneDir | quote }}
+            - name: TTL
+              value: {{ .Values.ttl | quote }}
+            - name: PRIMARY_NS
+              value: {{ .Values.primaryNS | quote }}
+            - name: ADMIN_EMAIL
+              value: {{ .Values.adminEmail | quote }}
+            - name: NETBOX_PAGE_SIZE
+              value: {{ .Values.pageSize | quote }}
+            - name: NETBOX_MAX_CONCURRENCY
+              value: {{ .Values.maxConcurrency | quote }}
+          volumeMounts:
+            - name: zones
+              mountPath: {{ .Values.zoneDir }}
+      containers:
+        - name: coredns
+          image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag }}"
+          imagePullPolicy: {{ .Values.coredns.pullPolicy }}
+          args: ["-conf", "/etc/coredns/Corefile"]
+          ports:
+            - name: dns-udp
+              containerPort: 53
+              protocol: UDP
+              {{- if .Values.hostPort.enabled }}
+              hostPort: 53
+              {{- end }}
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+              {{- if .Values.hostPort.enabled }}
+              hostPort: 53
+              {{- end }}
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+            - name: ready
+              containerPort: 8181
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ready
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/coredns
+              readOnly: true
+            - name: zones
+              mountPath: {{ .Values.zoneDir }}
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources.coredns | nindent 12 }}
+        - name: sidecar
+          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag }}"
+          imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
+          env:
+            - name: NETBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "coredns-netbox.tokenSecretName" . }}
+                  key: token
+            - name: NETBOX_URL
+              value: {{ .Values.netbox.url | quote }}
+            - name: DISCOVERY_MODE
+              value: {{ .Values.zoneDiscovery.mode | quote }}
+            - name: ZONE_DEPTH
+              value: {{ .Values.zoneDiscovery.depth | quote }}
+            - name: ZONE_DIR
+              value: {{ .Values.zoneDir | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.pollInterval | quote }}
+            - name: TTL
+              value: {{ .Values.ttl | quote }}
+            - name: PRIMARY_NS
+              value: {{ .Values.primaryNS | quote }}
+            - name: ADMIN_EMAIL
+              value: {{ .Values.adminEmail | quote }}
+            - name: NETBOX_PAGE_SIZE
+              value: {{ .Values.pageSize | quote }}
+            - name: NETBOX_MAX_CONCURRENCY
+              value: {{ .Values.maxConcurrency | quote }}
+          ports:
+            - name: sidecar-health
+              containerPort: 8082
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: sidecar-health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: zones
+              mountPath: {{ .Values.zoneDir }}
+          resources:
+            {{- toYaml .Values.resources.sidecar | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "coredns-netbox.fullname" . }}
+        - name: zones
+          emptyDir: {}

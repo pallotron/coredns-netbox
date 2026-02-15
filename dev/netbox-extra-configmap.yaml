@@ -1,0 +1,15 @@
+# Provides API_TOKEN_PEPPERS for Netbox 4.x v2 token HMAC hashing.
+# Applied by: make dev.netbox (Makefile), before the Netbox helm install.
+#
+# Helm's Go templates serialize YAML integer keys as strings, which breaks
+# Netbox's pepper lookup (see netbox-chart#1021). We mount this ConfigMap
+# via extraVolumes in dev/netbox-values.yaml to preserve the integer key.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netbox-extra-config
+  namespace: netbox
+data:
+  peppers.yaml: |
+    API_TOKEN_PEPPERS:
+      1: "dev-pepper-not-for-production-use-1234567890abcdefghijklmnop"

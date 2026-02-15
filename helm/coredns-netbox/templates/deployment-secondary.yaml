@@ -1,0 +1,67 @@
+{{- if .Values.secondary.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-secondary
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: secondary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "coredns-netbox.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: secondary
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+      labels:
+        {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: secondary
+    spec:
+      containers:
+        - name: coredns
+          image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag }}"
+          imagePullPolicy: {{ .Values.coredns.pullPolicy }}
+          args: ["-conf", "/etc/coredns/Corefile-secondary"]
+          ports:
+            - name: dns-udp
+              containerPort: 53
+              protocol: UDP
+              {{- if .Values.secondary.hostPort.enabled }}
+              hostPort: 5354
+              {{- end }}
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+              {{- if .Values.secondary.hostPort.enabled }}
+              hostPort: 5354
+              {{- end }}
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+            - name: ready
+              containerPort: 8181
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: ready
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/coredns
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "coredns-netbox.fullname" . }}
+{{- end }}
