@@ -8,6 +8,10 @@ metadata:
     app.kubernetes.io/component: secondary
 spec:
   replicas: 1
+  {{- if .Values.secondary.hostPort.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "coredns-netbox.selectorLabels" . | nindent 6 }}

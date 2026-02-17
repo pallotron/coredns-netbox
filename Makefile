@@ -1,4 +1,4 @@
-.PHONY: build build.sidecar build.seed test.unit test.e2e \
+.PHONY: build build.sidecar test.unit test.e2e \
        dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.teardown \
        lint clean
 
@@ -21,13 +21,10 @@ NETBOX_TOKEN_SECRET := netbox-api-token
 
 # ---------- Build ----------
 
-build: build.sidecar build.seed
+build: build.sidecar
 
 build.sidecar:
 	go build -o bin/sidecar ./cmd/sidecar/
-
-build.seed:
-	go build -o bin/seed ./cmd/seed/
 
 # ---------- Test ----------
 
@@ -73,7 +70,7 @@ dev.netbox:
 
 # Create a v2 API token in Netbox and store it in a shared Kubernetes Secret.
 # Netbox 4.x v2 tokens are HMAC-hashed; the plaintext is only available at
-# creation time, so we capture it and store it for the seed tool and sidecar.
+# creation time, so we capture it and store it for the sidecar.
 dev.token:
 	@echo "Creating Netbox API token..."
 	@SCRIPT=$$(cat dev/create-token.py) && \
@@ -94,15 +91,11 @@ dev.token:
 	echo "Token stored in secret '$(NETBOX_TOKEN_SECRET)' in namespaces: $(NETBOX_NAMESPACE), $(HELM_NAMESPACE)"
 
 dev.seed:
-	@echo "Port-forwarding to Netbox..."
-	@kubectl port-forward -n $(NETBOX_NAMESPACE) svc/netbox 8080:80 > /dev/null 2>&1 & \
-	PF_PID=$$!; \
-	sleep 3; \
-	NETBOX_TOKEN=$$(kubectl get secret $(NETBOX_TOKEN_SECRET) -n $(NETBOX_NAMESPACE) -o jsonpath='{.data.token}' | base64 -d) && \
-	NETBOX_URL=http://localhost:8080 \
-	NETBOX_TOKEN=$$NETBOX_TOKEN \
-	go run ./cmd/seed/; \
-	kill $$PF_PID 2>/dev/null || true
+	@echo "Seeding Netbox with 18,000 IP addresses via Django ORM..."
+	@SCRIPT=$$(cat dev/seed-ips.py) && \
+	kubectl exec -n $(NETBOX_NAMESPACE) deploy/netbox -c netbox -- \
+		python /opt/netbox/netbox/manage.py shell --no-startup --no-imports \
+		-c "$$SCRIPT"
 
 dev.deploy:
 	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
@@ -111,16 +104,22 @@ dev.deploy:
 		-n $(HELM_NAMESPACE) \
 		--set netbox.existingSecret=$(NETBOX_TOKEN_SECRET) \
 		--set netboxPlugin.enabled=true \
+		--set maxConcurrency=3 \
+		--set zoneDiscovery.depth=3 \
+		--set primaryNS=ns1.mycompany.com. \
+		--set adminEmail=admin.mycompany.com. \
 		--set transfer.to[0]='*' \
 		--set secondary.enabled=true \
 		--set secondary.hostPort.enabled=true \
-		--set secondary.zones[0]=example.org \
+		--set secondary.zones[0]=dc1.mycompany.com \
+		--set secondary.zones[1]=dc2.mycompany.com \
+		--set secondary.zones[2]=dc3.mycompany.com \
 		$${PRIMARY_IP:+--set secondary.transferFrom[0]=$$PRIMARY_IP} \
 		--wait --timeout 5m
 
 dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
-	@echo "Test with: dig @127.0.0.1 -p 15353 host1.example.org A"
+	@echo "Test with: dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A"
 
 dev.teardown:
 	k3d cluster delete $(K3D_CLUSTER)
