@@ -211,7 +211,7 @@ dig @127.0.0.1 -p 15354 host1.example.org A
 │   └── seed/main.go              # Dev tool: populate Netbox with test data
 ├── internal/
 │   ├── config/                   # Env var configuration
-│   ├── netboxclient/             # Wrapper around go-netbox with parallel pagination
+│   ├── netboxclient/             # Raw HTTP client for Netbox IPAM with parallel pagination
 │   ├── zonediscovery/            # Zone auto-discovery (zone-depth, common-suffix, netbox-dns)
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
 │   └── zonemanager/              # Multi-zone lifecycle (create/update/remove zone files)

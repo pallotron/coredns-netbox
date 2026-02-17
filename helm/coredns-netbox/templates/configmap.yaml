@@ -11,6 +11,13 @@ data:
             directory {{ .Values.zoneDir }} db\.(.*) {1}
             reload 10s
         }
+        {{- if .Values.netboxPlugin.enabled }}
+        netbox {
+            token {$NETBOX_TOKEN}
+            url {{ .Values.netbox.url }}/api/ipam/ip-addresses
+            fallthrough
+        }
+        {{- end }}
         {{- if .Values.transfer.to }}
         transfer {
             {{- range .Values.transfer.to }}
@@ -37,6 +44,7 @@ data:
     }
     {{- end }}
     . {
+        forward . {{ range $.Values.forwardServers }}{{ . }} {{ end }}
         cache 30
         log
         errors

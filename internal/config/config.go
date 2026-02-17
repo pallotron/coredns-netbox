@@ -31,7 +31,7 @@ func Load() (*Config, error) {
 		DiscoveryMode:  envOrDefault("DISCOVERY_MODE", "zone-depth"),
 		ZoneDir:        envOrDefault("ZONE_DIR", "/zones"),
 		ZoneDepth:      2,
-		TTL:            30,
+		TTL:            300,
 		PageSize:       1000,
 		MaxConcurrency: 10,
 		HealthAddr:     envOrDefault("HEALTH_ADDR", ":8082"),

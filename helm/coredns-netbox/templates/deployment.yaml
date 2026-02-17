@@ -59,6 +59,14 @@ spec:
           image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag }}"
           imagePullPolicy: {{ .Values.coredns.pullPolicy }}
           args: ["-conf", "/etc/coredns/Corefile"]
+          {{- if .Values.netboxPlugin.enabled }}
+          env:
+            - name: NETBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "coredns-netbox.tokenSecretName" . }}
+                  key: token
+          {{- end }}
           ports:
             - name: dns-udp
               containerPort: 53

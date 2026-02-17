@@ -110,8 +110,10 @@ dev.deploy:
 	helm upgrade --install $(HELM_RELEASE) ./helm/coredns-netbox \
 		-n $(HELM_NAMESPACE) \
 		--set netbox.existingSecret=$(NETBOX_TOKEN_SECRET) \
+		--set netboxPlugin.enabled=true \
 		--set transfer.to[0]='*' \
 		--set secondary.enabled=true \
+		--set secondary.hostPort.enabled=true \
 		--set secondary.zones[0]=example.org \
 		$${PRIMARY_IP:+--set secondary.transferFrom[0]=$$PRIMARY_IP} \
 		--wait --timeout 5m
