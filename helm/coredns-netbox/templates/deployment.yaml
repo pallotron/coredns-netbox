@@ -51,6 +51,12 @@ spec:
               value: {{ .Values.pageSize | quote }}
             - name: NETBOX_MAX_CONCURRENCY
               value: {{ .Values.maxConcurrency | quote }}
+            - name: ENABLE_REVERSE_ZONES
+              value: {{ .Values.reverseZones.enabled | quote }}
+            - name: REVERSE_ZONES_IPV4
+              value: {{ join "," .Values.reverseZones.ipv4 | quote }}
+            - name: REVERSE_ZONES_IPV6
+              value: {{ join "," .Values.reverseZones.ipv6 | quote }}
           volumeMounts:
             - name: zones
               mountPath: {{ .Values.zoneDir }}
@@ -136,6 +142,12 @@ spec:
               value: {{ .Values.pageSize | quote }}
             - name: NETBOX_MAX_CONCURRENCY
               value: {{ .Values.maxConcurrency | quote }}
+            - name: ENABLE_REVERSE_ZONES
+              value: {{ .Values.reverseZones.enabled | quote }}
+            - name: REVERSE_ZONES_IPV4
+              value: {{ join "," .Values.reverseZones.ipv4 | quote }}
+            - name: REVERSE_ZONES_IPV6
+              value: {{ join "," .Values.reverseZones.ipv6 | quote }}
           ports:
             - name: sidecar-health
               containerPort: 8082

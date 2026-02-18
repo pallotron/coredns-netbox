@@ -7,6 +7,7 @@ A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar period
 - **Device-Based Discovery**: Creates DNS records from device names even when `dns_name` is empty in Netbox
 - **Multi-IP Support**: Generates both primary management records and BMC records with `-bmc` suffix
 - **Flexible Zone Extraction**: Derives DNS zones from device naming conventions (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
+- **Reverse DNS (PTR) Records**: Automatically generates reverse zones (in-addr.arpa, ip6.arpa) with configurable prefix lengths
 
 ## Architecture
 
@@ -66,6 +67,57 @@ The sidecar uses regex patterns to categorize network interfaces and intelligent
 Dataplane interfaces (ovn-vtep-if, storage-if) are automatically excluded from DNS.
 
 All patterns are configurable via environment variables (see Configuration below).
+
+## Reverse DNS (PTR Records)
+
+The sidecar automatically generates reverse DNS zones alongside forward zones using **static parent zones** that cover your entire IP space.
+
+**Why Static Zones?**
+- **Simple configuration**: Define a few large zones once, no dynamic discovery needed on secondaries
+- **Easy zone transfers**: Secondary DNS servers just need the same static zone list
+- **Scales efficiently**: One zone can cover thousands of subnets
+
+**IPv4 Reverse Zones:**
+Configure static parent zones that match your IP allocation:
+- `10.in-addr.arpa` - Covers all of 10.0.0.0/8
+- `16.172.in-addr.arpa,17.172.in-addr.arpa` - Covers 172.16.0.0/16 and 172.17.0.0/16
+- Example: `10.1.2.3` → PTR record `3.2.1.10.in-addr.arpa. PTR server1.example.com.`
+
+**IPv6 Reverse Zones:**
+Use reverse nibble notation for IPv6 zones:
+- `b.8.0.d.0.1.2.0.ip6.arpa` - Covers 2001:db8::/32
+
+**Configuration:**
+```yaml
+# Helm values
+reverseZones:
+  enabled: true
+  ipv4:
+    - "10.in-addr.arpa"
+    - "16.172.in-addr.arpa"
+  ipv6:
+    - "b.8.0.d.0.1.2.0.ip6.arpa"
+```
+
+Or via environment variables:
+```bash
+ENABLE_REVERSE_ZONES=true
+REVERSE_ZONES_IPV4="10.in-addr.arpa,16.172.in-addr.arpa"
+REVERSE_ZONES_IPV6="b.8.0.d.0.1.2.0.ip6.arpa"
+```
+
+**Secondary Configuration:**
+Configure the same zones on your secondary DNS servers:
+```yaml
+secondary:
+  enabled: true
+  zones:
+    - "dc1.example.com"           # Forward zones
+    - "dc2.example.com"
+    - "10.in-addr.arpa"           # Reverse zones (same as primary)
+    - "16.172.in-addr.arpa"
+  transferFrom: ["10.0.1.1"]
+```
 
 ## Analyzing Your Data
 
@@ -206,6 +258,9 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `secondary.zones` | `[]` | Zones to replicate on the secondary |
 | `secondary.transferFrom` | `[]` | Primary IPs to pull AXFR from |
 | `hostPort.enabled` | `true` | Expose primary CoreDNS on host port 53 |
+| `reverseZones.enabled` | `true` | Enable automatic PTR record generation |
+| `reverseZones.ipv4` | `["10.in-addr.arpa", ...]` | Static IPv4 reverse zones |
+| `reverseZones.ipv6` | `[]` | Static IPv6 reverse zones |
 
 ### Interface Categorization Patterns
 
@@ -238,6 +293,7 @@ The sidecar auto-discovers zones from Netbox FQDNs. Three modes are available:
    - Groups IPs by device and selects the best management IP (prefers VRF-based over interface name)
    - Extracts DNS zones from device names (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
    - Generates DNS records: `{device}.{zone}` for management, `{device}-bmc.{zone}` for BMC
+   - Generates reverse zones (in-addr.arpa, ip6.arpa) with PTR records mapping IPs back to hostnames
    - Atomically writes zone files only when changes are detected
 3. **CoreDNS** serves DNS using local zone files via the `auto` plugin, with optional fallthrough to the netbox plugin for cache misses
 4. **CoreDNS `auto` plugin** watches the zone directory and auto-loads new or changed zone files (every 10s)
@@ -269,12 +325,29 @@ make dev
 Then test:
 
 ```bash
-dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A
-dig @127.0.0.1 -p 15353 server500-bmc.dc2.mycompany.com A
-dig @127.0.0.1 -p 15353 google.com A  # forwarded
+# Forward lookups (use +tcp for macOS, see note below)
+dig @127.0.0.1 -p 15353 +tcp server1-mgmt.dc1.mycompany.com A
+dig @127.0.0.1 -p 15353 +tcp server500-bmc.dc2.mycompany.com A
+dig @127.0.0.1 -p 15353 +tcp google.com A  # forwarded
 
-# Secondary (after second `make dev.deploy` to pick up primary ClusterIP)
-dig @127.0.0.1 -p 15354 server1-mgmt.dc1.mycompany.com A
+# Reverse lookups (PTR records)
+dig @127.0.0.1 -p 15353 +tcp -x 10.1.0.1
+dig @127.0.0.1 -p 15353 +tcp -x 10.2.8.244
+
+# Secondary
+dig @127.0.0.1 -p 15354 +tcp server1-mgmt.dc1.mycompany.com A
+```
+
+**Note for macOS users:** Docker Desktop on macOS has a known limitation with UDP port forwarding between the host and containers. DNS queries via UDP will timeout when querying from your Mac host to the k3d cluster. Use the `+tcp` flag with dig to force TCP queries, which work correctly. This limitation does not affect:
+- DNS queries inside the Kubernetes cluster (both TCP and UDP work)
+- Production deployments on real Kubernetes clusters
+- Linux users (Docker on Linux handles UDP correctly)
+
+If you need UDP for testing, run queries from inside a pod:
+```bash
+kubectl run -n coredns-netbox dnstest --rm -it --image=busybox -- /bin/sh
+# Inside the pod:
+nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
 ```
 
 ### Project Structure
@@ -351,10 +424,10 @@ make dev.deploy
 # 7. Run again to pick up primary ClusterIP for secondary
 make dev.deploy
 
-# 8. Test DNS resolution
-dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A       # primary
-dig @127.0.0.1 -p 15354 server1-mgmt.dc1.mycompany.com A       # secondary (AXFR replica)
-dig @127.0.0.1 -p 15353 dc1.mycompany.com AXFR +tcp             # full zone transfer
+# 8. Test DNS resolution (use +tcp on macOS, see Development section above)
+dig @127.0.0.1 -p 15353 +tcp server1-mgmt.dc1.mycompany.com A       # primary
+dig @127.0.0.1 -p 15354 +tcp server1-mgmt.dc1.mycompany.com A       # secondary (AXFR replica)
+dig @127.0.0.1 -p 15353 +tcp dc1.mycompany.com AXFR                 # full zone transfer
 ```
 
 ### Checking Status

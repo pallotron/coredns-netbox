@@ -16,6 +16,20 @@ zoneDiscovery:
 
 zoneDir: /zones
 
+# Reverse DNS (PTR records)
+reverseZones:
+  enabled: true
+  # Static parent zones that cover your IP space
+  # IPv4 examples:
+  #   10.in-addr.arpa - covers all of 10.0.0.0/8
+  #   16.172.in-addr.arpa,17.172.in-addr.arpa - covers 172.16.0.0/16 and 172.17.0.0/16
+  ipv4:
+    - "10.in-addr.arpa"
+    - "16.172.in-addr.arpa"
+  # IPv6 examples (reverse nibble notation):
+  #   b.8.0.d.0.1.2.0.ip6.arpa - covers 2001:db8::/32
+  ipv6: []
+
 netbox:
   url: http://netbox.netbox.svc.cluster.local
   # Set token directly, or use existingSecret to reference a pre-created Secret
@@ -57,6 +71,8 @@ secondary:
   #   transferFrom: ["10.0.1.1"]
   hostPort:
     enabled: false
+  # Service port for secondary (default 53, override in dev to avoid conflicts)
+  servicePort: 53
 
 service:
   type: ClusterIP

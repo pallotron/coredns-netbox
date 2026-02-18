@@ -11,12 +11,21 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 )
 
+// ZoneType distinguishes between forward and reverse DNS zones.
+type ZoneType string
+
+const (
+	ZoneTypeForward ZoneType = "forward"
+	ZoneTypeReverse ZoneType = "reverse"
+)
+
 // ZoneConfig holds parameters for zone file generation.
 type ZoneConfig struct {
-	Origin     string // e.g., "example.org."
-	PrimaryNS  string // e.g., "ns1.example.org."
-	AdminEmail string // e.g., "admin.example.org."
+	Origin     string   // e.g., "example.org." or "1.10.in-addr.arpa"
+	PrimaryNS  string   // e.g., "ns1.example.org."
+	AdminEmail string   // e.g., "admin.example.org."
 	TTL        uint32
+	Type       ZoneType // forward or reverse
 }
 
 // Generator produces DNS zone files from Netbox records.
@@ -69,14 +78,30 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 		return sorted[i].Address < sorted[j].Address
 	})
 
-	// A and AAAA records
-	for _, r := range sorted {
-		name := shortName(r.DNSName, origin)
-		rrType := "A"
-		if r.Family == 6 {
-			rrType = "AAAA"
+	// Generate records based on zone type
+	if g.config.Type == ZoneTypeReverse {
+		// PTR records for reverse zones
+		for _, r := range sorted {
+			// For reverse zones:
+			// - r.Address contains the PTR name (e.g., "3.2" or "3.2.1")
+			// - r.DNSName contains the target FQDN
+			ptrName := r.Address
+			if ptrName == "" {
+				ptrName = "@"
+			}
+			target := ensureTrailingDot(r.DNSName)
+			fmt.Fprintf(&b, "%s IN PTR %s\n", ptrName, target)
 		}
-		fmt.Fprintf(&b, "%s IN %s %s\n", name, rrType, r.Address)
+	} else {
+		// A and AAAA records for forward zones
+		for _, r := range sorted {
+			name := shortName(r.DNSName, origin)
+			rrType := "A"
+			if r.Family == 6 {
+				rrType = "AAAA"
+			}
+			fmt.Fprintf(&b, "%s IN %s %s\n", name, rrType, r.Address)
+		}
 	}
 
 	g.lastHash = hash

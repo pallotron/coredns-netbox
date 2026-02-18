@@ -102,22 +102,10 @@ dev.seed:
 
 dev.deploy:
 	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	PRIMARY_IP=$$(kubectl get svc $(HELM_RELEASE) -n $(HELM_NAMESPACE) -o jsonpath='{.spec.clusterIP}' 2>/dev/null); \
 	helm upgrade --install $(HELM_RELEASE) ./helm/coredns-netbox \
 		-n $(HELM_NAMESPACE) \
+		-f dev/coredns-netbox-values.yaml \
 		--set netbox.existingSecret=$(NETBOX_TOKEN_SECRET) \
-		--set netboxPlugin.enabled=true \
-		--set maxConcurrency=3 \
-		--set zoneDiscovery.depth=3 \
-		--set primaryNS=ns1.mycompany.com. \
-		--set adminEmail=admin.mycompany.com. \
-		--set transfer.to[0]='*' \
-		--set secondary.enabled=true \
-		--set secondary.hostPort.enabled=true \
-		--set secondary.zones[0]=dc1.mycompany.com \
-		--set secondary.zones[1]=dc2.mycompany.com \
-		--set secondary.zones[2]=dc3.mycompany.com \
-		$${PRIMARY_IP:+--set secondary.transferFrom[0]=$$PRIMARY_IP} \
 		--wait --timeout 5m
 
 dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy

@@ -11,6 +11,7 @@ import (
 
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 )
 
 func main() {
@@ -30,6 +31,11 @@ func main() {
 
 	// Domain configuration
 	domainSuffix := flag.String("domain", "example.com", "Domain suffix for DNS zones")
+
+	// Reverse zone configuration
+	enableReverseZones := flag.Bool("enable-reverse-zones", true, "Enable PTR record preview")
+	ipv4Zones := flag.String("ipv4-zones", "10.in-addr.arpa,172.16.in-addr.arpa", "Comma-separated list of IPv4 reverse zones")
+	ipv6Zones := flag.String("ipv6-zones", "", "Comma-separated list of IPv6 reverse zones")
 
 	flag.Parse()
 
@@ -120,14 +126,25 @@ func main() {
 	}
 
 	if *showStats {
-		showStatistics(records, cat)
+		// For stats mode, discover reverse zones from raw records
+		var reverseZones zonediscovery.ZoneMap
+		if *enableReverseZones {
+			ipv4ZoneList := parseZoneList(*ipv4Zones)
+			ipv6ZoneList := parseZoneList(*ipv6Zones)
+			disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
+			reverseZones, err = disc.Discover(records)
+			if err != nil {
+				log.Fatalf("Failed to discover reverse zones: %v", err)
+			}
+		}
+		showStatistics(records, cat, reverseZones)
 		return
 	}
 
-	// Select device IPs
+	// Select device IPs (creates FQDNs from device names)
 	deviceDNS := cat.SelectDeviceIPs(records)
 
-	// Filter if requested
+	// Filter if requested (before discovering reverse zones)
 	if *filterDevice != "" {
 		filtered := make(map[string]*ipcategorizer.DeviceDNSRecords)
 		for name, dns := range deviceDNS {
@@ -138,18 +155,84 @@ func main() {
 		deviceDNS = filtered
 	}
 
+	// Discover reverse zones from selected (and possibly filtered) device IPs
+	// This ensures PTR records match the forward A/AAAA records we're creating
+	var reverseZones zonediscovery.ZoneMap
+	if *enableReverseZones {
+		enrichedRecords := deviceDNSToRecords(deviceDNS)
+		ipv4ZoneList := parseZoneList(*ipv4Zones)
+		ipv6ZoneList := parseZoneList(*ipv6Zones)
+		disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
+		reverseZones, err = disc.Discover(enrichedRecords)
+		if err != nil {
+			log.Fatalf("Failed to discover reverse zones: %v", err)
+		}
+	}
+
 	// Output results
 	switch *outputFormat {
 	case "csv":
-		outputCSV(deviceDNS)
+		outputCSV(deviceDNS, reverseZones)
 	case "detailed":
-		outputDetailed(deviceDNS, records, cat, *showAll)
+		outputDetailed(deviceDNS, records, cat, *showAll, reverseZones)
 	default:
-		outputSummary(deviceDNS)
+		outputSummary(deviceDNS, reverseZones)
 	}
 }
 
-func showStatistics(records []netboxclient.IPRecord, cat *ipcategorizer.Categorizer) {
+// parseZoneList parses a comma-separated list of zones
+func parseZoneList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var zones []string
+	for _, z := range strings.Split(s, ",") {
+		z = strings.TrimSpace(z)
+		if z != "" {
+			zones = append(zones, z)
+		}
+	}
+	return zones
+}
+
+// deviceDNSToRecords converts selected device DNS records back to IPRecord format
+// so we can discover reverse zones from the actual IPs we're creating forward records for
+func deviceDNSToRecords(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) []netboxclient.IPRecord {
+	var records []netboxclient.IPRecord
+
+	for deviceName, dns := range deviceDNS {
+		// Primary management IP
+		if dns.PrimaryIP != nil {
+			fqdn := deviceName + "." + dns.Zone
+			records = append(records, netboxclient.IPRecord{
+				DNSName:       fqdn,
+				Address:       dns.PrimaryIP.Address,
+				Family:        dns.PrimaryIP.Family,
+				DeviceName:    deviceName,
+				InterfaceName: dns.PrimaryIP.InterfaceName,
+				VRF:           dns.PrimaryIP.VRF,
+			})
+		}
+
+		// BMC IP
+		if dns.BMCIP != nil {
+			fqdn := deviceName + "-bmc." + dns.Zone
+			records = append(records, netboxclient.IPRecord{
+				DNSName:       fqdn,
+				Address:       dns.BMCIP.Address,
+				Family:        dns.BMCIP.Family,
+				DeviceName:    deviceName,
+				InterfaceName: dns.BMCIP.InterfaceName,
+				VRF:           dns.BMCIP.VRF,
+			})
+		}
+	}
+
+	return records
+}
+
+
+func showStatistics(records []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, reverseZones zonediscovery.ZoneMap) {
 	totalRecords := len(records)
 	withDevice := 0
 	withDNSName := 0
@@ -200,9 +283,38 @@ func showStatistics(records []netboxclient.IPRecord, cat *ipcategorizer.Categori
 	for i := 0; i < 10 && i < len(vrfs); i++ {
 		fmt.Printf("  %-30s: %6d\n", vrfs[i].name, vrfs[i].count)
 	}
+
+	// Reverse zone statistics
+	if len(reverseZones) > 0 {
+		fmt.Println()
+		totalPTRs := 0
+		for _, recs := range reverseZones {
+			totalPTRs += len(recs)
+		}
+
+		fmt.Printf("Reverse DNS Zones: %d\n", len(reverseZones))
+		fmt.Printf("Total PTR records: %d\n", totalPTRs)
+		fmt.Println()
+
+		fmt.Println("Top 10 Reverse Zones:")
+		type zoneStat struct {
+			name  string
+			count int
+		}
+		var zones []zoneStat
+		for name, recs := range reverseZones {
+			zones = append(zones, zoneStat{name, len(recs)})
+		}
+		sort.Slice(zones, func(i, j int) bool {
+			return zones[i].count > zones[j].count
+		})
+		for i := 0; i < 10 && i < len(zones); i++ {
+			fmt.Printf("  %-40s: %6d PTR records\n", zones[i].name, zones[i].count)
+		}
+	}
 }
 
-func outputSummary(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) {
+func outputSummary(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, reverseZones zonediscovery.ZoneMap) {
 	// Sort device names
 	var devices []string
 	for name := range deviceDNS {
@@ -231,13 +343,25 @@ func outputSummary(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) {
 	fmt.Printf("Devices with BMC IP: %d\n", withBMC)
 	fmt.Println()
 
-	fmt.Println("DNS Records to be created:")
+	fmt.Println("Forward DNS Records to be created:")
 	fmt.Printf("  Primary hostnames: %d\n", withPrimary)
 	fmt.Printf("  BMC hostnames (-bmc suffix): %d\n", withBMC)
 	fmt.Printf("  Total DNS A/AAAA records: %d\n", withPrimary+withBMC)
 	fmt.Println()
 
-	fmt.Println("Top 10 Zones:")
+	// Reverse DNS summary
+	if len(reverseZones) > 0 {
+		totalPTRs := 0
+		for _, recs := range reverseZones {
+			totalPTRs += len(recs)
+		}
+		fmt.Println("Reverse DNS Records to be created:")
+		fmt.Printf("  Reverse zones: %d\n", len(reverseZones))
+		fmt.Printf("  Total PTR records: %d\n", totalPTRs)
+		fmt.Println()
+	}
+
+	fmt.Println("Top 10 Forward Zones:")
 	type zoneStat struct {
 		name  string
 		count int
@@ -254,7 +378,7 @@ func outputSummary(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) {
 	}
 	fmt.Println()
 
-	fmt.Println("Sample DNS records (first 10 devices):")
+	fmt.Println("Sample Forward DNS records (first 10 devices):")
 	for i := 0; i < 10 && i < len(devices); i++ {
 		name := devices[i]
 		dns := deviceDNS[name]
@@ -265,9 +389,46 @@ func outputSummary(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) {
 			fmt.Printf("  %s-bmc.%s. → %s\n", name, dns.Zone, dns.BMCIP.Address)
 		}
 	}
+
+	// Sample PTR records
+	if len(reverseZones) > 0 {
+		fmt.Println()
+		fmt.Println("Sample Reverse DNS (PTR) records (first 10):")
+
+		// Get first reverse zone
+		var sortedZones []string
+		for zone := range reverseZones {
+			sortedZones = append(sortedZones, zone)
+		}
+		sort.Strings(sortedZones)
+
+		shown := 0
+		for _, zone := range sortedZones {
+			if shown >= 10 {
+				break
+			}
+			recs := reverseZones[zone]
+
+			// Sort records in zone
+			sort.Slice(recs, func(i, j int) bool {
+				return recs[i].Address < recs[j].Address
+			})
+
+			for _, rec := range recs {
+				if shown >= 10 {
+					break
+				}
+				// For PTR records, Address contains the PTR name, DNSName contains the target
+				if rec.Address != "" {
+					fmt.Printf("  %s.%s. → %s.\n", rec.Address, zone, rec.DNSName)
+				}
+				shown++
+			}
+		}
+	}
 }
 
-func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRecords []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, showAll bool) {
+func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRecords []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, showAll bool, reverseZones zonediscovery.ZoneMap) {
 	// Sort device names
 	var devices []string
 	for name := range deviceDNS {
@@ -300,12 +461,21 @@ func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRec
 			}
 		}
 	}
+
+	// Show reverse zone summary if available
+	if len(reverseZones) > 0 {
+		totalPTRs := 0
+		for _, recs := range reverseZones {
+			totalPTRs += len(recs)
+		}
+		fmt.Printf("\nReverse DNS: %d PTR records across %d reverse zones\n", totalPTRs, len(reverseZones))
+	}
 }
 
-func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) {
-	fmt.Println("device_name,dns_hostname,ip_address,record_type,interface,vrf,zone")
+func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, reverseZones zonediscovery.ZoneMap) {
+	fmt.Println("record_type,zone,name,value,device,interface,vrf")
 
-	// Sort device names
+	// Forward DNS records
 	var devices []string
 	for name := range deviceDNS {
 		devices = append(devices, name)
@@ -315,14 +485,39 @@ func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) {
 	for _, name := range devices {
 		dns := deviceDNS[name]
 		if dns.PrimaryIP != nil {
-			fmt.Printf("%s,%s.%s,%s,primary,%s,%s,%s\n",
-				name, name, dns.Zone, dns.PrimaryIP.Address,
-				dns.PrimaryIP.InterfaceName, dns.PrimaryIP.VRF, dns.Zone)
+			fmt.Printf("A,%s,%s,%s,%s,%s,%s\n",
+				dns.Zone, name, dns.PrimaryIP.Address, name,
+				dns.PrimaryIP.InterfaceName, dns.PrimaryIP.VRF)
 		}
 		if dns.BMCIP != nil {
-			fmt.Printf("%s,%s-bmc.%s,%s,bmc,%s,%s,%s\n",
-				name, name, dns.Zone, dns.BMCIP.Address,
-				dns.BMCIP.InterfaceName, dns.BMCIP.VRF, dns.Zone)
+			fmt.Printf("A,%s,%s-bmc,%s,%s,%s,%s\n",
+				dns.Zone, name, dns.BMCIP.Address, name,
+				dns.BMCIP.InterfaceName, dns.BMCIP.VRF)
+		}
+	}
+
+	// Reverse DNS (PTR) records
+	if len(reverseZones) > 0 {
+		var sortedZones []string
+		for zone := range reverseZones {
+			sortedZones = append(sortedZones, zone)
+		}
+		sort.Strings(sortedZones)
+
+		for _, zone := range sortedZones {
+			recs := reverseZones[zone]
+
+			// Sort records in zone
+			sort.Slice(recs, func(i, j int) bool {
+				return recs[i].Address < recs[j].Address
+			})
+
+			for _, rec := range recs {
+				// For PTR records: Address contains PTR name, DNSName contains target
+				fmt.Printf("PTR,%s,%s,%s,%s,%s,%s\n",
+					zone, rec.Address, rec.DNSName, rec.DeviceName,
+					rec.InterfaceName, rec.VRF)
+			}
 		}
 	}
 }

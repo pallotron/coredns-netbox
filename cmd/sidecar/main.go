@@ -33,15 +33,26 @@ func main() {
 		log.Fatalf("Failed to create Netbox client: %v", err)
 	}
 
-	// Create zone discoverer
+	// Create forward zone discoverer
 	opts := map[string]string{
 		"depth":        strconv.Itoa(cfg.ZoneDepth),
 		"netbox_url":   cfg.NetboxURL,
 		"netbox_token": cfg.NetboxToken,
 	}
-	disc, err := zonediscovery.NewDiscoverer(zonediscovery.DiscoveryMode(cfg.DiscoveryMode), opts)
+	forwardDisc, err := zonediscovery.NewDiscoverer(zonediscovery.DiscoveryMode(cfg.DiscoveryMode), opts)
 	if err != nil {
-		log.Fatalf("Failed to create zone discoverer: %v", err)
+		log.Fatalf("Failed to create forward zone discoverer: %v", err)
+	}
+
+	// Create reverse zone discoverer if enabled
+	var reverseDisc zonediscovery.Discoverer
+	if cfg.EnableReverseZones {
+		reverseDisc = zonediscovery.NewReverseZoneDiscoverer(
+			cfg.ReverseZonesIPv4,
+			cfg.ReverseZonesIPv6,
+		)
+		log.Printf("Reverse zones enabled: IPv4 zones=%v, IPv6 zones=%v",
+			cfg.ReverseZonesIPv4, cfg.ReverseZonesIPv6)
 	}
 
 	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.AdminEmail, cfg.TTL)
@@ -87,14 +98,14 @@ func main() {
 	}
 
 	// Run the poll loop
-	if err := run(ctx, cfg, client, disc, mgr); err != nil {
+	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr); err != nil {
 		log.Fatalf("Fatal error: %v", err)
 	}
 }
 
-func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, disc zonediscovery.Discoverer, mgr *zonemanager.Manager) error {
+func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager) error {
 	for {
-		if err := poll(ctx, cfg, client, disc, mgr); err != nil {
+		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr); err != nil {
 			log.Printf("Poll error: %v", err)
 		}
 
@@ -111,7 +122,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, d
 	}
 }
 
-func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, disc zonediscovery.Discoverer, mgr *zonemanager.Manager) error {
+func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager) error {
 	log.Println("Fetching IP addresses from Netbox...")
 
 	records, err := client.FetchIPAddresses(ctx)
@@ -121,14 +132,30 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, di
 
 	log.Printf("Fetched %d records from Netbox", len(records))
 
-	zoneMap, err := disc.Discover(records)
+	// Discover forward zones
+	forwardZones, err := forwardDisc.Discover(records)
 	if err != nil {
-		return fmt.Errorf("discover zones: %w", err)
+		return fmt.Errorf("discover forward zones: %w", err)
 	}
 
-	log.Printf("Discovered %d zones", len(zoneMap))
+	log.Printf("Discovered %d forward zones", len(forwardZones))
 
-	if err := mgr.Update(zoneMap); err != nil {
+	// Discover reverse zones if enabled
+	combinedZones := forwardZones
+	if reverseDisc != nil {
+		reverseZones, err := reverseDisc.Discover(records)
+		if err != nil {
+			return fmt.Errorf("discover reverse zones: %w", err)
+		}
+		log.Printf("Discovered %d reverse zones", len(reverseZones))
+
+		// Merge forward and reverse zones
+		for zone, recs := range reverseZones {
+			combinedZones[zone] = recs
+		}
+	}
+
+	if err := mgr.Update(combinedZones); err != nil {
 		return fmt.Errorf("update zones: %w", err)
 	}
 

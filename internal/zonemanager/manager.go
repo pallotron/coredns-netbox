@@ -53,11 +53,18 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) error {
 
 		gen, ok := m.generators[zone]
 		if !ok {
+			// Determine zone type based on zone name
+			zoneType := zonegen.ZoneTypeForward
+			if isReverseZone(zone) {
+				zoneType = zonegen.ZoneTypeReverse
+			}
+
 			gen = zonegen.NewGenerator(zonegen.ZoneConfig{
 				Origin:     zone,
 				PrimaryNS:  m.primaryNS,
 				AdminEmail: m.adminEmail,
 				TTL:        m.ttl,
+				Type:       zoneType,
 			})
 			m.generators[zone] = gen
 		}
@@ -146,3 +153,8 @@ func (m *Manager) removeOrphans(activeZones map[string]bool) error {
 
 // RecordsForZone is a convenience type alias.
 type RecordsForZone = []netboxclient.IPRecord
+
+// isReverseZone checks if a zone name is a reverse DNS zone.
+func isReverseZone(zone string) bool {
+	return strings.HasSuffix(zone, ".in-addr.arpa") || strings.HasSuffix(zone, ".ip6.arpa")
+}

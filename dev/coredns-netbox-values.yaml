@@ -1,0 +1,52 @@
+# Dev-specific values for coredns-netbox helm chart
+# Used by k3d cluster for local development
+
+# Use LoadBalancer for k3d (works with k3d port forwarding)
+# Static ClusterIP for reproducible secondary configuration
+service:
+  type: LoadBalancer
+  clusterIP: 10.43.100.53
+
+# Disable hostPort in dev (conflicts with LoadBalancer svclb pods)
+hostPort:
+  enabled: false
+
+# Enable netbox plugin for live API queries (dev only)
+netboxPlugin:
+  enabled: true
+
+# Concurrency and discovery settings
+maxConcurrency: 3
+zoneDiscovery:
+  depth: 3
+
+# DNS metadata
+primaryNS: ns1.mycompany.com.
+adminEmail: admin.mycompany.com.
+
+# Allow zone transfers to anyone in dev
+transfer:
+  to:
+    - '*'
+
+# Reverse DNS zones
+reverseZones:
+  enabled: true
+  ipv4:
+    - 10.in-addr.arpa
+
+# Secondary DNS server
+secondary:
+  enabled: true
+  # Use port 5354 to match k3d port mapping (avoids conflict with primary on 53)
+  servicePort: 5354
+  hostPort:
+    enabled: false
+  zones:
+    - dc1.mycompany.com
+    - dc2.mycompany.com
+    - dc3.mycompany.com
+    - 10.in-addr.arpa
+  # Transfer zones from primary (using static ClusterIP above)
+  transferFrom:
+    - 10.43.100.53

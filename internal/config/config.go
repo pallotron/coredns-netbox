@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,11 +25,16 @@ type Config struct {
 	AdminEmail     string
 
 	// Interface categorization patterns (regex)
-	BMCInterfacePattern      string
-	LoopbackInterfacePattern string
+	BMCInterfacePattern       string
+	LoopbackInterfacePattern  string
 	DataplaneInterfacePattern string
-	MgmtVRFPattern           string
-	MgmtInterfacePattern     string
+	MgmtVRFPattern            string
+	MgmtInterfacePattern      string
+
+	// Reverse zone configuration
+	EnableReverseZones bool
+	ReverseZonesIPv4   []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa"])
+	ReverseZonesIPv6   []string // Static IPv6 reverse zones (e.g., ["b.8.0.d.0.1.2.0.ip6.arpa"])
 }
 
 func Load() (*Config, error) {
@@ -51,6 +57,11 @@ func Load() (*Config, error) {
 		DataplaneInterfacePattern: envOrDefault("DATAPLANE_PATTERN", "(?i)storage|vtep|vsan"),
 		MgmtVRFPattern:            envOrDefault("MGMT_VRF_PATTERN", "(?i)mgmt|oob"),
 		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET"),
+
+		// Reverse zone defaults
+		EnableReverseZones: envOrDefault("ENABLE_REVERSE_ZONES", "true") == "true",
+		ReverseZonesIPv4:   parseZoneList(envOrDefault("REVERSE_ZONES_IPV4", "10.in-addr.arpa,172.16.in-addr.arpa")),
+		ReverseZonesIPv6:   parseZoneList(envOrDefault("REVERSE_ZONES_IPV6", "")),
 	}
 
 	if c.NetboxToken == "" {
@@ -107,4 +118,18 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseZoneList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var zones []string
+	for _, z := range strings.Split(s, ",") {
+		z = strings.TrimSpace(z)
+		if z != "" {
+			zones = append(zones, z)
+		}
+	}
+	return zones
 }
