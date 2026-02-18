@@ -2,19 +2,29 @@
 
 Findings from reviewing `helm/coredns-netbox/` for production use.
 
+## Done ✅
+
+### 1. Primary service selector matches secondary pods ✅
+
+`service.yaml` now includes `app.kubernetes.io/component: primary` in its selector, and the primary deployment's pod template carries the same label. Traffic cannot hit secondary pods.
+
+### 4. `transfer { to * }` allows unrestricted AXFR ✅
+
+`transfer.to` is now a list defaulting to `[]`. The transfer block is omitted from the Corefile when the list is empty.
+
+### 10. Busybox init container hardcoded and fragile ✅
+
+The busybox `resolve-primary` init container has been eliminated entirely. The secondary deployment needs no init container.
+
+---
+
 ## Critical
-
-### 1. Primary service selector matches secondary pods
-
-`service.yaml` uses `selectorLabels` (only `name` + `instance`) without a `component` label. This means DNS traffic routed through the primary Service can hit secondary pods too.
-
-**Fix:** Add `app.kubernetes.io/component: primary` to the primary deployment's pod labels and service selector. The secondary already has `component: secondary`.
 
 ### 2. No `securityContext` anywhere
 
-All containers (CoreDNS, sidecar, init containers, busybox) run as root with full capabilities.
+All containers (CoreDNS, sidecar, zone-init) run as root with full capabilities.
 
-**Fix:** Add pod-level and container-level security contexts:
+**Fix:** Add pod-level and container-level security contexts to both deployments:
 
 ```yaml
 # Pod level
@@ -41,33 +51,37 @@ Current default breaks multi-replica setups, forces `Recreate` strategy (no zero
 
 **Fix:** Default `hostPort.enabled` to `false`. Add a guard or `NOTES.txt` warning if `replicaCount > 1` and `hostPort.enabled: true`.
 
-### 4. `transfer { to * }` allows unrestricted AXFR
+### 5. No resource limits on init container or secondary
 
-`configmap.yaml` line 14-16: any host can initiate a zone transfer from the primary.
+The `zone-init` init container and the secondary CoreDNS container both lack `resources:` blocks. The primary `coredns` and `sidecar` containers are already covered.
 
-**Fix:** Make transfer targets configurable via values:
-
-```yaml
-transfer:
-  targets: []  # empty = disabled, ["*"] = unrestricted, ["10.0.0.1"] = specific
-```
-
-### 5. No resource limits on init containers or secondary
-
-`zone-init` init container (`deployment.yaml`), `resolve-primary` init container, and the secondary CoreDNS container all lack `resources:` blocks.
-
-**Fix:** Add resource values:
+**Fix:** Add resource values and wire them in:
 
 ```yaml
 resources:
   zoneInit:
     requests: { cpu: 50m, memory: 32Mi }
     limits: { cpu: 100m, memory: 64Mi }
-secondary:
-  resources:
+  secondary:
     requests: { cpu: 100m, memory: 64Mi }
     limits: { cpu: 200m, memory: 128Mi }
 ```
+
+### 9. No validation that netbox credentials are set
+
+Deploying with both `netbox.token: ""` and `netbox.existingSecret: ""` creates a Secret with an empty token. The sidecar fails at runtime with no clear Helm-time error.
+
+**Fix:** Add a `required` guard in `secret.yaml`:
+
+```yaml
+{{- if not .Values.netbox.existingSecret }}
+{{- if not .Values.netbox.token }}
+  {{- fail "Either netbox.token or netbox.existingSecret must be set" }}
+{{- end }}
+{{- end }}
+```
+
+---
 
 ## Important
 
@@ -99,32 +113,6 @@ topologySpreadConstraints: []
 CoreDNS ships a `prometheus` plugin but the Corefile doesn't enable it. No query rate, latency, cache hit, or error metrics.
 
 **Fix:** Add `prometheus :9153` to the Corefile (gated by `metrics.enabled`), expose port 9153 on the deployment and service, and add an optional `ServiceMonitor` template.
-
-### 9. No validation that netbox credentials are set
-
-Deploying with both `netbox.token: ""` and `netbox.existingSecret: ""` creates a Secret with an empty token. The sidecar fails at runtime with no clear Helm-time error.
-
-**Fix:** Add a `required` guard in `secret.yaml`:
-
-```yaml
-{{- if not .Values.netbox.existingSecret }}
-{{- if not .Values.netbox.token }}
-  {{- fail "Either netbox.token or netbox.existingSecret must be set" }}
-{{- end }}
-{{- end }}
-```
-
-### 10. Busybox init container hardcoded and fragile
-
-`deployment-secondary.yaml` hardcodes `busybox:1.36`. This:
-- Cannot be overridden (breaks air-gapped / private registry environments)
-- Uses `nslookup` + `awk` parsing that varies across busybox versions
-- Has no timeout on the retry loop (blocks pod startup forever if primary never resolves)
-
-**Fix:**
-- Make the image configurable via `secondary.initImage.{image,tag,pullPolicy}`
-- Add a timeout to the retry loop
-- Investigate whether `secondary { transfer from <FQDN>:53 }` actually works (the earlier error was for zone `.`, not for a hostname — re-test with the service FQDN directly to potentially eliminate the init container entirely)
 
 ### 11. No `imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity`
 
@@ -159,6 +147,8 @@ serviceAccount:
 
 **Fix:** Use `{{ .Values.secondary.replicaCount | default 1 }}`.
 
+---
+
 ## Nice to Have
 
 ### 14. Missing `NOTES.txt` and helm test templates
@@ -192,3 +182,9 @@ Users can't add custom annotations (Vault injection, Datadog, IAM roles, etc.).
 ### 19. `Chart.yaml` metadata incomplete
 
 Missing `home`, `sources`, `maintainers`, `keywords`, `icon`. The `appVersion: "1.0.0"` doesn't match the default image tag `dev`.
+
+### 20. Sidecar image tag missing fallback
+
+In `deployment.yaml`, the sidecar container uses `{{ .Values.sidecar.tag }}` with no `| default .Chart.AppVersion` fallback. When `sidecar.tag` is empty the image reference has a bare trailing `:` with no tag. The zone-init init container and coredns container both have the fallback correctly.
+
+**Fix:** Change to `{{ .Values.sidecar.tag | default .Chart.AppVersion }}`.
