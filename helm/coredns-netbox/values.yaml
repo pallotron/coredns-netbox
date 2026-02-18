@@ -1,13 +1,13 @@
 replicaCount: 1
 
 coredns:
-  image: coredns-netbox
-  tag: dev
+  image: ghcr.io/pallotron/coredns-netbox
+  tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
 sidecar:
-  image: coredns-netbox-sidecar
-  tag: dev
+  image: ghcr.io/pallotron/coredns-netbox-sidecar
+  tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
 zoneDiscovery:

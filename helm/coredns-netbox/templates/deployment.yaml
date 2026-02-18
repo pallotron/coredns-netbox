@@ -24,7 +24,7 @@ spec:
     spec:
       initContainers:
         - name: zone-init
-          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag }}"
+          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
           args: ["--run-once"]
           env:
@@ -62,7 +62,7 @@ spec:
               mountPath: {{ .Values.zoneDir }}
       containers:
         - name: coredns
-          image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag }}"
+          image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.coredns.pullPolicy }}
           args: ["-conf", "/etc/coredns/Corefile"]
           {{- if .Values.netboxPlugin.enabled }}

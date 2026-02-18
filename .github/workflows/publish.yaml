@@ -1,0 +1,87 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  publish-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push CoreDNS image
+        uses: docker/build-push-action@v6
+        with:
+          context: coredns/
+          file: coredns/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ env.OWNER }}/coredns-netbox:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ env.OWNER }}/coredns-netbox:latest
+
+      - name: Build and push sidecar image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sidecar/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ env.OWNER }}/coredns-netbox-sidecar:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ env.OWNER }}/coredns-netbox-sidecar:latest
+
+  publish-chart:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username ${{ github.actor }} \
+            --password-stdin
+
+      - name: Stamp chart version
+        run: |
+          sed -i "s/^version:.*/version: ${{ steps.version.outputs.VERSION }}/" helm/coredns-netbox/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" helm/coredns-netbox/Chart.yaml
+
+      - name: Package and push Helm chart
+        run: |
+          helm package helm/coredns-netbox
+          helm push coredns-netbox-${{ steps.version.outputs.VERSION }}.tgz \
+            oci://ghcr.io/${{ env.OWNER }}

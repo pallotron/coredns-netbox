@@ -1,6 +1,17 @@
 # Dev-specific values for coredns-netbox helm chart
 # Used by k3d cluster for local development
 
+# Use locally built images (imported into k3d via `make dev.images`)
+coredns:
+  image: coredns-netbox
+  tag: dev
+  pullPolicy: IfNotPresent
+
+sidecar:
+  image: coredns-netbox-sidecar
+  tag: dev
+  pullPolicy: IfNotPresent
+
 # Use LoadBalancer for k3d (works with k3d port forwarding)
 # Static ClusterIP for reproducible secondary configuration
 service:
