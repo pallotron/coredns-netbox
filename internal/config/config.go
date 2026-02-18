@@ -22,6 +22,13 @@ type Config struct {
 	HealthAddr     string
 	PrimaryNS      string
 	AdminEmail     string
+
+	// Interface categorization patterns (regex)
+	BMCInterfacePattern      string
+	LoopbackInterfacePattern string
+	DataplaneInterfacePattern string
+	MgmtVRFPattern           string
+	MgmtInterfacePattern     string
 }
 
 func Load() (*Config, error) {
@@ -37,6 +44,13 @@ func Load() (*Config, error) {
 		HealthAddr:     envOrDefault("HEALTH_ADDR", ":8082"),
 		PrimaryNS:      envOrDefault("PRIMARY_NS", "ns1.example.org."),
 		AdminEmail:     envOrDefault("ADMIN_EMAIL", "admin.example.org."),
+
+		// Interface categorization patterns
+		BMCInterfacePattern:       envOrDefault("BMC_INTERFACE_PATTERN", "(?i)bmc|ipmi|ilo|idrac"),
+		LoopbackInterfacePattern:  envOrDefault("LOOPBACK_PATTERN", "^lo$|^lo0|^Loopback"),
+		DataplaneInterfacePattern: envOrDefault("DATAPLANE_PATTERN", "(?i)storage|vtep|vsan"),
+		MgmtVRFPattern:            envOrDefault("MGMT_VRF_PATTERN", "(?i)mgmt|oob"),
+		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET"),
 	}
 
 	if c.NetboxToken == "" {

@@ -1,6 +1,12 @@
 # CoreDNS with Netbox-backed Zone Discovery and AXFR Transfers
 
-A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones (by FQDN depth, common suffix, or via the Netbox DNS plugin API), and writes zone files to a shared volume. CoreDNS serves the zone files using the `auto` plugin and optionally falls through to the [netbox plugin](https://github.com/oz123/coredns-netbox-plugin) for records not yet in the zone files. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
+A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones from device names, intelligently selects management and BMC IPs using configurable patterns, and writes zone files to a shared volume. CoreDNS serves the zone files using the `auto` plugin and optionally falls through to the [netbox plugin](https://github.com/oz123/coredns-netbox-plugin) for records not yet in the zone files. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
+
+**Key Features:**
+- **Smart Interface Categorization**: Automatically identifies BMC, management, loopback, and dataplane interfaces using regex patterns
+- **Device-Based Discovery**: Creates DNS records from device names even when `dns_name` is empty in Netbox
+- **Multi-IP Support**: Generates both primary management records and BMC records with `-bmc` suffix
+- **Flexible Zone Extraction**: Derives DNS zones from device naming conventions (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
 
 ## Architecture
 
@@ -41,6 +47,49 @@ The sidecar polls Netbox on a configurable interval, fetches all active IP addre
 ### Performance
 
 The sidecar uses parallel paginated HTTP requests to fetch records from Netbox. With 18,000 IP addresses (6,000 hosts across 3 data centers, each with 3 interfaces), the sidecar fetches all records in 4-8 seconds and writes 3 zone files with 6,000 records each.
+
+## Interface Categorization
+
+The sidecar uses regex patterns to categorize network interfaces and intelligently select the appropriate IP for each device:
+
+**Categories:**
+- **BMC**: BMC/IPMI interfaces (pattern: `(?i)bmc|ipmi|ilo|idrac`) → Creates `{hostname}-bmc` DNS records
+- **Management (VRF-based)**: Interfaces in management/OOB VRFs (pattern: `(?i)mgmt|oob`) → Primary DNS record (preferred)
+- **Management (interface name)**: Interfaces with management naming (pattern: `(?i)mgmt|Management|fxp0|eth[01]|mgt|NET`) → Primary DNS record
+- **Loopback**: Routing protocol loopbacks (pattern: `^lo$|^lo0|^Loopback`) → Skipped
+- **Dataplane**: Production/storage traffic (pattern: `(?i)storage|vtep|vsan`) → Skipped
+
+**Example:** A hypervisor `dc1-r101-prod-hv-01` with 5 interfaces generates:
+- `dc1-r101-prod-hv-01.dc1.example.com` → Management IP (172.26.33.64)
+- `dc1-r101-prod-hv-01-bmc.dc1.example.com` → BMC IP (172.26.1.64)
+
+Dataplane interfaces (ovn-vtep-if, storage-if) are automatically excluded from DNS.
+
+All patterns are configurable via environment variables (see Configuration below).
+
+## Analyzing Your Data
+
+Before deploying, use the analyzer tool to preview what DNS records will be generated:
+
+```bash
+# Fetch data from Netbox
+NETBOX_TOKEN='your-token' NETBOX_URL='http://netbox.yourcompany.com' ./scripts/fetch_netbox_ips.sh
+jq -s '[.[].results[]]' ./netbox_ips_dump/page_*.json > all_ips.json
+
+# Build analyzer
+make build.analyzer
+
+# Analyze with your domain
+./bin/analyzer -file all_ips.json -domain "yourcompany.com" -stats
+
+# View specific devices
+./bin/analyzer -file all_ips.json -domain "yourcompany.com" -device "dc1-r101" -format detailed -all
+
+# Export to CSV
+./bin/analyzer -file all_ips.json -domain "yourcompany.com" -format csv > dns_records.csv
+```
+
+See `cmd/analyzer/README.md` for full documentation.
 
 ## Production Deployment
 
@@ -158,6 +207,20 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `secondary.transferFrom` | `[]` | Primary IPs to pull AXFR from |
 | `hostPort.enabled` | `true` | Expose primary CoreDNS on host port 53 |
 
+### Interface Categorization Patterns
+
+Customize interface categorization via environment variables:
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `BMC_INTERFACE_PATTERN` | `(?i)bmc\|ipmi\|ilo\|idrac` | Regex for BMC interfaces |
+| `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
+| `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |
+| `MGMT_VRF_PATTERN` | `(?i)mgmt\|oob` | Regex for management VRFs |
+| `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|eth[01]\|mgt\|NET` | Regex for management interfaces |
+
+These can be set in the Helm chart's `env` values or directly in the sidecar container.
+
 ### Zone Discovery Modes
 
 The sidecar auto-discovers zones from Netbox FQDNs. Three modes are available:
@@ -169,8 +232,14 @@ The sidecar auto-discovers zones from Netbox FQDNs. Three modes are available:
 ## How It Works
 
 1. **Init container** runs the sidecar with `--run-once` to generate initial zone files before CoreDNS starts
-2. **CoreDNS** serves DNS using local zone files via the `auto` plugin, with optional fallthrough to the netbox plugin for cache misses
-3. **Sidecar** continuously polls Netbox, discovers zones from FQDNs, and atomically writes zone files only when changes are detected
+2. **Sidecar** continuously polls Netbox for all active IP addresses:
+   - Fetches device information, interface names, VRFs, and IP addresses
+   - Categorizes interfaces using regex patterns (BMC, management, loopback, dataplane)
+   - Groups IPs by device and selects the best management IP (prefers VRF-based over interface name)
+   - Extracts DNS zones from device names (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
+   - Generates DNS records: `{device}.{zone}` for management, `{device}-bmc.{zone}` for BMC
+   - Atomically writes zone files only when changes are detected
+3. **CoreDNS** serves DNS using local zone files via the `auto` plugin, with optional fallthrough to the netbox plugin for cache misses
 4. **CoreDNS `auto` plugin** watches the zone directory and auto-loads new or changed zone files (every 10s)
 5. Queries for names outside discovered zones are forwarded to upstream resolvers
 6. If zone transfers are configured, the primary notifies secondaries on zone changes and serves AXFR requests
@@ -212,9 +281,11 @@ dig @127.0.0.1 -p 15354 server1-mgmt.dc1.mycompany.com A
 
 ```
 ├── cmd/
+│   ├── analyzer/main.go          # CLI tool: analyze Netbox data & preview DNS records
 │   └── sidecar/main.go           # Sidecar: poll Netbox → write zone files
 ├── internal/
-│   ├── config/                   # Env var configuration
+│   ├── config/                   # Env var configuration + categorization patterns
+│   ├── ipcategorizer/            # Interface categorization & device IP selection
 │   ├── netboxclient/             # Raw HTTP client for Netbox IPAM with parallel pagination
 │   ├── zonediscovery/            # Zone auto-discovery (zone-depth, common-suffix, netbox-dns)
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
@@ -224,6 +295,7 @@ dig @127.0.0.1 -p 15354 server1-mgmt.dc1.mycompany.com A
 │   └── plugin.cfg                # Plugin ordering
 ├── docker/sidecar/Dockerfile     # Sidecar image
 ├── helm/coredns-netbox/          # Helm chart
+├── scripts/                      # Utility scripts (fetch Netbox data)
 ├── dev/                          # k3d + Netbox dev config + seed scripts
 └── tests/e2e/                    # DNS resolution tests
 ```
@@ -234,7 +306,9 @@ dig @127.0.0.1 -p 15354 server1-mgmt.dc1.mycompany.com A
 
 | Target | Description |
 |---|---|
-| `make build` | Build sidecar binary |
+| `make build` | Build sidecar and analyzer binaries |
+| `make build.sidecar` | Build sidecar binary only |
+| `make build.analyzer` | Build analyzer CLI tool |
 | `make test.unit` | Run unit tests |
 | `make test.e2e` | Run e2e DNS tests (requires running dev env) |
 | `make lint` | Run golangci-lint |

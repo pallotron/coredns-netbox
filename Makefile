@@ -1,4 +1,4 @@
-.PHONY: build build.sidecar test.unit test.e2e \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e \
        dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.teardown \
        lint clean
 
@@ -21,10 +21,13 @@ NETBOX_TOKEN_SECRET := netbox-api-token
 
 # ---------- Build ----------
 
-build: build.sidecar
+build: build.sidecar build.analyzer
 
 build.sidecar:
 	go build -o bin/sidecar ./cmd/sidecar/
+
+build.analyzer:
+	go build -o bin/analyzer ./cmd/analyzer/
 
 # ---------- Test ----------
 

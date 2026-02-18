@@ -19,9 +19,12 @@ import (
 
 // IPRecord is a simplified representation of a Netbox IP address with DNS info.
 type IPRecord struct {
-	DNSName string
-	Address string // IP address without CIDR prefix
-	Family  int    // 4 or 6
+	DNSName       string
+	Address       string // IP address without CIDR prefix
+	Family        int    // 4 or 6
+	DeviceName    string // Device name from assigned_object.device.name
+	InterfaceName string // Interface name from assigned_object.name
+	VRF           string // VRF name
 }
 
 // Client queries the Netbox IPAM API with parallel paginated fetching.
@@ -41,8 +44,23 @@ type ipListResponse struct {
 
 // ipItem represents a single IP address object in the Netbox API response.
 type ipItem struct {
-	Address string `json:"address"`
-	DNSName string `json:"dns_name"`
+	Address        string          `json:"address"`
+	DNSName        string          `json:"dns_name"`
+	VRF            *vrfInfo        `json:"vrf"`
+	AssignedObject *assignedObject `json:"assigned_object"`
+}
+
+type vrfInfo struct {
+	Name string `json:"name"`
+}
+
+type assignedObject struct {
+	Name   string      `json:"name"`
+	Device *deviceInfo `json:"device"`
+}
+
+type deviceInfo struct {
+	Name string `json:"name"`
 }
 
 // New creates a new Netbox client.
@@ -61,7 +79,7 @@ func New(baseURL, token string, pageSize, maxConcurrency int) (*Client, error) {
 	}, nil
 }
 
-// FetchIPAddresses retrieves all active IP addresses with DNS names from Netbox
+// FetchIPAddresses retrieves all active IP addresses from Netbox
 // using parallel paginated requests.
 func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
 	// Probe request to get total count
@@ -98,20 +116,35 @@ func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
 
 			records := make([]IPRecord, 0, len(resp.Results))
 			for _, ip := range resp.Results {
-				if ip.DNSName == "" {
-					continue
-				}
-
 				addr := stripCIDR(ip.Address)
 				family := 4
 				if strings.Contains(addr, ":") {
 					family = 6
 				}
 
+				// Extract device and interface info
+				deviceName := ""
+				interfaceName := ""
+				if ip.AssignedObject != nil {
+					interfaceName = ip.AssignedObject.Name
+					if ip.AssignedObject.Device != nil {
+						deviceName = ip.AssignedObject.Device.Name
+					}
+				}
+
+				// Extract VRF
+				vrf := ""
+				if ip.VRF != nil {
+					vrf = ip.VRF.Name
+				}
+
 				records = append(records, IPRecord{
-					DNSName: ip.DNSName,
-					Address: addr,
-					Family:  family,
+					DNSName:       ip.DNSName,
+					Address:       addr,
+					Family:        family,
+					DeviceName:    deviceName,
+					InterfaceName: interfaceName,
+					VRF:           vrf,
 				})
 			}
 			resultsCh <- records
@@ -138,7 +171,7 @@ func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
 
 // fetchPage retrieves a single page of IP addresses from the Netbox API.
 func (c *Client) fetchPage(ctx context.Context, offset, limit int) (*ipListResponse, error) {
-	reqURL := fmt.Sprintf("%s/api/ipam/ip-addresses/?dns_name__empty=false&limit=%d&offset=%d", c.baseURL, limit, offset)
+	reqURL := fmt.Sprintf("%s/api/ipam/ip-addresses/?status=active&limit=%d&offset=%d", c.baseURL, limit, offset)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
