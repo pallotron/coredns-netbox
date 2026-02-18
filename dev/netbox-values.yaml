@@ -40,7 +40,9 @@ postgresql:
     database: netbox
   primary:
     persistence:
-      enabled: false
+      enabled: true
+      storageClass: ""
+      size: 5Gi
 
 valkey:
   enabled: true

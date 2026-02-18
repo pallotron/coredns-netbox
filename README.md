@@ -11,34 +11,35 @@ A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar period
 
 ## Architecture
 
-```
-                    ┌─────────────────────────────────────────┐
-                    │            Primary Pod                  │
-                    │                                         │
-   DNS query        │  ┌───────────┐       ┌──────────────┐  │
-  ──────────────────┼─▶│  CoreDNS  │       │   Sidecar    │  │
-   UDP/TCP :53      │  │           │       │              │  │
-                    │  │  auto ────┼───┐   │  poll Netbox │  │
-                    │  │  netbox   │   │   │  discover    │  │
-                    │  │  transfer │   │   │    zones     │  │
-                    │  │  forward  │   │   │  write zone  │  │
-                    │  └───────────┘   │   │    files     │  │
-                    │                  │   └──────┬───────┘  │
-                    │              ┌───┴──────────┴───┐      │
-                    │              │  emptyDir /zones │      │
-                    │              └──────────────────┘      │
-                    └──────────────┬──────────────────────────┘
-                                   │
-                    ┌──────────────┼──────────────────────────┐
-                    │              ▼                          │
-                    │    AXFR zone transfer (optional)        │
-                    │              │                          │
-                    │  ┌───────────▼─────┐   ┌────────────┐  │
-                    │  │ Secondary       │   │            │  │
-                    │  │ CoreDNS         │   │  Netbox    │  │
-                    │  │ (AXFR replica)  │   │  (API)     │  │
-                    │  └─────────────────┘   └────────────┘  │
-                    └─────────────────────────────────────────┘
+```mermaid
+---
+config:
+    layout: elk
+    theme: dark
+    elk:
+        mergeEdges: true
+        nodePlacementStrategy: NETWORK_SIMPLEX
+---
+flowchart TD
+    Client(["DNS Client"])
+    Netbox[("Netbox API")]
+    Upstream(["Upstream DNS (e.g. 8.8.8.8)"])
+    Secondary["Secondary CoreDNS (AXFR replica)"]
+
+    subgraph Primary["Primary Pod"]
+        Init["Init Container (sidecar --run-once)"]
+        CoreDNS["CoreDNS: cache · auto · netbox · transfer · forward"]
+        Zones[("/zones/{zone_files}")]
+        Sidecar["Sidecar"]
+        Init -->|initial zone files| Zones
+        Sidecar -->|writes| Zones
+        CoreDNS -->|reads| Zones
+    end
+
+    Client -->|"UDP/TCP :53"| CoreDNS
+    Sidecar -->|"Paralell, paginated, HTTP poll"| Netbox
+    CoreDNS -->|"cache misses"| Upstream
+    CoreDNS -.->|"AXFR (optional)"| Secondary
 ```
 
 **Request flow (primary):** cache → auto (local zone files) → netbox (optional API fallthrough) → forward (upstream)

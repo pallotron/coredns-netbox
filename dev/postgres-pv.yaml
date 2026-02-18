@@ -1,0 +1,31 @@
+# PersistentVolume backed by a host directory bind-mounted into the k3d node.
+# The PVC is pre-created with the name the Bitnami PostgreSQL StatefulSet
+# expects (data-<release>-postgresql-0) so Kubernetes reuses it across cluster
+# recreations without triggering a new dynamic provision.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: netbox-postgresql-pgdata
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /pgdata
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-netbox-postgresql-0
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: netbox-postgresql-pgdata
+  storageClassName: ""
