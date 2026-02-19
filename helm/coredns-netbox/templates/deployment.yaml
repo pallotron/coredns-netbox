@@ -105,6 +105,11 @@ spec:
             - name: ready
               containerPort: 8181
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health

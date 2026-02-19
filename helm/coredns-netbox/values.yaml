@@ -120,6 +120,15 @@ secondary:
   # Service port for secondary (default 53, override in dev to avoid conflicts)
   servicePort: 53
 
+metrics:
+  enabled: true
+  port: 9153
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+
 pdb:
   enabled: true
   minAvailable: 1

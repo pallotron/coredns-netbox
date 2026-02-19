@@ -18,6 +18,12 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: 53
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: primary
