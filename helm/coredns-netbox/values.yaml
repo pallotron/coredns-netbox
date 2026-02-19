@@ -1,5 +1,8 @@
 replicaCount: 1
 
+zoneStorage:
+  sizeLimit: 256Mi
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

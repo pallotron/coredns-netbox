@@ -202,4 +202,5 @@ spec:
           configMap:
             name: {{ include "coredns-netbox.fullname" . }}
         - name: zones
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: {{ .Values.zoneStorage.sizeLimit }}
