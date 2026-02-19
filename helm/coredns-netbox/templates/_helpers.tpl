@@ -39,6 +39,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Name of the ServiceAccount to use.
+*/}}
+{{- define "coredns-netbox.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "coredns-netbox.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Name of the secret containing the Netbox API token.
 */}}
 {{- define "coredns-netbox.tokenSecretName" -}}
