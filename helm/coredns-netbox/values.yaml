@@ -94,6 +94,7 @@ transfer:
 # Secondary
 secondary:
   enabled: false
+  replicaCount: 1
   zones: []
   transferFrom: []
   # Production example:
