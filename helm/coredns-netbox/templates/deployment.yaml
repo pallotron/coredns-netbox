@@ -60,6 +60,8 @@ spec:
           volumeMounts:
             - name: zones
               mountPath: {{ .Values.zoneDir }}
+          resources:
+            {{- toYaml .Values.resources.zoneInit | nindent 12 }}
       containers:
         - name: coredns
           image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag | default .Chart.AppVersion }}"
