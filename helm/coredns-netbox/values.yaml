@@ -1,5 +1,32 @@
 replicaCount: 1
 
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+# Per-container security contexts
+containerSecurityContext:
+  coredns:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+      add: ["NET_BIND_SERVICE"]
+  sidecar:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  zoneInit:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
 coredns:
   image: ghcr.io/pallotron/coredns-netbox
   tag: ""  # defaults to .Chart.AppVersion
@@ -82,7 +109,7 @@ service:
   port: 53
 
 hostPort:
-  enabled: true
+  enabled: false
 
 resources:
   coredns:
@@ -99,3 +126,17 @@ resources:
     limits:
       cpu: 100m
       memory: 64Mi
+  zoneInit:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  secondary:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

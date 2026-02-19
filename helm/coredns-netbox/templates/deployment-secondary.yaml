@@ -24,10 +24,14 @@ spec:
         {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: secondary
     spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: coredns
           image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.coredns.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.coredns | nindent 12 }}
           args: ["-conf", "/etc/coredns/Corefile-secondary"]
           ports:
             - name: dns-udp
@@ -64,6 +68,8 @@ spec:
             - name: config
               mountPath: /etc/coredns
               readOnly: true
+          resources:
+            {{- toYaml .Values.resources.secondary | nindent 12 }}
       volumes:
         - name: config
           configMap:
