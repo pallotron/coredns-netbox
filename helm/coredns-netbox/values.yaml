@@ -6,6 +6,8 @@ fullnameOverride: ""
 
 nodeSelector: {}
 tolerations: []
+affinity: {}
+topologySpreadConstraints: []
 
 serviceAccount:
   create: true
