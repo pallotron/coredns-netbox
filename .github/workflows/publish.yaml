@@ -45,6 +45,7 @@ jobs:
       - name: Setup dev environment and run E2E tests
         run: |
           make dev
+          make dev.wait
           make test.e2e
 
       - name: Collect logs on failure
