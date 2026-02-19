@@ -48,11 +48,12 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 		var zoneName, ptrName string
 		var err error
 
-		if rec.Family == 4 {
+		switch rec.Family {
+		case 4:
 			zoneName, ptrName, err = d.reverseIPv4(ip)
-		} else if rec.Family == 6 {
+		case 6:
 			zoneName, ptrName, err = d.reverseIPv6(ip)
-		} else {
+		default:
 			continue
 		}
 

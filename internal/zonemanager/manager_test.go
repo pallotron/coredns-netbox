@@ -139,7 +139,7 @@ func TestManager_RemoveStaleFiles(t *testing.T) {
 	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
 
 	// Manually create a stale zone file
-	os.WriteFile(filepath.Join(dir, "db.stale.example.org"), []byte("stale"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "db.stale.example.org"), []byte("stale"), 0o644)
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{

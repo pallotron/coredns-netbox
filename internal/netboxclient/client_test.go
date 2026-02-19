@@ -69,10 +69,10 @@ func TestFetchIPAddresses(t *testing.T) {
 		limit := 2
 		offset := 0
 		if v := q.Get("limit"); v != "" {
-			fmt.Sscanf(v, "%d", &limit)
+			_, _ = fmt.Sscanf(v, "%d", &limit)
 		}
 		if v := q.Get("offset"); v != "" {
-			fmt.Sscanf(v, "%d", &offset)
+			_, _ = fmt.Sscanf(v, "%d", &offset)
 		}
 
 		end := offset + limit
@@ -90,7 +90,7 @@ func TestFetchIPAddresses(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 

@@ -78,10 +78,10 @@ func main() {
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 			if healthy {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("ok"))
+				_, _ = w.Write([]byte("ok"))
 			} else {
 				w.WriteHeader(http.StatusServiceUnavailable)
-				w.Write([]byte("not ok"))
+				_, _ = w.Write([]byte("not ok"))
 			}
 		})
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
@@ -92,7 +92,9 @@ func main() {
 		}()
 		go func() {
 			<-ctx.Done()
-			srv.Shutdown(context.Background())
+			if err := srv.Shutdown(context.Background()); err != nil {
+				log.Printf("Health server shutdown error: %v", err)
+			}
 		}()
 		_ = healthy // used by closure
 	}

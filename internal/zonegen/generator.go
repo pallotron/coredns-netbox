@@ -121,7 +121,7 @@ func WriteFile(path, content string) error {
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)
 	}
 
@@ -162,7 +162,7 @@ func hashRecords(records []netboxclient.IPRecord) string {
 
 	h := sha256.New()
 	for _, r := range sorted {
-		fmt.Fprintf(h, "%s|%s|%d\n", r.DNSName, r.Address, r.Family)
+		_, _ = fmt.Fprintf(h, "%s|%s|%d\n", r.DNSName, r.Address, r.Family)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
