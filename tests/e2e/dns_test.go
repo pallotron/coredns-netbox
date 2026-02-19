@@ -47,7 +47,7 @@ func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Ms
 }
 
 func TestARecordLookup(t *testing.T) {
-	r := query(t, "host1.example.org", dns.TypeA)
+	r := query(t, "server1-mgmt.dc1.mycompany.com", dns.TypeA)
 
 	if r.Rcode != dns.RcodeSuccess {
 		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
@@ -60,37 +60,13 @@ func TestARecordLookup(t *testing.T) {
 	found := false
 	for _, ans := range r.Answer {
 		if a, ok := ans.(*dns.A); ok {
-			if a.A.Equal(net.ParseIP("10.0.0.1")) {
+			if a.A.Equal(net.ParseIP("10.1.0.1")) {
 				found = true
 			}
 		}
 	}
 	if !found {
-		t.Error("expected 10.0.0.1 in A record answers")
-	}
-}
-
-func TestAAAARecordLookup(t *testing.T) {
-	r := query(t, "host1.example.org", dns.TypeAAAA)
-
-	if r.Rcode != dns.RcodeSuccess {
-		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
-	}
-
-	if len(r.Answer) == 0 {
-		t.Fatal("expected at least one AAAA answer")
-	}
-
-	found := false
-	for _, ans := range r.Answer {
-		if aaaa, ok := ans.(*dns.AAAA); ok {
-			if aaaa.AAAA.Equal(net.ParseIP("2001:db8::1")) {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Error("expected 2001:db8::1 in AAAA record answers")
+		t.Error("expected 10.1.0.1 in A record answers")
 	}
 }
 
@@ -107,7 +83,7 @@ func TestForwardLookup(t *testing.T) {
 }
 
 func TestNXDOMAIN(t *testing.T) {
-	r := query(t, "nonexistent.example.org", dns.TypeA)
+	r := query(t, "nonexistent.dc1.mycompany.com", dns.TypeA)
 
 	// Could be NXDOMAIN or NOERROR with empty answer depending on netbox plugin behavior
 	if r.Rcode != dns.RcodeNameError && len(r.Answer) != 0 {
@@ -120,11 +96,11 @@ func TestMultipleHosts(t *testing.T) {
 		name string
 		ip   string
 	}{
-		{"host1.example.org", "10.0.0.1"},
-		{"host2.example.org", "10.0.0.2"},
-		{"host3.example.org", "10.0.0.3"},
-		{"web.example.org", "192.168.1.1"},
-		{"db.example.org", "192.168.1.2"},
+		{"server1-mgmt.dc1.mycompany.com", "10.1.0.1"},
+		{"server2-mgmt.dc1.mycompany.com", "10.1.0.2"},
+		{"server3-mgmt.dc1.mycompany.com", "10.1.0.3"},
+		{"server1-bmc.dc1.mycompany.com", "10.1.8.1"},
+		{"server1-storage.dc1.mycompany.com", "10.1.16.1"},
 	}
 
 	for _, h := range hosts {
@@ -151,7 +127,7 @@ func TestMultipleHosts(t *testing.T) {
 }
 
 func TestSecondaryARecordLookup(t *testing.T) {
-	r := queryServer(t, "host1.example.org", dns.TypeA, dnsSecondaryServer())
+	r := queryServer(t, "server1-mgmt.dc1.mycompany.com", dns.TypeA, dnsSecondaryServer())
 
 	if r.Rcode != dns.RcodeSuccess {
 		t.Fatalf("expected NOERROR from secondary, got %s", dns.RcodeToString[r.Rcode])
@@ -164,20 +140,49 @@ func TestSecondaryARecordLookup(t *testing.T) {
 	found := false
 	for _, ans := range r.Answer {
 		if a, ok := ans.(*dns.A); ok {
-			if a.A.Equal(net.ParseIP("10.0.0.1")) {
+			if a.A.Equal(net.ParseIP("10.1.0.1")) {
 				found = true
 			}
 		}
 	}
 	if !found {
-		t.Error("expected 10.0.0.1 in A record answers from secondary")
+		t.Error("expected 10.1.0.1 in A record answers from secondary")
+	}
+}
+
+func TestPTRRecordLookup(t *testing.T) {
+	ptrName, err := dns.ReverseAddr("10.1.0.1")
+	if err != nil {
+		t.Fatalf("failed to compute reverse addr: %v", err)
+	}
+
+	r := query(t, ptrName, dns.TypePTR)
+
+	if r.Rcode != dns.RcodeSuccess {
+		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
+	}
+
+	if len(r.Answer) == 0 {
+		t.Fatal("expected at least one PTR answer")
+	}
+
+	found := false
+	for _, ans := range r.Answer {
+		if ptr, ok := ans.(*dns.PTR); ok {
+			if ptr.Ptr == dns.Fqdn("server1-mgmt.dc1.mycompany.com") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("expected server1-mgmt.dc1.mycompany.com. in PTR record answers")
 	}
 }
 
 func TestAXFRTransfer(t *testing.T) {
 	tr := new(dns.Transfer)
 	m := new(dns.Msg)
-	m.SetAxfr("example.org.")
+	m.SetAxfr("dc1.mycompany.com.")
 
 	env, err := tr.In(m, dnsServer())
 	if err != nil {
@@ -203,7 +208,7 @@ func TestAXFRTransfer(t *testing.T) {
 			foundSOA = true
 		}
 		if a, ok := rr.(*dns.A); ok {
-			if a.Hdr.Name == "host1.example.org." && a.A.Equal(net.ParseIP("10.0.0.1")) {
+			if a.Hdr.Name == "server1-mgmt.dc1.mycompany.com." && a.A.Equal(net.ParseIP("10.1.0.1")) {
 				foundA = true
 			}
 		}
@@ -212,6 +217,6 @@ func TestAXFRTransfer(t *testing.T) {
 		t.Error("expected SOA record in AXFR response")
 	}
 	if !foundA {
-		t.Error("expected A record for host1.example.org in AXFR response")
+		t.Error("expected A record for server1-mgmt.dc1.mycompany.com in AXFR response")
 	}
 }

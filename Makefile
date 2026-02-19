@@ -125,7 +125,7 @@ dev: dev.cluster dev.pgvol dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
 	@echo "Test with: dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A"
 
-dev.teardown:
+dev.teardown: dev.pgclean
 	k3d cluster delete $(K3D_CLUSTER)
 
 # ---------- Clean ----------

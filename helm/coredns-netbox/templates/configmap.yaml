@@ -12,7 +12,10 @@ data:
             reload 10s
         }
         {{- if .Values.netboxPlugin.enabled }}
-        netbox {
+        {{- if empty .Values.netboxPlugin.zones }}
+        {{- fail "netboxPlugin.zones must be set when netboxPlugin.enabled is true (list the zones you are authoritative for)" }}
+        {{- end }}
+        netbox{{ range .Values.netboxPlugin.zones }} {{ . }}{{ end }} {
             token {$NETBOX_TOKEN}
             url {{ .Values.netbox.url }}/api/ipam/ip-addresses
             fallthrough

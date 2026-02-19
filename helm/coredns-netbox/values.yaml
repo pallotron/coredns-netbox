@@ -50,6 +50,9 @@ maxConcurrency: 10
 # Only useful in dev — production relies on zone files from the sidecar.
 netboxPlugin:
   enabled: false
+  # Required when enabled. List the zones you are authoritative for (forward + reverse).
+  # Queries outside these zones skip the netbox plugin and go straight to forward.
+  zones: []
 
 forwardServers:
   - 1.1.1.1
