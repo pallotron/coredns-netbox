@@ -22,10 +22,14 @@ spec:
         {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: primary
     spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
         - name: zone-init
           image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.zoneInit | nindent 12 }}
           args: ["--run-once"]
           env:
             - name: NETBOX_TOKEN
@@ -66,6 +70,8 @@ spec:
         - name: coredns
           image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.coredns.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.coredns | nindent 12 }}
           args: ["-conf", "/etc/coredns/Corefile"]
           {{- if .Values.netboxPlugin.enabled }}
           env:
@@ -118,6 +124,8 @@ spec:
         - name: sidecar
           image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag }}"
           imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.sidecar | nindent 12 }}
           env:
             - name: NETBOX_TOKEN
               valueFrom:
