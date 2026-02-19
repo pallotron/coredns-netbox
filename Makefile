@@ -1,4 +1,4 @@
-.PHONY: build build.sidecar build.analyzer test.unit test.e2e \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.helm \
        dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.teardown \
        lint clean
 
@@ -36,6 +36,21 @@ test.unit:
 
 test.e2e:
 	go test ./tests/e2e/... -v -count=1 -tags=e2e
+
+test.helm:
+	helm lint ./helm/coredns-netbox --set netbox.token=test
+	helm template test ./helm/coredns-netbox --set netbox.token=test > /dev/null
+	helm template test ./helm/coredns-netbox --set netbox.existingSecret=my-secret > /dev/null
+	@helm template test ./helm/coredns-netbox 2>&1 | grep -q "netbox.token or netbox.existingSecret must be set" && \
+		echo "PASS: credential guard fires correctly" || \
+		(echo "FAIL: credential guard did not fire" && exit 1)
+	helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set secondary.enabled=true \
+		--set 'secondary.zones[0]=example.org' \
+		--set 'secondary.transferFrom[0]=10.0.0.1' > /dev/null
+	helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set metrics.enabled=false > /dev/null
+	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------
 
