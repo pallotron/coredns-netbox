@@ -1,5 +1,5 @@
 .PHONY: build build.sidecar build.analyzer test.unit test.e2e test.helm \
-       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.teardown \
+       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.wait dev.teardown \
        lint clean
 
 # Go settings
@@ -123,6 +123,22 @@ dev.deploy:
 		-f dev/coredns-netbox-values.yaml \
 		--set netbox.existingSecret=$(NETBOX_TOKEN_SECRET) \
 		--wait --timeout 5m
+
+dev.wait:
+	@echo "Waiting for primary DNS (port 15353) to serve correct answers..."
+	@for i in $$(seq 1 30); do \
+		if dig @127.0.0.1 -p 15353 +tcp +time=2 server1-mgmt.dc1.mycompany.com A 2>/dev/null | grep -q "10.1.0.1"; then \
+			echo "Primary DNS ready."; break; \
+		fi; \
+		echo "  attempt $$i/30 — retrying in 5s..."; sleep 5; \
+	done
+	@echo "Waiting for secondary DNS (port 15354) to complete zone transfer..."
+	@for i in $$(seq 1 30); do \
+		if dig @127.0.0.1 -p 15354 +tcp +time=2 server1-mgmt.dc1.mycompany.com A 2>/dev/null | grep -q "10.1.0.1"; then \
+			echo "Secondary DNS ready."; break; \
+		fi; \
+		echo "  attempt $$i/30 — retrying in 5s..."; sleep 5; \
+	done
 
 dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
