@@ -1,5 +1,12 @@
 # CoreDNS with Netbox-backed Zone Discovery and AXFR Transfers
 
+[![CI](https://github.com/pallotron/coredns-netbox/actions/workflows/ci.yaml/badge.svg)](https://github.com/pallotron/coredns-netbox/actions/workflows/ci.yaml)
+[![E2E Tests](https://github.com/pallotron/coredns-netbox/actions/workflows/publish.yaml/badge.svg)](https://github.com/pallotron/coredns-netbox/actions/workflows/publish.yaml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.25.6-00ADD8?logo=go)](go.mod)
+[![CoreDNS Image](https://img.shields.io/badge/ghcr.io-coredns--netbox-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox)
+[![Sidecar Image](https://img.shields.io/badge/ghcr.io-coredns--netbox--sidecar-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox-sidecar)
+
 A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones from device names, intelligently selects management and BMC IPs using configurable patterns, and writes zone files to a shared volume. CoreDNS serves the zone files using the `auto` plugin and optionally falls through to the [netbox plugin](https://github.com/oz123/coredns-netbox-plugin) for records not yet in the zone files. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
 
 **Key Features:**
