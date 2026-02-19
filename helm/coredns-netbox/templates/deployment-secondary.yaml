@@ -20,9 +20,15 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
         {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: secondary
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "coredns-netbox.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
