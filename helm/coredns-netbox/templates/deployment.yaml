@@ -132,7 +132,7 @@ spec:
           resources:
             {{- toYaml .Values.resources.coredns | nindent 12 }}
         - name: sidecar
-          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag }}"
+          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
           securityContext:
             {{- toYaml .Values.containerSecurityContext.sidecar | nindent 12 }}
