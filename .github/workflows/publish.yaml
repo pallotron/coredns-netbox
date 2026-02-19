@@ -99,4 +99,4 @@ jobs:
         run: |
           helm package helm/coredns-netbox
           helm push coredns-netbox-${{ steps.version.outputs.VERSION }}.tgz \
-            oci://ghcr.io/${{ env.OWNER }}
+            oci://ghcr.io/${{ env.OWNER }}/charts
