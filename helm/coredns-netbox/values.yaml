@@ -1,5 +1,26 @@
 replicaCount: 1
 
+zoneStorage:
+  sizeLimit: 256Mi
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+  annotations: {}
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
@@ -94,6 +115,7 @@ transfer:
 # Secondary
 secondary:
   enabled: false
+  replicaCount: 1
   zones: []
   transferFrom: []
   # Production example:
@@ -103,6 +125,19 @@ secondary:
     enabled: false
   # Service port for secondary (default 53, override in dev to avoid conflicts)
   servicePort: 53
+
+metrics:
+  enabled: true
+  port: 9153
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+
+pdb:
+  enabled: true
+  minAvailable: 1
 
 service:
   type: ClusterIP

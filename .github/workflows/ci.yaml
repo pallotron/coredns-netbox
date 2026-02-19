@@ -37,3 +37,14 @@ jobs:
 
       - name: Run golangci-lint
         run: make lint
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Run Helm chart tests
+        run: make test.helm

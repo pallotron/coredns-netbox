@@ -1,0 +1,35 @@
+coredns-netbox has been deployed.
+
+Primary DNS service:
+  kubectl get svc {{ include "coredns-netbox.fullname" . }} -n {{ .Release.Namespace }}
+
+Check primary pod status:
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "coredns-netbox.name" . }},app.kubernetes.io/component=primary
+
+Check sidecar zone sync logs:
+  kubectl logs -n {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "coredns-netbox.name" . }},app.kubernetes.io/component=primary -c sidecar
+
+{{- if .Values.secondary.enabled }}
+
+Secondary DNS service:
+  kubectl get svc {{ include "coredns-netbox.fullname" . }}-secondary -n {{ .Release.Namespace }}
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+
+Prometheus metrics are exposed on port {{ .Values.metrics.port }} (/metrics).
+{{- if .Values.metrics.serviceMonitor.enabled }}
+A ServiceMonitor has been created for Prometheus Operator.
+{{- else }}
+To enable ServiceMonitor for Prometheus Operator set metrics.serviceMonitor.enabled=true.
+{{- end }}
+{{- end }}
+
+Run helm tests:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if and (gt (int .Values.replicaCount) 1) .Values.hostPort.enabled }}
+
+WARNING: hostPort.enabled=true with replicaCount={{ .Values.replicaCount }} will prevent
+multiple pods from scheduling on the same node. Consider setting hostPort.enabled=false.
+{{- end }}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -72,11 +73,12 @@ func main() {
 	}()
 
 	// Start health check server (unless run-once mode)
+	var markReady func()
 	if !cfg.RunOnce {
-		healthy := true
+		var healthy atomic.Bool
 		mux := http.NewServeMux()
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			if healthy {
+			if healthy.Load() {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("ok"))
 			} else {
@@ -96,19 +98,23 @@ func main() {
 				log.Printf("Health server shutdown error: %v", err)
 			}
 		}()
-		_ = healthy // used by closure
+		markReady = func() { healthy.Store(true) }
 	}
 
 	// Run the poll loop
-	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr); err != nil {
+	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr, markReady); err != nil {
 		log.Fatalf("Fatal error: %v", err)
 	}
 }
 
-func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager) error {
+func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, markReady func()) error {
+	firstSuccess := false
 	for {
 		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr); err != nil {
 			log.Printf("Poll error: %v", err)
+		} else if !firstSuccess && markReady != nil {
+			firstSuccess = true
+			markReady()
 		}
 
 		if cfg.RunOnce {

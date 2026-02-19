@@ -12,12 +12,18 @@ spec:
   ports:
     - name: dns-udp
       port: {{ .Values.service.port }}
-      targetPort: 53
+      targetPort: dns-udp
       protocol: UDP
     - name: dns-tcp
       port: {{ .Values.service.port }}
-      targetPort: 53
+      targetPort: dns-tcp
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: primary

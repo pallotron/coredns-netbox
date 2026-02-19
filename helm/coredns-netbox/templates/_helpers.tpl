@@ -39,6 +39,36 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Default soft pod anti-affinity — keeps replicas on separate nodes when
+affinity is not explicitly overridden.
+*/}}
+{{- define "coredns-netbox.affinity" -}}
+{{- if .Values.affinity }}
+{{- toYaml .Values.affinity }}
+{{- else }}
+podAntiAffinity:
+  preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchLabels:
+            {{- include "coredns-netbox.selectorLabels" . | nindent 12 }}
+        topologyKey: kubernetes.io/hostname
+{{- end }}
+{{- end }}
+
+{{/*
+Name of the ServiceAccount to use.
+*/}}
+{{- define "coredns-netbox.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "coredns-netbox.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Name of the secret containing the Netbox API token.
 */}}
 {{- define "coredns-netbox.tokenSecretName" -}}
