@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-test-dns
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: dns-query
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          SVC={{ include "coredns-netbox.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+          echo "Testing DNS query against $SVC ..."
+          nslookup kubernetes.default.svc.cluster.local $SVC
+          echo "DNS test passed."
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
