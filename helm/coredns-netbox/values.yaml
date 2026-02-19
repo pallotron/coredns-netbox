@@ -82,7 +82,7 @@ service:
   port: 53
 
 hostPort:
-  enabled: true
+  enabled: false
 
 resources:
   coredns:
