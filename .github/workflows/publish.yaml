@@ -9,6 +9,10 @@ on:
       version:
         description: 'Version to publish (e.g. 0.2.0, without the v prefix)'
         required: true
+      skip_e2e:
+        description: 'Skip E2E tests (not recommended for releases)'
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -17,6 +21,10 @@ env:
 jobs:
   e2e-tests:
     runs-on: ubuntu-latest
+    # Run on tag pushes, or on manual trigger when skip_e2e is false
+    if: github.event_name == 'push' || !inputs.skip_e2e
+    env:
+      CI: true
     steps:
       - uses: actions/checkout@v4
 
@@ -28,112 +36,16 @@ jobs:
 
       - name: Install k3d, kubectl, and helm
         run: |
-          # Install k3d
           curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-
-          # Install kubectl
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
-
-          # Install helm
           curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
-      - name: Create k3d cluster
+      - name: Setup dev environment and run E2E tests
         run: |
-          # Use /tmp for pgdata instead of HOME to avoid permission issues
-          mkdir -p /tmp/pgdata
-
-          # Create modified k3d config using /tmp
-          sed 's|${HOME}/.local/share/coredns-netbox/pgdata:/pgdata|/tmp/pgdata:/pgdata|' \
-            dev/k3d-config.yaml > /tmp/k3d-config.yaml
-
-          k3d cluster create --config /tmp/k3d-config.yaml
-          kubectl cluster-info
-
-      - name: Deploy PostgreSQL PV/PVC
-        run: |
-          kubectl create namespace netbox --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -f dev/postgres-pv.yaml
-          kubectl wait --for=condition=ready --timeout=2m -n netbox pvc/data-netbox-postgresql-0
-
-      - name: Deploy Netbox
-        run: |
-          helm repo add netbox-community https://netbox-community.github.io/netbox-chart/
-          helm repo update
-
-          kubectl apply -f dev/netbox-extra-configmap.yaml
-
-          # Deploy with 15m timeout (plan recommendation)
-          helm upgrade --install netbox netbox-community/netbox \
-            -n netbox \
-            -f dev/netbox-values.yaml \
-            --wait --timeout 15m
-
-      - name: Wait for Netbox to be ready
-        run: |
-          echo "Waiting for Netbox deployment to be fully ready..."
-          kubectl wait --for=condition=available --timeout=5m -n netbox deployment/netbox
-
-          # Give it extra time for internal readiness
-          sleep 30
-
-      - name: Create Netbox API token
-        run: |
-          echo "Creating Netbox API token..."
-          SCRIPT=$(cat dev/create-token.py)
-          NETBOX_TOKEN=$(kubectl exec -n netbox deploy/netbox -c netbox -- \
-            python /opt/netbox/netbox/manage.py shell --no-startup --no-imports \
-            -c "$SCRIPT" \
-            2>/dev/null | grep '^nbt_')
-
-          echo "Token created successfully"
-
-          # Store token in secrets for both namespaces
-          kubectl create namespace coredns-netbox --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create secret generic netbox-api-token \
-            -n netbox \
-            --from-literal=token="$NETBOX_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create secret generic netbox-api-token \
-            -n coredns-netbox \
-            --from-literal=token="$NETBOX_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Seed test data
-        run: |
-          echo "Seeding Netbox with IP addresses..."
-          SCRIPT=$(cat dev/seed-ips.py)
-          kubectl exec -n netbox deploy/netbox -c netbox -- \
-            python /opt/netbox/netbox/manage.py shell --no-startup --no-imports \
-            -c "$SCRIPT"
-
-      - name: Build and import Docker images
-        run: |
-          # Build CoreDNS image
-          docker build -t coredns-netbox:dev -f coredns/Dockerfile coredns/
-          k3d image import coredns-netbox:dev -c coredns-netbox
-
-          # Build sidecar image
-          docker build -t coredns-netbox-sidecar:dev -f docker/sidecar/Dockerfile .
-          k3d image import coredns-netbox-sidecar:dev -c coredns-netbox
-
-      - name: Deploy CoreDNS Helm chart
-        run: |
-          helm upgrade --install coredns-netbox ./helm/coredns-netbox \
-            -n coredns-netbox \
-            -f dev/coredns-netbox-values.yaml \
-            --set netbox.existingSecret=netbox-api-token \
-            --wait --timeout 5m
-
-      - name: Wait for DNS services to be ready
-        run: |
-          echo "Waiting for CoreDNS to be fully ready..."
-          kubectl wait --for=condition=available --timeout=3m -n coredns-netbox deployment/coredns-netbox
-          sleep 10
-
-      - name: Run E2E tests
-        run: make test.e2e
+          make dev
+          make test.e2e
 
       - name: Collect logs on failure
         if: failure()
@@ -166,6 +78,8 @@ jobs:
 
   publish-images:
     needs: [e2e-tests]
+    # Run if E2E passed OR was skipped (but not if cancelled/failed)
+    if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -216,6 +130,8 @@ jobs:
 
   publish-chart:
     needs: [e2e-tests]
+    # Run if E2E passed OR was skipped (but not if cancelled/failed)
+    if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: read

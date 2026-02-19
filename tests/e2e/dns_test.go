@@ -34,6 +34,8 @@ func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Ms
 
 	c := new(dns.Client)
 	c.Timeout = 5 * time.Second
+	// Use TCP instead of UDP for better compatibility (some setups might block UDP)
+	c.Net = "tcp"
 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(name), qtype)

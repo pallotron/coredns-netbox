@@ -41,7 +41,7 @@ postgresql:
   primary:
     persistence:
       enabled: true
-      storageClass: ""
+      storageClass: "local-path"
       size: 5Gi
 
 valkey:

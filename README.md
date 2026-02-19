@@ -407,7 +407,7 @@ nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
 | `make dev.seed` | Seed Netbox with 18,000 test IP addresses via Django ORM |
 | `make dev.images` | Build and import Docker images into k3d |
 | `make dev.deploy` | Deploy Helm chart (run twice for secondary ClusterIP pickup) |
-| `make dev.teardown` | Delete k3d cluster and wipe persistent pgdata |
+| `make dev.teardown` | Delete k3d cluster |
 
 ### Step-by-Step Setup
 

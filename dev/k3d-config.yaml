@@ -17,10 +17,6 @@ ports:
   - port: 15354:5354/udp
     nodeFilters:
       - loadbalancer
-volumes:
-  - volume: ${HOME}/.local/share/coredns-netbox/pgdata:/pgdata
-    nodeFilters:
-      - server:0
 options:
   k3d:
     wait: true

@@ -1,5 +1,5 @@
 .PHONY: build build.sidecar build.analyzer test.unit test.e2e \
-       dev dev.cluster dev.pgvol dev.pgclean dev.netbox dev.token dev.seed dev.images dev.deploy dev.teardown \
+       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.teardown \
        lint clean
 
 # Go settings
@@ -18,9 +18,6 @@ NETBOX_NAMESPACE := netbox
 
 # Shared secret name for the Netbox API token
 NETBOX_TOKEN_SECRET := netbox-api-token
-
-# Host directory for persistent PostgreSQL data (survives cluster teardown)
-PGDATA_DIR := $(HOME)/.local/share/coredns-netbox/pgdata
 
 # ---------- Build ----------
 
@@ -60,18 +57,9 @@ dev.images.sidecar:
 # ---------- Dev Environment ----------
 
 dev.cluster:
-	mkdir -p $(PGDATA_DIR)
 	k3d cluster create --config dev/k3d-config.yaml || true
 	@echo "Cluster $(K3D_CLUSTER) is ready"
 
-dev.pgvol:
-	kubectl create namespace $(NETBOX_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -f dev/postgres-pv.yaml
-	@echo "PostgreSQL PersistentVolume and PVC ready (data: $(PGDATA_DIR))"
-
-dev.pgclean:
-	rm -rf $(PGDATA_DIR)
-	@echo "PostgreSQL data directory removed: $(PGDATA_DIR)"
 
 dev.netbox:
 	helm repo add netbox-community https://netbox-community.github.io/netbox-chart/ || true
@@ -121,11 +109,11 @@ dev.deploy:
 		--set netbox.existingSecret=$(NETBOX_TOKEN_SECRET) \
 		--wait --timeout 5m
 
-dev: dev.cluster dev.pgvol dev.netbox dev.token dev.seed dev.images dev.deploy
+dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
 	@echo "Test with: dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A"
 
-dev.teardown: dev.pgclean
+dev.teardown:
 	k3d cluster delete $(K3D_CLUSTER)
 
 # ---------- Clean ----------
