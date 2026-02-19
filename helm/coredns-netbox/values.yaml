@@ -1,5 +1,12 @@
 replicaCount: 1
 
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+nodeSelector: {}
+tolerations: []
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
