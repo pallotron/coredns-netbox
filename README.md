@@ -270,6 +270,10 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `reverseZones.enabled` | `true` | Enable automatic PTR record generation |
 | `reverseZones.ipv4` | `["10.in-addr.arpa", ...]` | Static IPv4 reverse zones |
 | `reverseZones.ipv6` | `[]` | Static IPv6 reverse zones |
+| `metrics.enabled` | `true` | Expose sidecar `/metrics` and CoreDNS metrics ports via the Service |
+| `metrics.port` | `9153` | CoreDNS prometheus plugin port |
+| `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator `ServiceMonitor` |
+| `metrics.serviceMonitor.interval` | `30s` | Scrape interval |
 
 ### Interface Categorization Patterns
 
@@ -292,6 +296,33 @@ The sidecar auto-discovers zones from Netbox FQDNs. Three modes are available:
 - **`zone-depth`** (default): Uses the last N labels of each FQDN as the zone name. With `depth=2`, `server1-mgmt.dc1.mycompany.com` becomes zone `mycompany.com`. With `depth=3`, it becomes `dc1.mycompany.com`.
 - **`common-suffix`**: Groups records by their longest common domain suffix.
 - **`netbox-dns`**: Queries the Netbox DNS plugin API (`/api/plugins/netbox-dns/zones/`) and matches records to their longest-matching zone.
+
+## Observability
+
+The sidecar exposes a Prometheus metrics endpoint on the same port as `/healthz` (`:8082` by default, controlled by `HEALTH_ADDR`). In Kubernetes the port is named `sidecar-health` and exposed via the Service when `metrics.enabled: true`.
+
+```bash
+curl http://localhost:8082/metrics | grep netbox_sidecar
+```
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `netbox_sidecar_poll_total` | Counter | `result=success\|error` | Total poll attempts |
+| `netbox_sidecar_poll_duration_seconds` | Histogram | — | Full poll cycle duration (fetch + discover + write) |
+| `netbox_sidecar_last_successful_poll_timestamp_seconds` | Gauge | — | Unix timestamp of the last successful poll |
+| `netbox_sidecar_netbox_fetch_duration_seconds` | Histogram | — | Netbox HTTP fetch duration |
+| `netbox_sidecar_netbox_records_fetched` | Gauge | — | IP records returned by Netbox in the last poll |
+| `netbox_sidecar_netbox_empty_response_total` | Counter | — | Polls where Netbox returned zero records |
+| `netbox_sidecar_zones_active` | Gauge | — | Number of DNS zones currently managed |
+| `netbox_sidecar_zone_writes_total` | Counter | `op=create\|update\|delete` | Zone file operations |
+| `netbox_sidecar_zone_write_errors_total` | Counter | — | Zone file write failures |
+
+A Prometheus `ServiceMonitor` can be enabled via `metrics.serviceMonitor.enabled: true` for automatic scrape discovery in clusters running the Prometheus Operator.
+
+In the dev environment the sidecar metrics port is mapped to `127.0.0.1:18082`:
+```bash
+curl -s http://127.0.0.1:18082/metrics | grep netbox_sidecar
+```
 
 ## How It Works
 
@@ -368,6 +399,7 @@ nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
 ├── internal/
 │   ├── config/                   # Env var configuration + categorization patterns
 │   ├── ipcategorizer/            # Interface categorization & device IP selection
+│   ├── metrics/                  # Prometheus metrics definitions for the sidecar
 │   ├── netboxclient/             # Raw HTTP client for Netbox IPAM with parallel pagination
 │   ├── zonediscovery/            # Zone auto-discovery (zone-depth, common-suffix, netbox-dns)
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
