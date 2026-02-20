@@ -24,6 +24,14 @@ type Manager struct {
 	generators map[string]*zonegen.Generator
 }
 
+// UpdateStats holds counters for zone file operations performed during an Update call.
+type UpdateStats struct {
+	Created     int
+	Updated     int
+	Deleted     int
+	WriteErrors int
+}
+
 // New creates a new zone Manager.
 func New(zoneDir, primaryNS, adminEmail string, ttl uint32) *Manager {
 	return &Manager{
@@ -37,7 +45,8 @@ func New(zoneDir, primaryNS, adminEmail string, ttl uint32) *Manager {
 
 // Update takes a ZoneMap (zone name -> records), generates zone files for each
 // zone, writes them to disk, and removes orphaned zone files.
-func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) error {
+func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
+	var stats UpdateStats
 	activeZones := make(map[string]bool)
 
 	// Sort zone names for deterministic output
@@ -52,6 +61,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) error {
 		activeZones[zone] = true
 
 		gen, ok := m.generators[zone]
+		isNew := !ok
 		if !ok {
 			// Determine zone type based on zone name
 			zoneType := zonegen.ZoneTypeForward
@@ -71,7 +81,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) error {
 
 		content, changed, err := gen.Generate(records)
 		if err != nil {
-			return fmt.Errorf("generate zone %s: %w", zone, err)
+			return stats, fmt.Errorf("generate zone %s: %w", zone, err)
 		}
 
 		if !changed {
@@ -81,17 +91,25 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) error {
 
 		path := m.zonePath(zone)
 		if err := zonegen.WriteFile(path, content); err != nil {
-			return fmt.Errorf("write zone file %s: %w", path, err)
+			stats.WriteErrors++
+			return stats, fmt.Errorf("write zone file %s: %w", path, err)
+		}
+		if isNew {
+			stats.Created++
+		} else {
+			stats.Updated++
 		}
 		log.Printf("Zone %s: updated (%d records)", zone, len(records))
 	}
 
 	// Remove orphaned zone files and generators
-	if err := m.removeOrphans(activeZones); err != nil {
-		return fmt.Errorf("remove orphans: %w", err)
+	deleted, err := m.removeOrphans(activeZones)
+	stats.Deleted = deleted
+	if err != nil {
+		return stats, fmt.Errorf("remove orphans: %w", err)
 	}
 
-	return nil
+	return stats, nil
 }
 
 // Zones returns the list of currently managed zone names.
@@ -108,14 +126,17 @@ func (m *Manager) zonePath(zone string) string {
 	return filepath.Join(m.zoneDir, "db."+zone)
 }
 
-func (m *Manager) removeOrphans(activeZones map[string]bool) error {
+func (m *Manager) removeOrphans(activeZones map[string]bool) (int, error) {
+	var deleted int
+
 	// Clean up generators for zones no longer active
 	for zone := range m.generators {
 		if !activeZones[zone] {
 			path := m.zonePath(zone)
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove orphan zone file %s: %w", path, err)
+				return deleted, fmt.Errorf("remove orphan zone file %s: %w", path, err)
 			}
+			deleted++
 			log.Printf("Zone %s: removed (orphaned)", zone)
 			delete(m.generators, zone)
 		}
@@ -125,9 +146,9 @@ func (m *Manager) removeOrphans(activeZones map[string]bool) error {
 	entries, err := os.ReadDir(m.zoneDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return deleted, nil
 		}
-		return fmt.Errorf("read zone dir: %w", err)
+		return deleted, fmt.Errorf("read zone dir: %w", err)
 	}
 
 	for _, e := range entries {
@@ -142,13 +163,14 @@ func (m *Manager) removeOrphans(activeZones map[string]bool) error {
 		if !activeZones[zone] {
 			path := filepath.Join(m.zoneDir, name)
 			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("remove stale zone file %s: %w", path, err)
+				return deleted, fmt.Errorf("remove stale zone file %s: %w", path, err)
 			}
+			deleted++
 			log.Printf("Zone %s: removed stale file", zone)
 		}
 	}
 
-	return nil
+	return deleted, nil
 }
 
 // RecordsForZone is a convenience type alias.

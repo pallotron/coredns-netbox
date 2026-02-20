@@ -14,9 +14,12 @@ import (
 	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/config"
+	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -60,6 +63,9 @@ func main() {
 
 	log.Printf("Zone discovery mode: %s, zone dir: %s", cfg.DiscoveryMode, cfg.ZoneDir)
 
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -86,6 +92,7 @@ func main() {
 				_, _ = w.Write([]byte("not ok"))
 			}
 		})
+		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -102,15 +109,15 @@ func main() {
 	}
 
 	// Run the poll loop
-	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr, markReady); err != nil {
+	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m, markReady); err != nil {
 		log.Fatalf("Fatal error: %v", err)
 	}
 }
 
-func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, markReady func()) error {
+func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func()) error {
 	firstSuccess := false
 	for {
-		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr); err != nil {
+		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m); err != nil {
 			log.Printf("Poll error: %v", err)
 		} else if !firstSuccess && markReady != nil {
 			firstSuccess = true
@@ -130,19 +137,31 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 	}
 }
 
-func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager) error {
+func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar) error {
+	pollStart := time.Now()
+
 	log.Println("Fetching IP addresses from Netbox...")
 
+	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
+	m.NetboxFetchDurationSeconds.Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
+		m.PollTotal.WithLabelValues("error").Inc()
+		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 		return fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
 	log.Printf("Fetched %d records from Netbox", len(records))
+	m.NetboxRecordsFetched.Set(float64(len(records)))
+	if len(records) == 0 {
+		m.NetboxEmptyResponseTotal.Inc()
+	}
 
 	// Discover forward zones
 	forwardZones, err := forwardDisc.Discover(records)
 	if err != nil {
+		m.PollTotal.WithLabelValues("error").Inc()
+		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 		return fmt.Errorf("discover forward zones: %w", err)
 	}
 
@@ -153,6 +172,8 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 	if reverseDisc != nil {
 		reverseZones, err := reverseDisc.Discover(records)
 		if err != nil {
+			m.PollTotal.WithLabelValues("error").Inc()
+			m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 			return fmt.Errorf("discover reverse zones: %w", err)
 		}
 		log.Printf("Discovered %d reverse zones", len(reverseZones))
@@ -163,9 +184,23 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 		}
 	}
 
-	if err := mgr.Update(combinedZones); err != nil {
+	stats, err := mgr.Update(combinedZones)
+	m.ZoneWritesTotal.WithLabelValues("create").Add(float64(stats.Created))
+	m.ZoneWritesTotal.WithLabelValues("update").Add(float64(stats.Updated))
+	m.ZoneWritesTotal.WithLabelValues("delete").Add(float64(stats.Deleted))
+	if stats.WriteErrors > 0 {
+		m.ZoneWriteErrorsTotal.Add(float64(stats.WriteErrors))
+	}
+	if err != nil {
+		m.PollTotal.WithLabelValues("error").Inc()
+		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 		return fmt.Errorf("update zones: %w", err)
 	}
+
+	m.ZonesActive.Set(float64(len(mgr.Zones())))
+	m.LastSuccessfulPollTimestamp.SetToCurrentTime()
+	m.PollTotal.WithLabelValues("success").Inc()
+	m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 
 	log.Printf("Zone update complete, active zones: %v", mgr.Zones())
 	return nil
