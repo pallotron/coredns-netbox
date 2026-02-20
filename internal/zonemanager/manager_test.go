@@ -21,7 +21,7 @@ func TestManager_CreateZoneFiles(t *testing.T) {
 		},
 	}
 
-	if err := mgr.Update(zm); err != nil {
+	if _, err := mgr.Update(zm); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -55,7 +55,7 @@ func TestManager_MultipleZones(t *testing.T) {
 		},
 	}
 
-	if err := mgr.Update(zm); err != nil {
+	if _, err := mgr.Update(zm); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestManager_RemoveOrphanedZones(t *testing.T) {
 			{DNSName: "host2.old.example.org", Address: "10.0.0.2", Family: 4},
 		},
 	}
-	if err := mgr.Update(zm); err != nil {
+	if _, err := mgr.Update(zm); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -95,7 +95,7 @@ func TestManager_RemoveOrphanedZones(t *testing.T) {
 			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
 		},
 	}
-	if err := mgr.Update(zm2); err != nil {
+	if _, err := mgr.Update(zm2); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -118,13 +118,13 @@ func TestManager_NoChangeSkipsWrite(t *testing.T) {
 	}
 
 	// First update
-	if err := mgr.Update(zm); err != nil {
+	if _, err := mgr.Update(zm); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	info1, _ := os.Stat(filepath.Join(dir, "db.example.org"))
 
 	// Second update with same data — should not rewrite
-	if err := mgr.Update(zm); err != nil {
+	if _, err := mgr.Update(zm); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	info2, _ := os.Stat(filepath.Join(dir, "db.example.org"))
@@ -147,11 +147,130 @@ func TestManager_RemoveStaleFiles(t *testing.T) {
 		},
 	}
 
-	if err := mgr.Update(zm); err != nil {
+	if _, err := mgr.Update(zm); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if _, err := os.Stat(filepath.Join(dir, "db.stale.example.org")); !os.IsNotExist(err) {
 		t.Error("stale zone file should have been removed")
+	}
+}
+
+func TestManager_UpdateStats_Created(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+
+	zm := zonediscovery.ZoneMap{
+		"example.org": []netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+		"prod.example.org": []netboxclient.IPRecord{
+			{DNSName: "db.prod.example.org", Address: "10.0.0.2", Family: 4},
+		},
+	}
+
+	stats, err := mgr.Update(zm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Created != 2 {
+		t.Errorf("expected Created=2, got %d", stats.Created)
+	}
+	if stats.Updated != 0 {
+		t.Errorf("expected Updated=0, got %d", stats.Updated)
+	}
+	if stats.Deleted != 0 {
+		t.Errorf("expected Deleted=0, got %d", stats.Deleted)
+	}
+}
+
+func TestManager_UpdateStats_Updated(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+
+	zm := zonediscovery.ZoneMap{
+		"example.org": []netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+	}
+
+	if _, err := mgr.Update(zm); err != nil {
+		t.Fatalf("unexpected error on first update: %v", err)
+	}
+
+	// Change the records — this must produce a file rewrite (Updated=1)
+	zm2 := zonediscovery.ZoneMap{
+		"example.org": []netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+			{DNSName: "host2.example.org", Address: "10.0.0.2", Family: 4},
+		},
+	}
+	stats, err := mgr.Update(zm2)
+	if err != nil {
+		t.Fatalf("unexpected error on second update: %v", err)
+	}
+	if stats.Created != 0 {
+		t.Errorf("expected Created=0, got %d", stats.Created)
+	}
+	if stats.Updated != 1 {
+		t.Errorf("expected Updated=1, got %d", stats.Updated)
+	}
+}
+
+func TestManager_UpdateStats_NoChange(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+
+	zm := zonediscovery.ZoneMap{
+		"example.org": []netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+	}
+
+	if _, err := mgr.Update(zm); err != nil {
+		t.Fatalf("unexpected error on first update: %v", err)
+	}
+
+	// Identical records — no write should happen
+	stats, err := mgr.Update(zm)
+	if err != nil {
+		t.Fatalf("unexpected error on second update: %v", err)
+	}
+	if stats.Created != 0 {
+		t.Errorf("expected Created=0, got %d", stats.Created)
+	}
+	if stats.Updated != 0 {
+		t.Errorf("expected Updated=0, got %d", stats.Updated)
+	}
+}
+
+func TestManager_UpdateStats_Deleted(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+
+	zm := zonediscovery.ZoneMap{
+		"example.org": []netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+		"old.example.org": []netboxclient.IPRecord{
+			{DNSName: "host2.old.example.org", Address: "10.0.0.2", Family: 4},
+		},
+	}
+	if _, err := mgr.Update(zm); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Drop old.example.org — Deleted should be 1
+	zm2 := zonediscovery.ZoneMap{
+		"example.org": []netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+	}
+	stats, err := mgr.Update(zm2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if stats.Deleted != 1 {
+		t.Errorf("expected Deleted=1, got %d", stats.Deleted)
 	}
 }

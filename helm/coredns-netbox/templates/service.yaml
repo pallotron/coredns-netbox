@@ -23,6 +23,10 @@ spec:
       port: {{ .Values.metrics.port }}
       targetPort: metrics
       protocol: TCP
+    - name: sidecar-metrics
+      port: 8082
+      targetPort: sidecar-health
+      protocol: TCP
     {{- end }}
   selector:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
