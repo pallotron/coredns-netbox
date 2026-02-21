@@ -22,34 +22,54 @@ A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar period
 ---
 config:
     layout: elk
-    theme: dark
+    theme: default
     elk:
         mergeEdges: true
-        nodePlacementStrategy: NETWORK_SIMPLEX
 ---
 flowchart TD
+
+subgraph Diagram[" "]
     Client(["DNS Client"])
     Netbox[("Netbox API")]
     Upstream(["Upstream DNS (e.g. 8.8.8.8)"])
-    Secondary["Secondary CoreDNS (AXFR replica)"]
 
     subgraph Primary["Primary Pod"]
         Init["Init Container (sidecar --run-once)"]
-        CoreDNS["CoreDNS: cache · auto · netbox · transfer · forward"]
-        Zones[("/zones/{zone_files}")]
         Sidecar["Sidecar"]
-        Init -->|initial zone files| Zones
-        Sidecar -->|writes| Zones
-        CoreDNS -->|reads| Zones
+        Zones[("/zones/{zone_files}")]
+        CoreDNS["CoreDNS: cache · auto · netbox · transfer · forward"]
+        Init -->|"initial zone files"| Zones
+        Sidecar -->|"writes"| Zones
+        CoreDNS -->|"reads"| Zones
+    end
+
+    subgraph Secondary["Secondary Pod"]
+        SecondaryDNS["CoreDNS (AXFR replica)"]
     end
 
     Client -->|"UDP/TCP :53"| CoreDNS
-    Sidecar -->|"Paralell, paginated, HTTP poll"| Netbox
+    Netbox -->|"Parallel, paginated HTTP poll"| Sidecar
     CoreDNS -->|"cache misses"| Upstream
-    CoreDNS -.->|"AXFR (optional)"| Secondary
-```
+    CoreDNS -.->|"AXFR (optional)"| SecondaryDNS
+    SecondaryDNS -->|"cache misses"| Upstream
+end
 
-**Request flow (primary):** cache → auto (local zone files) → netbox (optional API fallthrough) → forward (upstream)
+classDef clientStyle   fill:#d69ca4,stroke:black,stroke-width:2px,color:#000
+classDef externalStyle fill:#cde4ff,stroke:black,stroke-width:2px,color:#000
+classDef dnsStyle      fill:#d5f0d5,stroke:black,stroke-width:2px,color:#000
+classDef workerStyle   fill:#fff2cc,stroke:black,stroke-width:2px,color:#000
+classDef storageStyle  fill:#9cced6,stroke:black,stroke-width:2px,color:#000
+classDef replicaStyle  fill:#69a3bf,stroke:black,stroke-width:2px,color:#000
+classDef diagramStyle fill:#f0f0f0,stroke:#333,stroke-width:1px,color:#000,font-size:14px
+
+class Client clientStyle
+class Netbox,Upstream externalStyle
+class CoreDNS dnsStyle
+class Sidecar,Init workerStyle
+class Zones storageStyle
+class SecondaryDNS replicaStyle
+class Diagram diagramStyle
+```
 
 The sidecar polls Netbox on a configurable interval, fetches all active IP addresses with DNS names using parallel paginated requests, auto-discovers zones (by FQDN depth, common suffix, or Netbox DNS plugin), and atomically writes zone files. CoreDNS detects changes via SOA serial increments.
 
