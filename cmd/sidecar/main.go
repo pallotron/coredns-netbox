@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/config"
+	"github.com/pallotron/coredns-netbox/internal/logging"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
@@ -23,18 +24,22 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(logging.NewGCPHandler(os.Stderr, nil)))
+
 	runOnce := flag.Bool("run-once", false, "Run once and exit (for init container mode)")
 	flag.Parse()
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		slog.Error("failed to load config", "err", err)
+		os.Exit(1)
 	}
 	cfg.RunOnce = *runOnce
 
 	client, err := netboxclient.New(cfg.NetboxURL, cfg.NetboxToken, cfg.PageSize, cfg.MaxConcurrency)
 	if err != nil {
-		log.Fatalf("Failed to create Netbox client: %v", err)
+		slog.Error("failed to create netbox client", "err", err)
+		os.Exit(1)
 	}
 
 	// Create forward zone discoverer
@@ -45,7 +50,8 @@ func main() {
 	}
 	forwardDisc, err := zonediscovery.NewDiscoverer(zonediscovery.DiscoveryMode(cfg.DiscoveryMode), opts)
 	if err != nil {
-		log.Fatalf("Failed to create forward zone discoverer: %v", err)
+		slog.Error("failed to create forward zone discoverer", "err", err)
+		os.Exit(1)
 	}
 
 	// Create reverse zone discoverer if enabled
@@ -55,13 +61,12 @@ func main() {
 			cfg.ReverseZonesIPv4,
 			cfg.ReverseZonesIPv6,
 		)
-		log.Printf("Reverse zones enabled: IPv4 zones=%v, IPv6 zones=%v",
-			cfg.ReverseZonesIPv4, cfg.ReverseZonesIPv6)
+		slog.Info("reverse zones enabled", "ipv4_zones", cfg.ReverseZonesIPv4, "ipv6_zones", cfg.ReverseZonesIPv6)
 	}
 
 	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.AdminEmail, cfg.TTL)
 
-	log.Printf("Zone discovery mode: %s, zone dir: %s", cfg.DiscoveryMode, cfg.ZoneDir)
+	slog.Info("starting sidecar", "discovery_mode", cfg.DiscoveryMode, "zone_dir", cfg.ZoneDir)
 
 	reg := prometheus.NewRegistry()
 	m := metrics.NewSidecar(reg)
@@ -74,7 +79,7 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		sig := <-sigCh
-		log.Printf("Received signal %v, shutting down...", sig)
+		slog.Info("received signal, shutting down", "signal", sig)
 		cancel()
 	}()
 
@@ -96,13 +101,13 @@ func main() {
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Printf("Health server error: %v", err)
+				slog.Error("health server error", "err", err)
 			}
 		}()
 		go func() {
 			<-ctx.Done()
 			if err := srv.Shutdown(context.Background()); err != nil {
-				log.Printf("Health server shutdown error: %v", err)
+				slog.Error("health server shutdown error", "err", err)
 			}
 		}()
 		markReady = func() { healthy.Store(true) }
@@ -110,7 +115,8 @@ func main() {
 
 	// Run the poll loop
 	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m, markReady); err != nil {
-		log.Fatalf("Fatal error: %v", err)
+		slog.Error("fatal error", "err", err)
+		os.Exit(1)
 	}
 }
 
@@ -118,14 +124,14 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 	firstSuccess := false
 	for {
 		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m); err != nil {
-			log.Printf("Poll error: %v", err)
+			slog.Error("poll error", "err", err)
 		} else if !firstSuccess && markReady != nil {
 			firstSuccess = true
 			markReady()
 		}
 
 		if cfg.RunOnce {
-			log.Println("Run-once mode, exiting.")
+			slog.Info("run-once mode, exiting")
 			return nil
 		}
 
@@ -140,7 +146,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar) error {
 	pollStart := time.Now()
 
-	log.Println("Fetching IP addresses from Netbox...")
+	slog.Info("fetching IP addresses from Netbox")
 
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
@@ -151,7 +157,7 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 		return fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
-	log.Printf("Fetched %d records from Netbox", len(records))
+	slog.Info("fetched records from Netbox", "count", len(records))
 	m.NetboxRecordsFetched.Set(float64(len(records)))
 	if len(records) == 0 {
 		m.NetboxEmptyResponseTotal.Inc()
@@ -165,7 +171,7 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 		return fmt.Errorf("discover forward zones: %w", err)
 	}
 
-	log.Printf("Discovered %d forward zones", len(forwardZones))
+	slog.Info("discovered forward zones", "count", len(forwardZones))
 
 	// Discover reverse zones if enabled
 	combinedZones := forwardZones
@@ -176,7 +182,7 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 			m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 			return fmt.Errorf("discover reverse zones: %w", err)
 		}
-		log.Printf("Discovered %d reverse zones", len(reverseZones))
+		slog.Info("discovered reverse zones", "count", len(reverseZones))
 
 		// Merge forward and reverse zones
 		for zone, recs := range reverseZones {
@@ -202,6 +208,6 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 	m.PollTotal.WithLabelValues("success").Inc()
 	m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 
-	log.Printf("Zone update complete, active zones: %v", mgr.Zones())
+	slog.Info("zone update complete", "active_zones", mgr.Zones())
 	return nil
 }
