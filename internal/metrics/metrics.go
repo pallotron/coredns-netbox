@@ -13,6 +13,8 @@ type Sidecar struct {
 	ZonesActive                 prometheus.Gauge
 	ZoneWritesTotal             *prometheus.CounterVec
 	ZoneWriteErrorsTotal        prometheus.Counter
+	NetboxFetchRetriesTotal     prometheus.Counter
+	ZoneStalenessSeconds        prometheus.Gauge
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -65,6 +67,16 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Name: "netbox_sidecar_zone_write_errors_total",
 			Help: "Total number of zone file write failures.",
 		}),
+
+		NetboxFetchRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "netbox_sidecar_netbox_fetch_retries_total",
+			Help: "Total number of Netbox fetch retry attempts (excludes the initial attempt).",
+		}),
+
+		ZoneStalenessSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_zone_staleness_seconds",
+			Help: "Seconds since the last successful zone write. Zero on success; rises on Netbox outage.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -77,6 +89,8 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.ZonesActive,
 		m.ZoneWritesTotal,
 		m.ZoneWriteErrorsTotal,
+		m.NetboxFetchRetriesTotal,
+		m.ZoneStalenessSeconds,
 	)
 
 	return m
