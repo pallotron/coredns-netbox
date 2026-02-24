@@ -174,3 +174,25 @@ func TestNetboxFetchDurationSeconds_CustomBuckets(t *testing.T) {
 		t.Errorf("expected sample_count=2, got %d", h.GetSampleCount())
 	}
 }
+
+func TestNetboxFetchRetriesTotal_Registered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+	m.NetboxFetchRetriesTotal.Inc()
+
+	mfs := gather(t, reg)
+	if _, ok := mfs["netbox_sidecar_netbox_fetch_retries_total"]; !ok {
+		t.Error("metric netbox_sidecar_netbox_fetch_retries_total not found")
+	}
+}
+
+func TestZoneStalenessSeconds_Registered(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+	m.ZoneStalenessSeconds.Set(42.0)
+
+	mfs := gather(t, reg)
+	if _, ok := mfs["netbox_sidecar_zone_staleness_seconds"]; !ok {
+		t.Error("metric netbox_sidecar_zone_staleness_seconds not found")
+	}
+}
