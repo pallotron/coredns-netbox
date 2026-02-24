@@ -13,11 +13,12 @@ import (
 //
 // Any user-supplied ReplaceAttr in opts is applied after the GCP remapping.
 func NewGCPHandler(w io.Writer, opts *slog.HandlerOptions) slog.Handler {
-	if opts == nil {
-		opts = &slog.HandlerOptions{}
+	var effective slog.HandlerOptions
+	if opts != nil {
+		effective = *opts // shallow copy — avoids mutating caller's struct
 	}
-	userReplace := opts.ReplaceAttr
-	opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+	userReplace := effective.ReplaceAttr
+	effective.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
 		if len(groups) == 0 {
 			switch a.Key {
 			case slog.LevelKey:
@@ -34,7 +35,7 @@ func NewGCPHandler(w io.Writer, opts *slog.HandlerOptions) slog.Handler {
 		}
 		return a
 	}
-	return slog.NewJSONHandler(w, opts)
+	return slog.NewJSONHandler(w, &effective)
 }
 
 func gcpSeverity(l slog.Level) string {
