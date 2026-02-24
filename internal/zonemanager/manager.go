@@ -2,7 +2,7 @@ package zonemanager
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -85,7 +85,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 		}
 
 		if !changed {
-			log.Printf("Zone %s: no changes", zone)
+			slog.Info("zone unchanged", "zone", zone)
 			continue
 		}
 
@@ -99,7 +99,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 		} else {
 			stats.Updated++
 		}
-		log.Printf("Zone %s: updated (%d records)", zone, len(records))
+		slog.Info("zone updated", "zone", zone, "records", len(records))
 	}
 
 	// Remove orphaned zone files and generators
@@ -137,7 +137,7 @@ func (m *Manager) removeOrphans(activeZones map[string]bool) (int, error) {
 				return deleted, fmt.Errorf("remove orphan zone file %s: %w", path, err)
 			}
 			deleted++
-			log.Printf("Zone %s: removed (orphaned)", zone)
+			slog.Info("zone removed (orphaned)", "zone", zone)
 			delete(m.generators, zone)
 		}
 	}
@@ -166,7 +166,7 @@ func (m *Manager) removeOrphans(activeZones map[string]bool) (int, error) {
 				return deleted, fmt.Errorf("remove stale zone file %s: %w", path, err)
 			}
 			deleted++
-			log.Printf("Zone %s: removed stale file", zone)
+			slog.Info("zone removed (stale file)", "zone", zone)
 		}
 	}
 

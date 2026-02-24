@@ -124,7 +124,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 	firstSuccess := false
 	for {
 		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m); err != nil {
-			slog.Error("poll error", "err", err)
+			slog.Warn("poll error", "err", err)
 		} else if !firstSuccess && markReady != nil {
 			firstSuccess = true
 			markReady()
@@ -146,7 +146,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar) error {
 	pollStart := time.Now()
 
-	slog.Info("fetching IP addresses from Netbox")
+	slog.Info("fetching IP addresses from netbox")
 
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
@@ -157,7 +157,7 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 		return fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
-	slog.Info("fetched records from Netbox", "count", len(records))
+	slog.Info("fetched records from netbox", "count", len(records))
 	m.NetboxRecordsFetched.Set(float64(len(records)))
 	if len(records) == 0 {
 		m.NetboxEmptyResponseTotal.Inc()

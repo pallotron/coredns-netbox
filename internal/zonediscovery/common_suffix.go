@@ -1,7 +1,7 @@
 package zonediscovery
 
 import (
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
@@ -79,7 +79,8 @@ func commonSuffix(records []netboxclient.IPRecord) string {
 
 	// Must be at least 2 labels (e.g. example.org)
 	if commonLen < 2 {
-		log.Printf("common_suffix: no common depth >=2 across records in group, falling back to 2-label suffix of first record %q — zone may be incorrect if records span multiple second-level domains", records[0].DNSName)
+		slog.Warn("common_suffix: no common depth >=2 in group, falling back to 2-label suffix of first record",
+			"first_record", records[0].DNSName)
 		// Fall back to second-level domain of the first record
 		name := strings.TrimSuffix(records[0].DNSName, ".")
 		labels := strings.Split(name, ".")
@@ -112,7 +113,8 @@ func commonSuffix(records []netboxclient.IPRecord) string {
 	}
 
 	// All FQDNs are the same as the zone — use the last 2 labels
-	log.Printf("common_suffix: computed zone %q equals all record FQDNs in group, truncating to 2-label suffix — check for single-hostname groups", zone)
+	slog.Warn("common_suffix: computed zone equals all FQDNs, truncating to 2-label suffix",
+		"zone", zone)
 	labels := strings.Split(zone, ".")
 	if len(labels) > 2 {
 		return strings.Join(labels[len(labels)-2:], ".")
