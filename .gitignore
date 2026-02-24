@@ -1,1 +1,4 @@
 bin/
+.worktrees/
+sidecar
+analyzer
