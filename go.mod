@@ -1,6 +1,6 @@
 module github.com/pallotron/coredns-netbox
 
-go 1.25.6
+go 1.25.7
 
 require (
 	github.com/miekg/dns v1.1.72
