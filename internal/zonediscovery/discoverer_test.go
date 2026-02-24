@@ -134,6 +134,55 @@ func TestCommonSuffixDiscoverer_MixedTLDs(t *testing.T) {
 	}
 }
 
+// TestCommonSuffixDiscoverer_FallbackA verifies that when records within a TLD
+// group share no common depth >=2, the discoverer falls back to the 2-label
+// suffix of the first record.
+func TestCommonSuffixDiscoverer_FallbackA(t *testing.T) {
+	d := &CommonSuffixDiscoverer{}
+	// Both records share TLD .org, but different second-level domains.
+	// Within the .org group, commonLen will be < 2, triggering Fallback A.
+	records := []netboxclient.IPRecord{
+		{DNSName: "host.alpha.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "host.beta.org", Address: "10.0.0.2", Family: 4},
+	}
+	zm, err := d.Discover(records)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(zm) != 1 {
+		t.Fatalf("expected 1 zone for fallback, got %d: %v", len(zm), zoneNames(zm))
+	}
+	// Fallback A: uses 2-label suffix of first record -> "alpha.org"
+	if _, ok := zm["alpha.org"]; !ok {
+		t.Fatalf("expected fallback zone alpha.org, got zones: %v", zoneNames(zm))
+	}
+}
+
+// TestCommonSuffixDiscoverer_FallbackB verifies that when the computed zone name
+// equals all record FQDNs in the group, the discoverer truncates to the last
+// 2-label suffix rather than returning a zone that equals a hostname.
+func TestCommonSuffixDiscoverer_FallbackB(t *testing.T) {
+	d := &CommonSuffixDiscoverer{}
+	// Both records have the same FQDN "host.example.org".
+	// commonSuffix computes zone "host.example.org", but that equals the FQDN,
+	// so Fallback B truncates to "example.org".
+	records := []netboxclient.IPRecord{
+		{DNSName: "host.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "host.example.org", Address: "10.0.0.2", Family: 4},
+	}
+	zm, err := d.Discover(records)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(zm) != 1 {
+		t.Fatalf("expected 1 zone for fallback, got %d: %v", len(zm), zoneNames(zm))
+	}
+	// Fallback B: truncates to last 2 labels → "example.org"
+	if _, ok := zm["example.org"]; !ok {
+		t.Fatalf("expected fallback zone example.org, got zones: %v", zoneNames(zm))
+	}
+}
+
 func TestCommonSuffixDiscoverer_Empty(t *testing.T) {
 	d := &CommonSuffixDiscoverer{}
 	zm, err := d.Discover(nil)
