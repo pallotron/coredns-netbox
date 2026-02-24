@@ -4,17 +4,20 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
+	"github.com/pallotron/coredns-netbox/internal/logging"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 )
 
 func main() {
+	slog.SetDefault(slog.New(logging.NewGCPHandler(os.Stderr, nil)))
+
 	// Command line flags
 	filePath := flag.String("file", "", "Path to all_ips.json file")
 	showAll := flag.Bool("all", false, "Show all IPs for each device")
@@ -48,7 +51,8 @@ func main() {
 	// Read the JSON file
 	data, err := os.ReadFile(*filePath)
 	if err != nil {
-		log.Fatalf("Failed to read file: %v", err)
+		slog.Error("failed to read file", "path", *filePath, "err", err)
+		os.Exit(1)
 	}
 
 	// Parse the Netbox API response format
@@ -70,7 +74,8 @@ func main() {
 	}
 
 	if err := json.Unmarshal(data, &apiRecords); err != nil {
-		log.Fatalf("Failed to parse JSON: %v", err)
+		slog.Error("failed to parse JSON", "err", err)
+		os.Exit(1)
 	}
 
 	// Convert to IPRecord format
@@ -122,7 +127,8 @@ func main() {
 	// Create categorizer
 	cat, err := ipcategorizer.NewCategorizer(*bmcPattern, *loopbackPattern, *dataplanePattern, *mgmtVRFPattern, *mgmtIfacePattern, *domainSuffix)
 	if err != nil {
-		log.Fatalf("Failed to create categorizer: %v", err)
+		slog.Error("failed to create categorizer", "err", err)
+		os.Exit(1)
 	}
 
 	if *showStats {
@@ -134,7 +140,8 @@ func main() {
 			disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
 			reverseZones, err = disc.Discover(records)
 			if err != nil {
-				log.Fatalf("Failed to discover reverse zones: %v", err)
+				slog.Error("failed to discover reverse zones", "err", err)
+				os.Exit(1)
 			}
 		}
 		showStatistics(records, cat, reverseZones)
@@ -165,7 +172,8 @@ func main() {
 		disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
 		reverseZones, err = disc.Discover(enrichedRecords)
 		if err != nil {
-			log.Fatalf("Failed to discover reverse zones: %v", err)
+			slog.Error("failed to discover reverse zones", "err", err)
+			os.Exit(1)
 		}
 	}
 
