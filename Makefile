@@ -32,7 +32,7 @@ build.analyzer:
 # ---------- Test ----------
 
 test.unit:
-	go test ./internal/... -v -count=1
+	go test ./internal/... -v -count=1 -race
 
 test.e2e:
 	go test ./tests/e2e/... -v -count=1 -tags=e2e
