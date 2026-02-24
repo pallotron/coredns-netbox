@@ -18,8 +18,11 @@ type Config struct {
 	PollInterval   time.Duration
 	TTL            uint32
 	PageSize       int
-	MaxConcurrency int
-	RunOnce        bool
+	MaxConcurrency      int
+	NetboxRetryCount     int
+	NetboxRetryBaseDelay time.Duration
+	NetboxRetryMaxDelay  time.Duration
+	RunOnce             bool
 	HealthAddr     string
 	PrimaryNS      string
 	AdminEmail     string
@@ -46,8 +49,11 @@ func Load() (*Config, error) {
 		ZoneDepth:      2,
 		TTL:            300,
 		PageSize:       1000,
-		MaxConcurrency: 10,
-		HealthAddr:     envOrDefault("HEALTH_ADDR", ":8082"),
+		MaxConcurrency:      10,
+		NetboxRetryCount:     3,
+		NetboxRetryBaseDelay: 1 * time.Second,
+		NetboxRetryMaxDelay:  30 * time.Second,
+		HealthAddr:          envOrDefault("HEALTH_ADDR", ":8082"),
 		PrimaryNS:      envOrDefault("PRIMARY_NS", "ns1.example.org."),
 		AdminEmail:     envOrDefault("ADMIN_EMAIL", "admin.example.org."),
 
@@ -108,6 +114,30 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid NETBOX_MAX_CONCURRENCY: %w", err)
 		}
 		c.MaxConcurrency = mc
+	}
+
+	if v := os.Getenv("NETBOX_RETRY_COUNT"); v != "" {
+		rc, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid NETBOX_RETRY_COUNT: %w", err)
+		}
+		c.NetboxRetryCount = rc
+	}
+
+	if v := os.Getenv("NETBOX_RETRY_BASE_DELAY"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid NETBOX_RETRY_BASE_DELAY: %w", err)
+		}
+		c.NetboxRetryBaseDelay = d
+	}
+
+	if v := os.Getenv("NETBOX_RETRY_MAX_DELAY"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid NETBOX_RETRY_MAX_DELAY: %w", err)
+		}
+		c.NetboxRetryMaxDelay = d
 	}
 
 	return c, nil
