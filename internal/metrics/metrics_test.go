@@ -48,6 +48,8 @@ func TestNewSidecar_RegistersAllMetrics(t *testing.T) {
 		"netbox_sidecar_zones_active",
 		"netbox_sidecar_zone_writes_total",
 		"netbox_sidecar_zone_write_errors_total",
+		"netbox_sidecar_netbox_fetch_retries_total",
+		"netbox_sidecar_zone_staleness_seconds",
 	}
 
 	got := gather(t, reg)
@@ -181,8 +183,12 @@ func TestNetboxFetchRetriesTotal_Registered(t *testing.T) {
 	m.NetboxFetchRetriesTotal.Inc()
 
 	mfs := gather(t, reg)
-	if _, ok := mfs["netbox_sidecar_netbox_fetch_retries_total"]; !ok {
-		t.Error("metric netbox_sidecar_netbox_fetch_retries_total not found")
+	mf, ok := mfs["netbox_sidecar_netbox_fetch_retries_total"]
+	if !ok {
+		t.Fatal("metric netbox_sidecar_netbox_fetch_retries_total not found")
+	}
+	if val := mf.GetMetric()[0].GetCounter().GetValue(); val != 1 {
+		t.Errorf("expected counter=1, got %v", val)
 	}
 }
 
@@ -192,7 +198,11 @@ func TestZoneStalenessSeconds_Registered(t *testing.T) {
 	m.ZoneStalenessSeconds.Set(42.0)
 
 	mfs := gather(t, reg)
-	if _, ok := mfs["netbox_sidecar_zone_staleness_seconds"]; !ok {
-		t.Error("metric netbox_sidecar_zone_staleness_seconds not found")
+	mf, ok := mfs["netbox_sidecar_zone_staleness_seconds"]
+	if !ok {
+		t.Fatal("metric netbox_sidecar_zone_staleness_seconds not found")
+	}
+	if val := mf.GetMetric()[0].GetGauge().GetValue(); val != 42.0 {
+		t.Errorf("expected gauge=42.0, got %v", val)
 	}
 }
