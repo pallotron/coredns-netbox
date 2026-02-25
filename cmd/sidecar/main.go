@@ -36,7 +36,8 @@ func main() {
 	}
 	cfg.RunOnce = *runOnce
 
-	client, err := netboxclient.New(cfg.NetboxURL, cfg.NetboxToken, cfg.PageSize, cfg.MaxConcurrency)
+	client, err := netboxclient.New(cfg.NetboxURL, cfg.NetboxToken, cfg.PageSize, cfg.MaxConcurrency,
+		cfg.NetboxRetryCount, cfg.NetboxRetryBaseDelay, cfg.NetboxRetryMaxDelay)
 	if err != nil {
 		slog.Error("failed to create netbox client", "err", err)
 		os.Exit(1)
@@ -70,6 +71,7 @@ func main() {
 
 	reg := prometheus.NewRegistry()
 	m := metrics.NewSidecar(reg)
+	client.RetryCounter = m.NetboxFetchRetriesTotal
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
