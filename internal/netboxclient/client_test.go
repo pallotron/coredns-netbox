@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dtoMetric "github.com/prometheus/client_model/go"
 )
 
 type mockIPList struct {
@@ -94,7 +98,7 @@ func TestFetchIPAddresses(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := New(srv.URL, "testtoken", 2, 5)
+	client, err := New(srv.URL, "testtoken", 2, 5, 0, 0, 0)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -140,5 +144,93 @@ func TestStripCIDR(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("stripCIDR(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestFetchIPAddresses_RetryOnTransientError(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if r.URL.Query().Get("limit") == "1" {
+			// Probe request — always succeed
+			resp := ipListResponse{Count: 1}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		if attempts <= 3 { // fail first 2 page fetches (attempts 2 and 3)
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		// Succeed on 3rd page fetch
+		resp := ipListResponse{
+			Count:   1,
+			Results: []ipItem{{Address: "10.0.0.1/24", DNSName: "host.example.org"}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	retryCounter := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_retries"})
+
+	c, err := New(srv.URL, "token", 100, 1, 3, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.RetryCounter = retryCounter
+
+	records, err := c.FetchIPAddresses(context.Background())
+	if err != nil {
+		t.Fatalf("expected success after retries, got: %v", err)
+	}
+	if len(records) == 0 {
+		t.Fatal("expected at least 1 record")
+	}
+	dto := &dtoMetric.Metric{}
+	_ = retryCounter.Write(dto)
+	if got := dto.Counter.GetValue(); got == 0 {
+		t.Errorf("expected retry counter > 0, got %v (attempts=%d)", got, attempts)
+	}
+}
+
+func TestFetchIPAddresses_RetryExhausted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "token", 100, 1, 2, time.Millisecond, 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = c.FetchIPAddresses(context.Background())
+	if err == nil {
+		t.Fatal("expected error after retry exhaustion, got nil")
+	}
+}
+
+func TestFetchIPAddresses_RetryRespectsContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "token", 100, 1, 10, time.Second, 30*time.Second)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = c.FetchIPAddresses(ctx)
+	if err == nil {
+		t.Fatal("expected error due to context cancellation")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("retry did not respect context cancellation (elapsed %v)", elapsed)
 	}
 }

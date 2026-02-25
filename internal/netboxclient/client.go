@@ -9,12 +9,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // IPRecord is a simplified representation of a Netbox IP address with DNS info.
@@ -34,6 +38,12 @@ type Client struct {
 	httpClient     *http.Client
 	pageSize       int
 	maxConcurrency int
+	retryCount     int
+	retryBaseDelay time.Duration
+	retryMaxDelay  time.Duration
+	// RetryCounter is an optional Prometheus counter incremented on each retry attempt.
+	// Set after construction. Safe to leave nil (no-op).
+	RetryCounter prometheus.Counter
 }
 
 // ipListResponse is the paginated response from /api/ipam/ip-addresses/.
@@ -64,24 +74,75 @@ type deviceInfo struct {
 }
 
 // New creates a new Netbox client.
-func New(baseURL, token string, pageSize, maxConcurrency int) (*Client, error) {
+func New(baseURL, token string, pageSize, maxConcurrency, retryCount int, retryBaseDelay, retryMaxDelay time.Duration) (*Client, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid netbox URL: %w", err)
 	}
-
 	return &Client{
 		baseURL:        strings.TrimRight(u.String(), "/"),
 		token:          token,
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 		pageSize:       pageSize,
 		maxConcurrency: maxConcurrency,
+		retryCount:     retryCount,
+		retryBaseDelay: retryBaseDelay,
+		retryMaxDelay:  retryMaxDelay,
 	}, nil
 }
 
-// FetchIPAddresses retrieves all active IP addresses from Netbox
-// using parallel paginated requests.
+// FetchIPAddresses retrieves all active IP addresses from Netbox,
+// retrying on transient errors with exponential backoff.
 func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
+	var lastErr error
+	for attempt := 0; attempt <= c.retryCount; attempt++ {
+		if attempt > 0 {
+			delay := c.retryDelay(attempt)
+			slog.Warn("retrying Netbox fetch",
+				"attempt", attempt,
+				"max_attempts", c.retryCount,
+				"delay", delay,
+				"err", lastErr,
+			)
+			if c.RetryCounter != nil {
+				c.RetryCounter.Inc()
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		records, err := c.fetchIPAddressesOnce(ctx)
+		if err == nil {
+			return records, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// retryDelay returns the backoff duration for the given attempt number (1-based).
+// Uses exponential backoff with ±25% jitter, capped at retryMaxDelay.
+func (c *Client) retryDelay(attempt int) time.Duration {
+	exp := c.retryBaseDelay * time.Duration(1<<uint(attempt-1))
+	if exp > c.retryMaxDelay {
+		exp = c.retryMaxDelay
+	}
+	// ±25% jitter — guard against zero to avoid rand.Int63n(0) panic
+	if int64(exp/2) > 0 {
+		jitter := time.Duration(rand.Int63n(int64(exp/2))) - exp/4
+		exp += jitter
+	}
+	if exp < 0 {
+		exp = 0
+	}
+	return exp
+}
+
+// fetchIPAddressesOnce retrieves all active IP addresses from Netbox
+// using parallel paginated requests (single attempt, no retry).
+func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 	// Probe request to get total count
 	probeResp, err := c.fetchPage(ctx, 0, 1)
 	if err != nil {
