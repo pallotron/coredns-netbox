@@ -124,12 +124,18 @@ func main() {
 
 func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func()) error {
 	firstSuccess := false
+	lastSuccessTime := time.Now()
 	for {
 		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m); err != nil {
 			slog.Warn("poll error", "err", err)
-		} else if !firstSuccess && markReady != nil {
-			firstSuccess = true
-			markReady()
+			m.ZoneStalenessSeconds.Set(time.Since(lastSuccessTime).Seconds())
+		} else {
+			lastSuccessTime = time.Now()
+			m.ZoneStalenessSeconds.Set(0)
+			if !firstSuccess && markReady != nil {
+				firstSuccess = true
+				markReady()
+			}
 		}
 
 		if cfg.RunOnce {
