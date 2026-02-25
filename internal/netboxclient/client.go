@@ -100,7 +100,7 @@ func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
 			delay := c.retryDelay(attempt)
 			slog.Warn("retrying Netbox fetch",
 				"attempt", attempt,
-				"max_attempts", c.retryCount,
+				"max_retries", c.retryCount,
 				"delay", delay,
 				"err", lastErr,
 			)
@@ -125,7 +125,12 @@ func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
 // retryDelay returns the backoff duration for the given attempt number (1-based).
 // Uses exponential backoff with ±25% jitter, capped at retryMaxDelay.
 func (c *Client) retryDelay(attempt int) time.Duration {
-	exp := c.retryBaseDelay * time.Duration(1<<uint(attempt-1))
+	// Cap the shift to prevent int64 overflow for large attempt counts.
+	shift := attempt - 1
+	if shift > 62 {
+		shift = 62
+	}
+	exp := c.retryBaseDelay * time.Duration(1<<uint(shift))
 	if exp > c.retryMaxDelay {
 		exp = c.retryMaxDelay
 	}
