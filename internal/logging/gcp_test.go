@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
@@ -52,7 +53,7 @@ func TestNewGCPHandler_SeverityMapping(t *testing.T) {
 	for _, tt := range tests {
 		var buf bytes.Buffer
 		logger := slog.New(NewGCPHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		logger.Log(nil, tt.level, "test")
+		logger.Log(context.TODO(), tt.level, "test")
 
 		var out map[string]any
 		if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
