@@ -112,6 +112,22 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 	return stats, nil
 }
 
+// HasExistingZones returns true if at least one zone file (db.*) already
+// exists on disk. Used by the init container to decide whether a cached copy
+// is available when Netbox is unreachable on startup.
+func (m *Manager) HasExistingZones() bool {
+	entries, err := os.ReadDir(m.zoneDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), "db.") {
+			return true
+		}
+	}
+	return false
+}
+
 // Zones returns the list of currently managed zone names.
 func (m *Manager) Zones() []string {
 	var zones []string

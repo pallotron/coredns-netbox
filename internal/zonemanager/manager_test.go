@@ -10,6 +10,40 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 )
 
+func TestManager_HasExistingZones_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+	if mgr.HasExistingZones() {
+		t.Error("expected false for empty zone dir")
+	}
+}
+
+func TestManager_HasExistingZones_WithZoneFiles(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+
+	if err := os.WriteFile(filepath.Join(dir, "db.example.org"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !mgr.HasExistingZones() {
+		t.Error("expected true when db.* files exist")
+	}
+}
+
+func TestManager_HasExistingZones_IgnoresNonZoneFiles(t *testing.T) {
+	dir := t.TempDir()
+	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
+
+	if err := os.WriteFile(filepath.Join(dir, "some-other-file"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if mgr.HasExistingZones() {
+		t.Error("expected false when only non-zone files exist")
+	}
+}
+
 func TestManager_CreateZoneFiles(t *testing.T) {
 	dir := t.TempDir()
 	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30)
