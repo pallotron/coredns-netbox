@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/require"
 )
 
 func dnsServer() string {
@@ -42,22 +43,15 @@ func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Ms
 	m.RecursionDesired = true
 
 	r, _, err := c.Exchange(m, server)
-	if err != nil {
-		t.Fatalf("DNS query for %s failed: %v", name, err)
-	}
+	require.NoError(t, err, "DNS query for %s failed", name)
 	return r
 }
 
 func TestARecordLookup(t *testing.T) {
 	r := query(t, "server1-mgmt.dc1.mycompany.com", dns.TypeA)
 
-	if r.Rcode != dns.RcodeSuccess {
-		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
-	}
-
-	if len(r.Answer) == 0 {
-		t.Fatal("expected at least one answer")
-	}
+	require.Equal(t, dns.RcodeSuccess, r.Rcode, "expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
+	require.NotEmpty(t, r.Answer, "expected at least one answer")
 
 	found := false
 	for _, ans := range r.Answer {
@@ -75,13 +69,8 @@ func TestARecordLookup(t *testing.T) {
 func TestForwardLookup(t *testing.T) {
 	r := query(t, "google.com", dns.TypeA)
 
-	if r.Rcode != dns.RcodeSuccess {
-		t.Fatalf("expected NOERROR for forwarded query, got %s", dns.RcodeToString[r.Rcode])
-	}
-
-	if len(r.Answer) == 0 {
-		t.Fatal("expected at least one answer for forwarded query")
-	}
+	require.Equal(t, dns.RcodeSuccess, r.Rcode, "expected NOERROR for forwarded query, got %s", dns.RcodeToString[r.Rcode])
+	require.NotEmpty(t, r.Answer, "expected at least one answer for forwarded query")
 }
 
 func TestNXDOMAIN(t *testing.T) {
@@ -109,9 +98,7 @@ func TestMultipleHosts(t *testing.T) {
 		t.Run(h.name, func(t *testing.T) {
 			r := query(t, h.name, dns.TypeA)
 
-			if r.Rcode != dns.RcodeSuccess {
-				t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
-			}
+			require.Equal(t, dns.RcodeSuccess, r.Rcode, "expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
 
 			found := false
 			for _, ans := range r.Answer {
@@ -131,13 +118,8 @@ func TestMultipleHosts(t *testing.T) {
 func TestSecondaryARecordLookup(t *testing.T) {
 	r := queryServer(t, "server1-mgmt.dc1.mycompany.com", dns.TypeA, dnsSecondaryServer())
 
-	if r.Rcode != dns.RcodeSuccess {
-		t.Fatalf("expected NOERROR from secondary, got %s", dns.RcodeToString[r.Rcode])
-	}
-
-	if len(r.Answer) == 0 {
-		t.Fatal("expected at least one answer from secondary")
-	}
+	require.Equal(t, dns.RcodeSuccess, r.Rcode, "expected NOERROR from secondary, got %s", dns.RcodeToString[r.Rcode])
+	require.NotEmpty(t, r.Answer, "expected at least one answer from secondary")
 
 	found := false
 	for _, ans := range r.Answer {
@@ -154,19 +136,12 @@ func TestSecondaryARecordLookup(t *testing.T) {
 
 func TestPTRRecordLookup(t *testing.T) {
 	ptrName, err := dns.ReverseAddr("10.1.0.1")
-	if err != nil {
-		t.Fatalf("failed to compute reverse addr: %v", err)
-	}
+	require.NoError(t, err, "failed to compute reverse addr")
 
 	r := query(t, ptrName, dns.TypePTR)
 
-	if r.Rcode != dns.RcodeSuccess {
-		t.Fatalf("expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
-	}
-
-	if len(r.Answer) == 0 {
-		t.Fatal("expected at least one PTR answer")
-	}
+	require.Equal(t, dns.RcodeSuccess, r.Rcode, "expected NOERROR, got %s", dns.RcodeToString[r.Rcode])
+	require.NotEmpty(t, r.Answer, "expected at least one PTR answer")
 
 	found := false
 	for _, ans := range r.Answer {
@@ -187,21 +162,15 @@ func TestAXFRTransfer(t *testing.T) {
 	m.SetAxfr("dc1.mycompany.com.")
 
 	env, err := tr.In(m, dnsServer())
-	if err != nil {
-		t.Fatalf("AXFR transfer failed: %v", err)
-	}
+	require.NoError(t, err, "AXFR transfer failed")
 
 	var records []dns.RR
 	for e := range env {
-		if e.Error != nil {
-			t.Fatalf("AXFR envelope error: %v", e.Error)
-		}
+		require.NoError(t, e.Error, "AXFR envelope error")
 		records = append(records, e.RR...)
 	}
 
-	if len(records) == 0 {
-		t.Fatal("expected records from AXFR transfer, got none")
-	}
+	require.NotEmpty(t, records, "expected records from AXFR transfer, got none")
 
 	foundSOA := false
 	foundA := false

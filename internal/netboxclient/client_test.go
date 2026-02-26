@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dtoMetric "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/require"
 )
 
 type mockIPList struct {
@@ -99,14 +100,10 @@ func TestFetchIPAddresses(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(srv.URL, "testtoken", 2, 5, 0, 0, 0)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	records, err := client.FetchIPAddresses(context.Background())
-	if err != nil {
-		t.Fatalf("FetchIPAddresses() error: %v", err)
-	}
+	require.NoError(t, err, "FetchIPAddresses() error")
 
 	if len(records) != 5 {
 		t.Errorf("expected 5 records, got %d", len(records))
@@ -175,18 +172,12 @@ func TestFetchIPAddresses_RetryOnTransientError(t *testing.T) {
 	retryCounter := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_retries"})
 
 	c, err := New(srv.URL, "token", 100, 1, 3, time.Millisecond, 10*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 	c.RetryCounter = retryCounter
 
 	records, err := c.FetchIPAddresses(context.Background())
-	if err != nil {
-		t.Fatalf("expected success after retries, got: %v", err)
-	}
-	if len(records) == 0 {
-		t.Fatal("expected at least 1 record")
-	}
+	require.NoError(t, err, "expected success after retries")
+	require.NotEmpty(t, records, "expected at least 1 record")
 	dto := &dtoMetric.Metric{}
 	_ = retryCounter.Write(dto)
 	if got := dto.Counter.GetValue(); got == 0 {
@@ -201,14 +192,10 @@ func TestFetchIPAddresses_RetryExhausted(t *testing.T) {
 	defer srv.Close()
 
 	c, err := New(srv.URL, "token", 100, 1, 2, time.Millisecond, 10*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 
 	_, err = c.FetchIPAddresses(context.Background())
-	if err == nil {
-		t.Fatal("expected error after retry exhaustion, got nil")
-	}
+	require.Error(t, err, "expected error after retry exhaustion")
 }
 
 func TestFetchIPAddresses_RetryRespectsContextCancellation(t *testing.T) {
@@ -218,18 +205,14 @@ func TestFetchIPAddresses_RetryRespectsContextCancellation(t *testing.T) {
 	defer srv.Close()
 
 	c, err := New(srv.URL, "token", 100, 1, 10, time.Second, 30*time.Second)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	require.NoError(t, err, "New")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	start := time.Now()
 	_, err = c.FetchIPAddresses(ctx)
-	if err == nil {
-		t.Fatal("expected error due to context cancellation")
-	}
+	require.Error(t, err, "expected error due to context cancellation")
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("retry did not respect context cancellation (elapsed %v)", elapsed)
 	}

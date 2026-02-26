@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGenerateZone(t *testing.T) {
@@ -24,9 +25,7 @@ func TestGenerateZone(t *testing.T) {
 	}
 
 	content, changed, err := gen.Generate(records)
-	if err != nil {
-		t.Fatalf("Generate() error: %v", err)
-	}
+	require.NoError(t, err, "Generate() error")
 	if !changed {
 		t.Error("expected changed=true on first generation")
 	}
@@ -52,9 +51,7 @@ func TestGenerateZone(t *testing.T) {
 
 	// Same records should not trigger a change
 	_, changed, err = gen.Generate(records)
-	if err != nil {
-		t.Fatalf("Generate() error: %v", err)
-	}
+	require.NoError(t, err, "Generate() error")
 	if changed {
 		t.Error("expected changed=false for identical records")
 	}
@@ -64,9 +61,7 @@ func TestGenerateZone(t *testing.T) {
 		DNSName: "host4.example.org", Address: "10.0.0.4", Family: 4,
 	})
 	content, changed, err = gen.Generate(records)
-	if err != nil {
-		t.Fatalf("Generate() error: %v", err)
-	}
+	require.NoError(t, err, "Generate() error")
 	if !changed {
 		t.Error("expected changed=true for new records")
 	}
@@ -80,14 +75,10 @@ func TestAtomicWrite(t *testing.T) {
 	path := filepath.Join(dir, "zones", "db.test")
 
 	content := "test zone content\n"
-	if err := WriteFile(path, content); err != nil {
-		t.Fatalf("WriteFile() error: %v", err)
-	}
+	require.NoError(t, WriteFile(path, content), "WriteFile() error")
 
 	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile() error: %v", err)
-	}
+	require.NoError(t, err, "ReadFile() error")
 	if string(got) != content {
 		t.Errorf("content mismatch: got %q, want %q", string(got), content)
 	}
@@ -147,9 +138,7 @@ func TestGenerateReverseZone(t *testing.T) {
 	}
 
 	content, changed, err := gen.Generate(records)
-	if err != nil {
-		t.Fatalf("Generate() error: %v", err)
-	}
+	require.NoError(t, err, "Generate() error")
 	if !changed {
 		t.Error("expected changed=true on first generation")
 	}
@@ -190,9 +179,7 @@ func TestGenerateForwardZone(t *testing.T) {
 	}
 
 	content, _, err := gen.Generate(records)
-	if err != nil {
-		t.Fatalf("Generate() error: %v", err)
-	}
+	require.NoError(t, err, "Generate() error")
 
 	// Verify A record is present
 	if !strings.Contains(content, "host1 IN A 10.0.0.1") {
