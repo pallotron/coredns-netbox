@@ -122,12 +122,30 @@ func main() {
 	}
 }
 
+// runOnceResult decides the outcome of --run-once mode.
+// If the poll succeeded, return nil.
+// If the poll failed but cached zone files exist on disk, warn and return nil
+// so the init container exits 0 and CoreDNS serves the pre-existing cache.
+// If the poll failed and there are no cached zone files, return the poll error
+// so the init container exits non-zero and Kubernetes retries.
+func runOnceResult(pollErr error, hasCachedZones bool) error {
+	if pollErr == nil {
+		return nil
+	}
+	if hasCachedZones {
+		slog.Warn("Netbox unavailable on init, serving from cached zone files")
+		return nil
+	}
+	return pollErr
+}
+
 func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func()) error {
 	firstSuccess := false
 	lastSuccessTime := time.Now()
 	for {
-		if err := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m); err != nil {
-			slog.Warn("poll error", "err", err)
+		pollErr := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m)
+		if pollErr != nil {
+			slog.Warn("poll error", "err", pollErr)
 			m.ZoneStalenessSeconds.Set(time.Since(lastSuccessTime).Seconds())
 		} else {
 			lastSuccessTime = time.Now()
@@ -140,7 +158,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 
 		if cfg.RunOnce {
 			slog.Info("run-once mode, exiting")
-			return nil
+			return runOnceResult(pollErr, mgr.HasExistingZones())
 		}
 
 		select {
