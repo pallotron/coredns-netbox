@@ -1,14 +1,15 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "coredns-netbox.fullname" . }}
   labels:
     {{- include "coredns-netbox.labels" . | nindent 4 }}
 spec:
+  serviceName: {{ include "coredns-netbox.fullname" . }}-headless
   replicas: {{ .Values.replicaCount }}
   {{- if .Values.hostPort.enabled }}
-  strategy:
-    type: Recreate
+  updateStrategy:
+    type: OnDelete
   {{- end }}
   selector:
     matchLabels:
@@ -207,6 +208,21 @@ spec:
         - name: config
           configMap:
             name: {{ include "coredns-netbox.fullname" . }}
+        {{- if not .Values.zoneStorage.persistent }}
         - name: zones
           emptyDir:
             sizeLimit: {{ .Values.zoneStorage.sizeLimit }}
+        {{- end }}
+  {{- if .Values.zoneStorage.persistent }}
+  volumeClaimTemplates:
+    - metadata:
+        name: zones
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.zoneStorage.storageClass }}
+        storageClassName: {{ .Values.zoneStorage.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.zoneStorage.size }}
+  {{- end }}

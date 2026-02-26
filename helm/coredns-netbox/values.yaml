@@ -1,7 +1,34 @@
 replicaCount: 1
 
 zoneStorage:
+  # Size limit for the emptyDir volume (used only when persistent: false).
   sizeLimit: 256Mi
+  # Set to true to provision a PersistentVolumeClaim per pod via StatefulSet
+  # volumeClaimTemplates (ReadWriteOnce). Recommended for production: zone files
+  # survive pod restarts even when Netbox is temporarily unavailable.
+  #
+  # Requirements:
+  #   - A dynamic storage provisioner with a default StorageClass must be present.
+  #     GKE: standard-rwo (default) ✓  EKS: gp2 ✓  AKS: default ✓
+  #     k3d/k3s: local-path (default) ✓
+  #     Bare-metal without a provisioner: set storageClass explicitly or leave
+  #     persistent: false and rely on Kubernetes CrashLoopBackOff + retries.
+  #
+  # IMPORTANT — breaking upgrade: switching from persistent: false to true
+  # changes the workload kind from Deployment to StatefulSet. Before running
+  # `helm upgrade`, delete the old Deployment to avoid a kind conflict:
+  #   kubectl delete deployment <release-name> --cascade=orphan
+  # The running pods are preserved (--cascade=orphan) while the StatefulSet
+  # adopts them on the next rollout.
+  persistent: false
+  # StorageClass for the PVC. Leave empty to use the cluster default.
+  # Set explicitly on bare-metal or when a specific tier is required, e.g.:
+  #   storageClass: "premium-rwo"   # GKE SSD
+  #   storageClass: "gp3"           # EKS
+  storageClass: ""
+  # PVC size per pod. Zone files are small (tens of KB even for large Netbox
+  # installs); 1Gi is the minimum for most provisioners and more than enough.
+  size: 1Gi
 
 imagePullSecrets: []
 nameOverride: ""
