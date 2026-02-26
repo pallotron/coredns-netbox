@@ -85,6 +85,10 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `netboxPlugin.zones` | `[]` | **Required when enabled.** Zones the netbox plugin handles; queries outside these zones go straight to forward |
 | `zoneDiscovery.mode` | `zone-depth` | Zone discovery mode: `zone-depth`, `common-suffix`, or `netbox-dns` |
 | `zoneDiscovery.depth` | `2` | Number of trailing labels to use as zone name (zone-depth mode) |
+| `zoneStorage.sizeLimit` | `256Mi` | emptyDir size limit (used when `zoneStorage.persistent: false`) |
+| `zoneStorage.persistent` | `false` | Provision a PersistentVolumeClaim per pod (requires a default StorageClass) |
+| `zoneStorage.storageClass` | `""` | StorageClass for the PVC; empty uses the cluster default |
+| `zoneStorage.size` | `1Gi` | PVC size per pod |
 | `zoneDir` | `/zones` | Directory for zone files |
 | `pollInterval` | `60s` | How often to poll Netbox |
 | `ttl` | `300` | Default TTL for DNS records |
