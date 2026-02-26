@@ -19,6 +19,8 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_zones_active` | Gauge | — | Number of DNS zones currently managed |
 | `netbox_sidecar_zone_writes_total` | Counter | `op=create\|update\|delete` | Zone file operations |
 | `netbox_sidecar_zone_write_errors_total` | Counter | — | Zone file write failures |
+| `netbox_sidecar_netbox_fetch_retries_total` | Counter | — | Netbox HTTP request retries (excludes first attempt) |
+| `netbox_sidecar_zone_staleness_seconds` | Gauge | — | Seconds since the last successful poll (0 when healthy) |
 
 A Prometheus `ServiceMonitor` can be enabled via `metrics.serviceMonitor.enabled: true` for automatic scrape discovery in clusters running the Prometheus Operator.
 
