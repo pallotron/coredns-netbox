@@ -4,8 +4,9 @@ import (
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/metrics"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/require"
 )
 
 // gather collects all metric families from the registry and returns them keyed
@@ -13,9 +14,7 @@ import (
 func gather(t *testing.T, reg *prometheus.Registry) map[string]*dto.MetricFamily {
 	t.Helper()
 	mfs, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather() error: %v", err)
-	}
+	require.NoError(t, err, "Gather() error")
 	out := make(map[string]*dto.MetricFamily, len(mfs))
 	for _, mf := range mfs {
 		out[mf.GetName()] = mf
@@ -81,9 +80,7 @@ func TestPollTotal_Labels(t *testing.T) {
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_poll_total"]
-	if !ok {
-		t.Fatal("netbox_sidecar_poll_total not found")
-	}
+	require.True(t, ok, "netbox_sidecar_poll_total not found")
 
 	counts := make(map[string]float64)
 	for _, metric := range mf.GetMetric() {
@@ -112,9 +109,7 @@ func TestZoneWritesTotal_OpLabels(t *testing.T) {
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_zone_writes_total"]
-	if !ok {
-		t.Fatal("netbox_sidecar_zone_writes_total not found")
-	}
+	require.True(t, ok, "netbox_sidecar_zone_writes_total not found")
 
 	counts := make(map[string]float64)
 	for _, metric := range mf.GetMetric() {
@@ -147,12 +142,8 @@ func TestPollDurationSeconds_CustomBuckets(t *testing.T) {
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_poll_duration_seconds"]
-	if !ok {
-		t.Fatal("netbox_sidecar_poll_duration_seconds not found")
-	}
-	if len(mf.GetMetric()) == 0 {
-		t.Fatal("expected at least one metric")
-	}
+	require.True(t, ok, "netbox_sidecar_poll_duration_seconds not found")
+	require.NotEmpty(t, mf.GetMetric(), "expected at least one metric")
 	h := mf.GetMetric()[0].GetHistogram()
 	if h.GetSampleCount() != 3 {
 		t.Errorf("expected sample_count=3, got %d", h.GetSampleCount())
@@ -168,9 +159,7 @@ func TestNetboxFetchDurationSeconds_CustomBuckets(t *testing.T) {
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_netbox_fetch_duration_seconds"]
-	if !ok {
-		t.Fatal("netbox_sidecar_netbox_fetch_duration_seconds not found")
-	}
+	require.True(t, ok, "netbox_sidecar_netbox_fetch_duration_seconds not found")
 	h := mf.GetMetric()[0].GetHistogram()
 	if h.GetSampleCount() != 2 {
 		t.Errorf("expected sample_count=2, got %d", h.GetSampleCount())
@@ -184,9 +173,7 @@ func TestNetboxFetchRetriesTotal_Registered(t *testing.T) {
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_netbox_fetch_retries_total"]
-	if !ok {
-		t.Fatal("metric netbox_sidecar_netbox_fetch_retries_total not found")
-	}
+	require.True(t, ok, "metric netbox_sidecar_netbox_fetch_retries_total not found")
 	if val := mf.GetMetric()[0].GetCounter().GetValue(); val != 1 {
 		t.Errorf("expected counter=1, got %v", val)
 	}
@@ -199,9 +186,7 @@ func TestZoneStalenessSeconds_Registered(t *testing.T) {
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_zone_staleness_seconds"]
-	if !ok {
-		t.Fatal("metric netbox_sidecar_zone_staleness_seconds not found")
-	}
+	require.True(t, ok, "metric netbox_sidecar_zone_staleness_seconds not found")
 	if val := mf.GetMetric()[0].GetGauge().GetValue(); val != 42.0 {
 		t.Errorf("expected gauge=42.0, got %v", val)
 	}

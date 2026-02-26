@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func sidecarMetricsURL() string {
@@ -24,19 +26,13 @@ func fetchMetrics(t *testing.T) string {
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(sidecarMetricsURL())
-	if err != nil {
-		t.Fatalf("GET %s failed: %v", sidecarMetricsURL(), err)
-	}
+	require.NoError(t, err, "GET %s failed", sidecarMetricsURL())
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected HTTP 200, got %d", resp.StatusCode)
-	}
+	require.Equal(t, http.StatusOK, resp.StatusCode, "expected HTTP 200, got %d", resp.StatusCode)
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
+	require.NoError(t, err, "read body")
 	return string(body)
 }
 
@@ -89,9 +85,7 @@ func TestMetricsZonesActive(t *testing.T) {
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, "netbox_sidecar_zones_active ") {
 			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				t.Fatalf("unexpected format for zones_active line: %q", line)
-			}
+			require.GreaterOrEqual(t, len(parts), 2, "unexpected format for zones_active line: %q", line)
 			if parts[1] == "0" {
 				t.Errorf("expected netbox_sidecar_zones_active > 0, got 0")
 			}

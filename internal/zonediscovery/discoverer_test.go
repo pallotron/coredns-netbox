@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/stretchr/testify/require"
 )
 
 func TestZoneDepthDiscoverer_Depth2(t *testing.T) {
@@ -19,18 +20,12 @@ func TestZoneDepthDiscoverer_Depth2(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
-	if len(zm) != 1 {
-		t.Fatalf("expected 1 zone, got %d: %v", len(zm), zoneNames(zm))
-	}
-	if recs, ok := zm["example.org"]; !ok {
-		t.Fatal("expected zone example.org")
-	} else if len(recs) != 3 {
-		t.Fatalf("expected 3 records in example.org, got %d", len(recs))
-	}
+	require.Len(t, zm, 1, "expected 1 zone, got %v", zoneNames(zm))
+	recs, ok := zm["example.org"]
+	require.True(t, ok, "expected zone example.org")
+	require.Len(t, recs, 3, "expected 3 records in example.org")
 }
 
 func TestZoneDepthDiscoverer_Depth3(t *testing.T) {
@@ -42,18 +37,13 @@ func TestZoneDepthDiscoverer_Depth3(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
 	// host1.example.org only has 3 labels, so depth=3 => zone "host1.example.org"
 	// but that's the FQDN itself. The zone-depth approach doesn't special-case this.
-	if _, ok := zm["prod.example.org"]; !ok {
-		t.Fatalf("expected zone prod.example.org, got zones: %v", zoneNames(zm))
-	}
-	if recs := zm["prod.example.org"]; len(recs) != 2 {
-		t.Fatalf("expected 2 records in prod.example.org, got %d", len(recs))
-	}
+	_, ok := zm["prod.example.org"]
+	require.True(t, ok, "expected zone prod.example.org, got zones: %v", zoneNames(zm))
+	require.Len(t, zm["prod.example.org"], 2, "expected 2 records in prod.example.org")
 }
 
 func TestZoneDepthDiscoverer_SkipShortNames(t *testing.T) {
@@ -63,20 +53,14 @@ func TestZoneDepthDiscoverer_SkipShortNames(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(zm) != 0 {
-		t.Fatalf("expected 0 zones for short name with depth=3, got %d", len(zm))
-	}
+	require.NoError(t, err, "unexpected error")
+	require.Empty(t, zm, "expected 0 zones for short name with depth=3")
 }
 
 func TestZoneDepthDiscoverer_InvalidDepth(t *testing.T) {
 	d := &ZoneDepthDiscoverer{Depth: 1}
 	_, err := d.Discover(nil)
-	if err == nil {
-		t.Fatal("expected error for depth < 2")
-	}
+	require.Error(t, err, "expected error for depth < 2")
 }
 
 func TestCommonSuffixDiscoverer_SingleZone(t *testing.T) {
@@ -88,16 +72,11 @@ func TestCommonSuffixDiscoverer_SingleZone(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
-	if len(zm) != 1 {
-		t.Fatalf("expected 1 zone, got %d: %v", len(zm), zoneNames(zm))
-	}
-	if _, ok := zm["example.org"]; !ok {
-		t.Fatalf("expected zone example.org, got zones: %v", zoneNames(zm))
-	}
+	require.Len(t, zm, 1, "expected 1 zone, got %v", zoneNames(zm))
+	_, ok := zm["example.org"]
+	require.True(t, ok, "expected zone example.org, got zones: %v", zoneNames(zm))
 }
 
 func TestCommonSuffixDiscoverer_DeepCommonSuffix(t *testing.T) {
@@ -108,13 +87,10 @@ func TestCommonSuffixDiscoverer_DeepCommonSuffix(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
-	if _, ok := zm["prod.example.org"]; !ok {
-		t.Fatalf("expected zone prod.example.org, got zones: %v", zoneNames(zm))
-	}
+	_, ok := zm["prod.example.org"]
+	require.True(t, ok, "expected zone prod.example.org, got zones: %v", zoneNames(zm))
 }
 
 func TestCommonSuffixDiscoverer_MixedTLDs(t *testing.T) {
@@ -125,13 +101,9 @@ func TestCommonSuffixDiscoverer_MixedTLDs(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
-	if len(zm) != 2 {
-		t.Fatalf("expected 2 zones for mixed TLDs, got %d: %v", len(zm), zoneNames(zm))
-	}
+	require.Len(t, zm, 2, "expected 2 zones for mixed TLDs, got %v", zoneNames(zm))
 }
 
 // TestCommonSuffixDiscoverer_FallbackA verifies that when records within a TLD
@@ -146,16 +118,11 @@ func TestCommonSuffixDiscoverer_FallbackA(t *testing.T) {
 		{DNSName: "host.beta.org", Address: "10.0.0.2", Family: 4},
 	}
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(zm) != 1 {
-		t.Fatalf("expected 1 zone for fallback, got %d: %v", len(zm), zoneNames(zm))
-	}
+	require.NoError(t, err, "unexpected error")
+	require.Len(t, zm, 1, "expected 1 zone for fallback, got %v", zoneNames(zm))
 	// Fallback A: uses 2-label suffix of first record -> "alpha.org"
-	if _, ok := zm["alpha.org"]; !ok {
-		t.Fatalf("expected fallback zone alpha.org, got zones: %v", zoneNames(zm))
-	}
+	_, ok := zm["alpha.org"]
+	require.True(t, ok, "expected fallback zone alpha.org, got zones: %v", zoneNames(zm))
 }
 
 // TestCommonSuffixDiscoverer_FallbackB verifies that when the computed zone name
@@ -171,27 +138,18 @@ func TestCommonSuffixDiscoverer_FallbackB(t *testing.T) {
 		{DNSName: "host.example.org", Address: "10.0.0.2", Family: 4},
 	}
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(zm) != 1 {
-		t.Fatalf("expected 1 zone for fallback, got %d: %v", len(zm), zoneNames(zm))
-	}
+	require.NoError(t, err, "unexpected error")
+	require.Len(t, zm, 1, "expected 1 zone for fallback, got %v", zoneNames(zm))
 	// Fallback B: truncates to last 2 labels → "example.org"
-	if _, ok := zm["example.org"]; !ok {
-		t.Fatalf("expected fallback zone example.org, got zones: %v", zoneNames(zm))
-	}
+	_, ok := zm["example.org"]
+	require.True(t, ok, "expected fallback zone example.org, got zones: %v", zoneNames(zm))
 }
 
 func TestCommonSuffixDiscoverer_Empty(t *testing.T) {
 	d := &CommonSuffixDiscoverer{}
 	zm, err := d.Discover(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(zm) != 0 {
-		t.Fatalf("expected 0 zones, got %d", len(zm))
-	}
+	require.NoError(t, err, "unexpected error")
+	require.Empty(t, zm, "expected 0 zones")
 }
 
 func TestNetboxDNSDiscoverer(t *testing.T) {
@@ -226,22 +184,14 @@ func TestNetboxDNSDiscoverer(t *testing.T) {
 	}
 
 	zm, err := d.Discover(records)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
 	// host1.example.org matches example.org
 	// db.prod.example.org matches prod.example.org (longest match)
 	// web.prod.example.org matches prod.example.org (longest match)
-	if len(zm) != 2 {
-		t.Fatalf("expected 2 zones, got %d: %v", len(zm), zoneNames(zm))
-	}
-	if recs := zm["example.org"]; len(recs) != 1 {
-		t.Fatalf("expected 1 record in example.org, got %d", len(recs))
-	}
-	if recs := zm["prod.example.org"]; len(recs) != 2 {
-		t.Fatalf("expected 2 records in prod.example.org, got %d", len(recs))
-	}
+	require.Len(t, zm, 2, "expected 2 zones, got %v", zoneNames(zm))
+	require.Len(t, zm["example.org"], 1, "expected 1 record in example.org")
+	require.Len(t, zm["prod.example.org"], 2, "expected 2 records in prod.example.org")
 }
 
 func TestLongestMatchingZone(t *testing.T) {
@@ -266,23 +216,15 @@ func TestLongestMatchingZone(t *testing.T) {
 
 func TestNewDiscoverer_ZoneDepth(t *testing.T) {
 	d, err := NewDiscoverer(ModeZoneDepth, map[string]string{"depth": "3"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 	zd, ok := d.(*ZoneDepthDiscoverer)
-	if !ok {
-		t.Fatal("expected *ZoneDepthDiscoverer")
-	}
-	if zd.Depth != 3 {
-		t.Fatalf("expected depth 3, got %d", zd.Depth)
-	}
+	require.True(t, ok, "expected *ZoneDepthDiscoverer")
+	require.Equal(t, 3, zd.Depth, "expected depth 3")
 }
 
 func TestNewDiscoverer_UnknownMode(t *testing.T) {
 	_, err := NewDiscoverer("unknown", nil)
-	if err == nil {
-		t.Fatal("expected error for unknown mode")
-	}
+	require.Error(t, err, "expected error for unknown mode")
 }
 
 func zoneNames(zm ZoneMap) []string {

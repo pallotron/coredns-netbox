@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewGCPHandler_FieldNames(t *testing.T) {
@@ -14,9 +16,7 @@ func TestNewGCPHandler_FieldNames(t *testing.T) {
 	logger.Info("hello world", "key", "value")
 
 	var out map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
-		t.Fatalf("invalid JSON output %q: %v", buf.String(), err)
-	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &out), "invalid JSON output %q", buf.String())
 	if _, ok := out["severity"]; !ok {
 		t.Error("expected 'severity' field, not found")
 	}
@@ -56,9 +56,7 @@ func TestNewGCPHandler_SeverityMapping(t *testing.T) {
 		logger.Log(context.TODO(), tt.level, "test")
 
 		var out map[string]any
-		if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
-			t.Fatalf("level %v: invalid JSON: %v", tt.level, err)
-		}
+		require.NoError(t, json.Unmarshal(buf.Bytes(), &out), "level %v: invalid JSON", tt.level)
 		if got := out["severity"]; got != tt.want {
 			t.Errorf("level %v: severity = %q, want %q", tt.level, got, tt.want)
 		}
@@ -79,9 +77,7 @@ func TestNewGCPHandler_PreservesExistingReplaceAttr(t *testing.T) {
 	logger.Info("test")
 
 	var out map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &out), "invalid JSON")
 	if _, ok := out["time"]; ok {
 		t.Error("expected 'time' to be dropped by user-provided ReplaceAttr")
 	}

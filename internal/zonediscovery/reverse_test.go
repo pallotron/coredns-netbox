@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReverseZoneDiscoverer_IPv4(t *testing.T) {
@@ -76,9 +77,7 @@ func TestReverseZoneDiscoverer_IPv4(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			disc := NewReverseZoneDiscoverer(tt.ipv4Zones, nil)
 			zones, err := disc.Discover(tt.records)
-			if err != nil {
-				t.Fatalf("Discover() error = %v", err)
-			}
+			require.NoError(t, err)
 
 			// Check zone counts
 			if len(zones) != len(tt.wantZones) {
@@ -129,9 +128,7 @@ func TestReverseZoneDiscoverer_IPv6(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			disc := NewReverseZoneDiscoverer(nil, tt.ipv6Zones)
 			zones, err := disc.Discover(tt.records)
-			if err != nil {
-				t.Fatalf("Discover() error = %v", err)
-			}
+			require.NoError(t, err)
 
 			if len(zones) != tt.wantZoneCount {
 				t.Errorf("got %d zones, want %d", len(zones), tt.wantZoneCount)
@@ -196,13 +193,9 @@ func TestReverseIPv4(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			disc := NewReverseZoneDiscoverer(tt.zones, nil)
 			ip := net.ParseIP(tt.ip)
-			if ip == nil {
-				t.Fatalf("failed to parse IP %q", tt.ip)
-			}
+			require.NotNil(t, ip, "failed to parse IP %q", tt.ip)
 			zone, ptr, err := disc.reverseIPv4(ip)
-			if err != nil {
-				t.Fatalf("reverseIPv4() error = %v", err)
-			}
+			require.NoError(t, err)
 			if zone != tt.wantZone {
 				t.Errorf("zone = %q, want %q", zone, tt.wantZone)
 			}
