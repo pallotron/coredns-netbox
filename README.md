@@ -3,7 +3,7 @@
 [![CI](https://github.com/pallotron/coredns-netbox/actions/workflows/ci.yaml/badge.svg)](https://github.com/pallotron/coredns-netbox/actions/workflows/ci.yaml)
 [![E2E Tests](https://github.com/pallotron/coredns-netbox/actions/workflows/publish.yaml/badge.svg)](https://github.com/pallotron/coredns-netbox/actions/workflows/publish.yaml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.25.6-00ADD8?logo=go)](go.mod)
+[![Go Version](https://img.shields.io/badge/Go-1.25.7-00ADD8?logo=go)](go.mod)
 [![CoreDNS Image](https://img.shields.io/badge/ghcr.io-coredns--netbox-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox)
 [![Sidecar Image](https://img.shields.io/badge/ghcr.io-coredns--netbox--sidecar-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox-sidecar)
 

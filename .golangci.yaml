@@ -1,0 +1,40 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable-all: true
+  disable:
+    # Too noisy / not useful for this project
+    - wrapcheck        # wrapping every error is excessive for internal packages
+    - exhaustruct      # requiring all struct fields is too strict
+    - ireturn          # returning interfaces is idiomatic in Go
+    - varnamelen       # short variable names are fine in Go
+    - mnd              # magic numbers are acceptable in config defaults and tests
+    - depguard         # no dependency restrictions needed
+    - tagliatelle      # JSON tag style is dictated by Netbox API
+    - testpackage      # white-box testing (same package) is intentional
+    - paralleltest     # not all tests benefit from t.Parallel()
+    - tparallel        # same as above
+    - wsl              # whitespace linter is too opinionated
+    - nlreturn         # blank line before return is subjective
+    - godox            # TODO/FIXME comments are acceptable
+    - lll              # line length limit is too strict
+    - funlen           # function length limit is too strict
+    - cyclop           # cyclomatic complexity is covered by gocyclo
+    - gocognit         # cognitive complexity is subjective
+    - nestif           # nested if depth is too strict
+    - nonamedreturns   # named returns are sometimes clearer
+    - forcetypeassert  # type assertions are sometimes unavoidable
+    - err113           # wrapping sentinel errors is excessive internally
+    - godot            # requiring periods on comments is too strict
+    - interfacebloat   # interface size is context-dependent
+    - tagalign         # struct tag alignment is cosmetic
+    - musttag          # not all structs need tags
+
+issues:
+  exclude-dirs:
+    - vendor
+  max-issues-per-linter: 0
+  max-same-issues: 0

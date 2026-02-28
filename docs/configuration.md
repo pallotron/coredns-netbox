@@ -101,7 +101,7 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `secondary.enabled` | `false` | Deploy a secondary CoreDNS for AXFR replication |
 | `secondary.zones` | `[]` | Zones to replicate on the secondary |
 | `secondary.transferFrom` | `[]` | Primary IPs to pull AXFR from |
-| `hostPort.enabled` | `true` | Expose primary CoreDNS on host port 53 |
+| `hostPort.enabled` | `false` | Expose primary CoreDNS on host port 53 |
 | `reverseZones.enabled` | `true` | Enable automatic PTR record generation |
 | `reverseZones.ipv4` | `["10.in-addr.arpa", ...]` | Static IPv4 reverse zones |
 | `reverseZones.ipv6` | `[]` | Static IPv6 reverse zones |
