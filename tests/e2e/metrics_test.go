@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,7 +42,7 @@ func TestMetricsEndpointReachable(t *testing.T) {
 	fetchMetrics(t) // fatals on any error
 }
 
-// TestMetricsContainExpectedSeries verifies that all 9 netbox_sidecar_* metric
+// TestMetricsContainExpectedSeries verifies that all 11 netbox_sidecar_* metric
 // families appear in the scrape output.
 func TestMetricsContainExpectedSeries(t *testing.T) {
 	body := fetchMetrics(t)
@@ -56,12 +57,12 @@ func TestMetricsContainExpectedSeries(t *testing.T) {
 		"netbox_sidecar_zones_active",
 		"netbox_sidecar_zone_writes_total",
 		"netbox_sidecar_zone_write_errors_total",
+		"netbox_sidecar_netbox_fetch_retries_total",
+		"netbox_sidecar_zone_staleness_seconds",
 	}
 
 	for _, name := range want {
-		if !strings.Contains(body, name) {
-			t.Errorf("metric %q not found in /metrics output", name)
-		}
+		assert.Contains(t, body, name, "metric %q not found in /metrics output", name)
 	}
 }
 
@@ -72,9 +73,8 @@ func TestMetricsSuccessfulPoll(t *testing.T) {
 
 	// The text exposition format includes lines like:
 	//   netbox_sidecar_poll_total{result="success"} 1
-	if !strings.Contains(body, `netbox_sidecar_poll_total{result="success"}`) {
-		t.Error(`expected netbox_sidecar_poll_total{result="success"} in /metrics output`)
-	}
+	assert.Contains(t, body, `netbox_sidecar_poll_total{result="success"}`,
+		`expected netbox_sidecar_poll_total{result="success"} in /metrics output`)
 }
 
 // TestMetricsZonesActive verifies that the sidecar is managing at least one zone.
@@ -86,11 +86,9 @@ func TestMetricsZonesActive(t *testing.T) {
 		if strings.HasPrefix(line, "netbox_sidecar_zones_active ") {
 			parts := strings.Fields(line)
 			require.GreaterOrEqual(t, len(parts), 2, "unexpected format for zones_active line: %q", line)
-			if parts[1] == "0" {
-				t.Errorf("expected netbox_sidecar_zones_active > 0, got 0")
-			}
+			assert.NotEqual(t, "0", parts[1], "expected netbox_sidecar_zones_active > 0")
 			return
 		}
 	}
-	t.Error("netbox_sidecar_zones_active line not found in /metrics output")
+	require.Fail(t, "netbox_sidecar_zones_active line not found in /metrics output")
 }
