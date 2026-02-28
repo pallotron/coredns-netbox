@@ -1,13 +1,16 @@
 package zonediscovery
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -192,6 +195,57 @@ func TestNetboxDNSDiscoverer(t *testing.T) {
 	require.Len(t, zm, 2, "expected 2 zones, got %v", zoneNames(zm))
 	require.Len(t, zm["example.org"], 1, "expected 1 record in example.org")
 	require.Len(t, zm["prod.example.org"], 2, "expected 2 records in prod.example.org")
+}
+
+func TestNetboxDNSDiscoverer_Pagination(t *testing.T) {
+	// Mock server that serves two pages of zones.
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/plugins/netbox-dns/zones/" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+
+		page := r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+
+		switch page {
+		case "2":
+			// Second (last) page: no Next field.
+			resp := netboxDNSZoneList{
+				Count: 4,
+				Next:  nil,
+				Results: []netboxDNSZone{
+					{Name: "staging.example.org"},
+					{Name: "dev.example.org"},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			// First page: Next points to page 2.
+			nextURL := fmt.Sprintf("%s/api/plugins/netbox-dns/zones/?status=active&limit=2&page=2", srvURL)
+			resp := netboxDNSZoneList{
+				Count: 4,
+				Next:  &nextURL,
+				Results: []netboxDNSZone{
+					{Name: "example.org"},
+					{Name: "prod.example.org"},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	d := NewNetboxDNSDiscoverer(srv.URL, "test-token")
+	zones, err := d.FetchZones(context.Background())
+	require.NoError(t, err, "FetchZones should not error")
+
+	sort.Strings(zones)
+	expected := []string{"dev.example.org", "example.org", "prod.example.org", "staging.example.org"}
+	assert.Equal(t, expected, zones, "should return zones from all pages")
 }
 
 func TestLongestMatchingZone(t *testing.T) {

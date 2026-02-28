@@ -37,41 +37,53 @@ type netboxDNSZone struct {
 
 type netboxDNSZoneList struct {
 	Count   int             `json:"count"`
+	Next    *string         `json:"next"`
 	Results []netboxDNSZone `json:"results"`
 }
 
 // FetchZones retrieves active zones from the Netbox DNS plugin.
+// It follows pagination links until all pages have been fetched.
 func (d *NetboxDNSDiscoverer) FetchZones(ctx context.Context) ([]string, error) {
 	url := d.baseURL + "/api/plugins/netbox-dns/zones/?status=active&limit=1000"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", netboxclient.AuthHeader(d.token))
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch zones: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("netbox-dns zones API returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result netboxDNSZoneList
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode zones response: %w", err)
-	}
-
 	var zones []string
-	for _, z := range result.Results {
-		if z.Name != "" {
-			zones = append(zones, z.Name)
+	for url != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", netboxclient.AuthHeader(d.token))
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := d.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("fetch zones: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("netbox-dns zones API returned %d: %s", resp.StatusCode, string(body))
+		}
+
+		var result netboxDNSZoneList
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decode zones response: %w", err)
+		}
+		resp.Body.Close()
+
+		for _, z := range result.Results {
+			if z.Name != "" {
+				zones = append(zones, z.Name)
+			}
+		}
+
+		if result.Next != nil {
+			url = *result.Next
+		} else {
+			url = ""
 		}
 	}
 	return zones, nil
