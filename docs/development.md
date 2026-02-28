@@ -164,3 +164,7 @@ The seed script (`dev/seed-ips.py`) bulk-creates 18,000 IP addresses directly vi
 | server1-storage.dc1.mycompany.com | 10.1.16.1/24 | dc1.mycompany.com |
 | server500-mgmt.dc2.mycompany.com | 10.2.1.246/24 | dc2.mycompany.com |
 | server2000-storage.dc3.mycompany.com | 10.3.23.208/24 | dc3.mycompany.com |
+
+## Known Limitations
+
+- **E2E tests only run on version tag pushes** (`v*.*.*`) and manual workflow dispatch, not on PRs. This means E2E regressions can reach `main` undetected. To run E2E locally before merging, use `make dev && make dev.wait && make test.e2e`.

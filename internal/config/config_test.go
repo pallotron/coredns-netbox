@@ -40,7 +40,7 @@ var allEnvKeys = []string{
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range allEnvKeys {
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 	}
 }
 
