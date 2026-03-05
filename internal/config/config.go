@@ -34,6 +34,9 @@ type Config struct {
 	MgmtVRFPattern            string
 	MgmtInterfacePattern      string
 
+	// DNS domain configuration
+	DomainSuffix string
+
 	// Reverse zone configuration
 	EnableReverseZones bool
 	ReverseZonesIPv4   []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa"])
@@ -63,6 +66,9 @@ func Load() (*Config, error) {
 		DataplaneInterfacePattern: envOrDefault("DATAPLANE_PATTERN", "(?i)storage|vtep|vsan"),
 		MgmtVRFPattern:            envOrDefault("MGMT_VRF_PATTERN", "(?i)mgmt|oob"),
 		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET"),
+
+		// DNS domain configuration
+		DomainSuffix: envOrDefault("DOMAIN_SUFFIX", "example.org"),
 
 		// Reverse zone defaults
 		EnableReverseZones: envOrDefault("ENABLE_REVERSE_ZONES", "true") == "true",

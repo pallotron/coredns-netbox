@@ -193,6 +193,8 @@ func (c *Categorizer) SelectDeviceIPs(records []netboxclient.IPRecord) map[strin
 // extractZone extracts the DNS zone from a device name
 // Examples: dc1-site13a-r101-prod-hv-01 -> dc1-site.example.com
 //           dc2-m21-r101-prod-hv-01 -> dc2-m.example.com
+//           ams01-r101-pdu-left-01 -> ams01.example.com
+//           txdr-iah13a-r301-lab-dev-hv-01 -> txdr-lab-dev.example.com
 func (c *Categorizer) extractZone(deviceName string) string {
 	parts := strings.Split(deviceName, "-")
 	if len(parts) < 2 {
@@ -200,6 +202,16 @@ func (c *Categorizer) extractZone(deviceName string) string {
 	}
 
 	loc := parts[0]
+
+	// Special case: lab devices with pattern {location}-{site}-{rack}-lab-{environment}
+	// e.g., txdr-iah13a-r301-lab-dev-hv-01 -> txdr-lab-dev.example.com
+	for i, part := range parts {
+		if part == "lab" && i+1 < len(parts) {
+			env := parts[i+1]
+			return loc + "-lab-" + env + "." + c.domainSuffix
+		}
+	}
+
 	site := parts[1]
 
 	// Strip trailing digits and letters from site component
@@ -213,6 +225,20 @@ func (c *Categorizer) extractZone(deviceName string) string {
 				cleanSite = site[:i]
 				break
 			}
+		}
+	}
+
+	// If cleanSite is just a single letter, check if it's a rack number or site code
+	// - If parts[2] looks like a rack (e.g., "r101"), then cleanSite is a valid site code
+	// - Otherwise (e.g., "ams01-r101-..."), the single letter is the rack, use location only
+	if len(cleanSite) == 1 {
+		// Check if there's a third part that looks like a rack number
+		if len(parts) > 2 && len(parts[2]) > 1 && parts[2][0] == 'r' {
+			// Third part looks like "r101", so cleanSite is a valid site code
+			// Continue to use loc-cleanSite pattern
+		} else {
+			// Single letter without a rack in third position - it IS the rack, use location only
+			return loc + "." + c.domainSuffix
 		}
 	}
 

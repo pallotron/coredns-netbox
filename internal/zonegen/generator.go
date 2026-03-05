@@ -1,10 +1,13 @@
 package zonegen
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -36,8 +39,19 @@ type Generator struct {
 }
 
 // NewGenerator creates a new zone file generator.
-func NewGenerator(cfg ZoneConfig) *Generator {
-	return &Generator{config: cfg}
+// If zonePath is provided and exists, it reads the current SOA serial
+// from the file to ensure serial continuity across restarts.
+func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
+	g := &Generator{config: cfg}
+
+	// Try to read existing serial from zone file for continuity
+	if zonePath != "" {
+		if serial, err := readSerialFromZoneFile(zonePath); err == nil && serial > 0 {
+			g.serial = serial
+		}
+	}
+
+	return g
 }
 
 // Generate creates a zone file string from the given records.
@@ -45,7 +59,15 @@ func NewGenerator(cfg ZoneConfig) *Generator {
 func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, error) {
 	hash := hashRecords(records)
 	if hash == g.lastHash {
+		slog.Debug("zone unchanged (hash match)", "zone", g.config.Origin, "hash", hash[:8], "records", len(records))
 		return "", false, nil
+	}
+
+	if g.lastHash != "" {
+		slog.Info("zone changed (hash mismatch)", "zone", g.config.Origin,
+			"old_hash", g.lastHash[:8], "new_hash", hash[:8], "records", len(records))
+	} else {
+		slog.Info("zone initial generation", "zone", g.config.Origin, "hash", hash[:8], "records", len(records))
 	}
 
 	g.serial = NextSerial(g.serial)
@@ -72,10 +94,23 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 	sorted := make([]netboxclient.IPRecord, len(records))
 	copy(sorted, records)
 	sort.Slice(sorted, func(i, j int) bool {
+		// Sort by all fields to ensure stable ordering
 		if sorted[i].DNSName != sorted[j].DNSName {
 			return sorted[i].DNSName < sorted[j].DNSName
 		}
-		return sorted[i].Address < sorted[j].Address
+		if sorted[i].Address != sorted[j].Address {
+			return sorted[i].Address < sorted[j].Address
+		}
+		if sorted[i].Family != sorted[j].Family {
+			return sorted[i].Family < sorted[j].Family
+		}
+		if sorted[i].DeviceName != sorted[j].DeviceName {
+			return sorted[i].DeviceName < sorted[j].DeviceName
+		}
+		if sorted[i].InterfaceName != sorted[j].InterfaceName {
+			return sorted[i].InterfaceName < sorted[j].InterfaceName
+		}
+		return sorted[i].VRF < sorted[j].VRF
 	})
 
 	// Generate records based on zone type
@@ -154,10 +189,23 @@ func hashRecords(records []netboxclient.IPRecord) string {
 	sorted := make([]netboxclient.IPRecord, len(records))
 	copy(sorted, records)
 	sort.Slice(sorted, func(i, j int) bool {
+		// Sort by all fields to ensure stable ordering
 		if sorted[i].DNSName != sorted[j].DNSName {
 			return sorted[i].DNSName < sorted[j].DNSName
 		}
-		return sorted[i].Address < sorted[j].Address
+		if sorted[i].Address != sorted[j].Address {
+			return sorted[i].Address < sorted[j].Address
+		}
+		if sorted[i].Family != sorted[j].Family {
+			return sorted[i].Family < sorted[j].Family
+		}
+		if sorted[i].DeviceName != sorted[j].DeviceName {
+			return sorted[i].DeviceName < sorted[j].DeviceName
+		}
+		if sorted[i].InterfaceName != sorted[j].InterfaceName {
+			return sorted[i].InterfaceName < sorted[j].InterfaceName
+		}
+		return sorted[i].VRF < sorted[j].VRF
 	})
 
 	h := sha256.New()
@@ -165,4 +213,47 @@ func hashRecords(records []netboxclient.IPRecord) string {
 		_, _ = fmt.Fprintf(h, "%s|%s|%d\n", r.DNSName, r.Address, r.Family)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// readSerialFromZoneFile attempts to read the SOA serial from an existing zone file.
+// Returns the serial number if found, otherwise returns 0.
+// This enables serial continuity across pod restarts even with ephemeral storage.
+func readSerialFromZoneFile(path string) (uint32, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		// File doesn't exist yet (first run) - not an error
+		return 0, err
+	}
+	defer func() { _ = file.Close() }()
+
+	// Parse the zone file looking for the SOA serial
+	// Format: "@ IN SOA ... (\n    <serial>   ; serial\n"
+	scanner := bufio.NewScanner(file)
+	inSOA := false
+	serialRegex := regexp.MustCompile(`^\s*(\d{10})\s*;\s*serial`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Detect SOA record start
+		if strings.Contains(line, "IN SOA") {
+			inSOA = true
+			continue
+		}
+
+		// If we're in the SOA section, look for the serial line
+		if inSOA {
+			if matches := serialRegex.FindStringSubmatch(line); len(matches) == 2 {
+				return ParseSerial(matches[1])
+			}
+
+			// End of SOA section (closing paren)
+			if strings.Contains(line, ")") {
+				break
+			}
+		}
+	}
+
+	// Serial not found or parse error
+	return 0, fmt.Errorf("serial not found in zone file")
 }

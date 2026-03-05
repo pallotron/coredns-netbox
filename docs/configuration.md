@@ -1,5 +1,43 @@
 # Configuration
 
+## DNS Record Generation (Hybrid Approach)
+
+The sidecar uses a **hybrid approach** to generate DNS records from Netbox:
+
+1. **Records with `dns_name` populated** - Preserved as-is from Netbox
+   - Typically network switches/routers with manually-configured DNS names
+   - Example: A switch with `dns_name="switch01.example.com"` → DNS record created directly
+
+2. **Records without `dns_name`** - Generated from device names using interface categorization
+   - Typically servers, PDUs, and infrastructure devices
+   - Example: Device `dc1-r101-prod-srv-01` with mgmt interface → `dc1-r101-prod-srv-01.dc1.example.com`
+
+This ensures both manually-managed DNS records and automatically-generated device records coexist.
+
+### Zone Extraction from Device Names
+
+For devices without `dns_name`, the DNS zone is extracted from the device name pattern:
+
+- **Multi-site pattern**: `loc1-site2a-r101-prod-srv-01` → zone `loc1-site.{domainSuffix}`
+  - Device name: `{location}-{site}{digits}{letters}-...` where site code is alphabetic prefix
+
+- **Single-site pattern**: `dc1-r101-srv-01` → zone `dc1.{domainSuffix}`
+  - Device name: `{location}-r{rack}-...`
+
+- **Lab environment pattern**: `loc1-site2a-r301-lab-dev-srv-01` → zone `loc1-lab-dev.{domainSuffix}`
+  - Device name: `{location}-{site}-{rack}-lab-{environment}-...`
+
+The `domainSuffix` is configured via Helm value or `DOMAIN_SUFFIX` environment variable.
+
+**Example configuration:**
+```yaml
+domainSuffix: example.com
+```
+
+Results in zones like:
+- `dc1-site13a-r101-prod-srv-01` → `dc1-site13a-r101-prod-srv-01.dc1-site.example.com`
+- `dc1-r101-srv-01` → `dc1-r101-srv-01.dc1.example.com`
+
 ## Interface Categorization
 
 The sidecar uses regex patterns to categorize network interfaces and intelligently select the appropriate IP for each device:
@@ -94,6 +132,7 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `ttl` | `300` | Default TTL for DNS records |
 | `primaryNS` | `ns1.example.org.` | SOA primary nameserver |
 | `adminEmail` | `admin.example.org.` | SOA admin email (dot notation) |
+| `domainSuffix` | `example.org` | DNS domain suffix for device-based record generation (zone extraction from device names) |
 | `pageSize` | `1000` | Records per API page (max 1000) |
 | `maxConcurrency` | `10` | Parallel API request limit |
 | `forwardServers` | `[1.1.1.1, 8.8.8.8]` | Upstream DNS resolvers |
@@ -116,13 +155,24 @@ Customize interface categorization via environment variables:
 
 | Environment Variable | Default | Description |
 |---|---|---|
+| `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `BMC_INTERFACE_PATTERN` | `(?i)bmc\|ipmi\|ilo\|idrac` | Regex for BMC interfaces |
 | `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
 | `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |
 | `MGMT_VRF_PATTERN` | `(?i)mgmt\|oob` | Regex for management VRFs |
 | `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|eth[01]\|mgt\|NET` | Regex for management interfaces |
+| `DOMAIN_SUFFIX` | `example.org` | DNS domain suffix for zone extraction from device names |
 
-These can be set in the Helm chart's `env` values or directly in the sidecar container.
+These can be set in the Helm chart's `sidecar.env` values or directly in the sidecar container.
+
+**Example - Enable debug logging:**
+```yaml
+# Helm values
+sidecar:
+  env:
+    - name: LOG_LEVEL
+      value: "DEBUG"
+```
 
 ## Zone Discovery Modes
 

@@ -84,6 +84,12 @@ sidecar:
   image: ghcr.io/pallotron/coredns-netbox-sidecar
   tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
+  # Additional environment variables for the sidecar container
+  # Example:
+  # env:
+  #   - name: LOG_LEVEL
+  #     value: "DEBUG"  # DEBUG, INFO (default), WARN, ERROR
+  env: []
 
 zoneDiscovery:
   mode: zone-depth
@@ -117,6 +123,11 @@ ttl: 300
 
 primaryNS: ns1.example.org.
 adminEmail: admin.example.org.
+
+# DNS domain suffix for device-based record generation.
+# Used to extract zones from device names (e.g., "dc1-site13a-r101-hv-01" → "dc1-site.{domainSuffix}").
+# IMPORTANT: Set this to your actual domain (e.g., "infra.example.com") in production.
+domainSuffix: example.org
 
 pageSize: 1000
 maxConcurrency: 10

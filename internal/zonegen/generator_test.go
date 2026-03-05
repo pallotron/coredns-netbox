@@ -5,8 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,7 +18,7 @@ func TestGenerateZone(t *testing.T) {
 		PrimaryNS:  "ns1.example.org.",
 		AdminEmail: "admin.example.org.",
 		TTL:        300,
-	})
+	}, "")
 
 	records := []netboxclient.IPRecord{
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
@@ -129,7 +131,7 @@ func TestGenerateReverseZone(t *testing.T) {
 		AdminEmail: "admin.example.org.",
 		TTL:        300,
 		Type:       ZoneTypeReverse,
-	})
+	}, "")
 
 	// For reverse zones, Address contains the PTR name and DNSName contains the target
 	records := []netboxclient.IPRecord{
@@ -172,7 +174,7 @@ func TestGenerateForwardZone(t *testing.T) {
 		AdminEmail: "admin.example.org.",
 		TTL:        300,
 		Type:       ZoneTypeForward,
-	})
+	}, "")
 
 	records := []netboxclient.IPRecord{
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
@@ -190,4 +192,79 @@ func TestGenerateForwardZone(t *testing.T) {
 	if strings.Contains(content, " IN PTR ") {
 		t.Error("should not contain PTR records in forward zone")
 	}
+}
+
+func TestSerialPersistence(t *testing.T) {
+	// Create a temporary zone file with a known serial
+	tmpDir := t.TempDir()
+	zonePath := filepath.Join(tmpDir, "db.example.org")
+
+	existingZone := `$ORIGIN example.org.
+$TTL 300
+@ IN SOA ns1.example.org. admin.example.org. (
+    2026030542   ; serial
+    3600      ; refresh
+    900       ; retry
+    604800    ; expire
+    86400     ; minimum
+)
+
+@ IN NS ns1.example.org.
+
+host1 IN A 10.0.0.1
+`
+	err := os.WriteFile(zonePath, []byte(existingZone), 0644)
+	require.NoError(t, err)
+
+	// Create generator with existing zone file
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+	}, zonePath)
+
+	// Generator should have read the serial from the file
+	assert.Equal(t, uint32(2026030542), gen.serial, "should have loaded serial from existing zone file")
+
+	// Generate with same records - should increment serial
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.2", Family: 4}, // Different IP
+	}
+
+	content, changed, err := gen.Generate(records)
+	require.NoError(t, err)
+	assert.True(t, changed, "should detect change when IP differs")
+
+	// Serial should have incremented from the loaded value
+	assert.Equal(t, uint32(2026030543), gen.serial, "serial should increment from loaded value")
+	assert.Contains(t, content, "2026030543   ; serial", "zone file should contain incremented serial")
+}
+
+func TestSerialPersistenceNoFile(t *testing.T) {
+	// Create generator with non-existent zone file path
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+	}, "/nonexistent/path/db.example.org")
+
+	// Generator should start with serial 0 (file doesn't exist)
+	assert.Equal(t, uint32(0), gen.serial, "should start with serial 0 when file doesn't exist")
+
+	// Generate records - should create new serial based on today's date
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+	}
+
+	content, changed, err := gen.Generate(records)
+	require.NoError(t, err)
+	assert.True(t, changed, "should detect change on first generation")
+
+	// Serial should be in YYYYMMDD01 format
+	now := time.Now().UTC()
+	expectedBase := uint32(now.Year()*1000000 + int(now.Month())*10000 + now.Day()*100)
+	assert.Equal(t, expectedBase+1, gen.serial, "serial should be today's date + 01")
+	assert.Contains(t, content, "host1 IN A 10.0.0.1", "zone file should contain the record")
 }
