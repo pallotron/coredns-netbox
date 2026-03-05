@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/config"
+	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/logging"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
@@ -24,7 +26,23 @@ import (
 )
 
 func main() {
-	slog.SetDefault(slog.New(logging.NewGCPHandler(os.Stderr, nil)))
+	// Configure log level from environment
+	logLevel := slog.LevelInfo
+	if level := os.Getenv("LOG_LEVEL"); level != "" {
+		switch level {
+		case "DEBUG", "debug":
+			logLevel = slog.LevelDebug
+		case "INFO", "info":
+			logLevel = slog.LevelInfo
+		case "WARN", "warn", "WARNING", "warning":
+			logLevel = slog.LevelWarn
+		case "ERROR", "error":
+			logLevel = slog.LevelError
+		}
+	}
+	slog.SetDefault(slog.New(logging.NewGCPHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	})))
 
 	runOnce := flag.Bool("run-once", false, "Run once and exit (for init container mode)")
 	flag.Parse()
@@ -40,6 +58,20 @@ func main() {
 		cfg.NetboxRetryCount, cfg.NetboxRetryBaseDelay, cfg.NetboxRetryMaxDelay)
 	if err != nil {
 		slog.Error("failed to create netbox client", "err", err)
+		os.Exit(1)
+	}
+
+	// Create IP categorizer for device-based DNS record generation
+	categorizer, err := ipcategorizer.NewCategorizer(
+		cfg.BMCInterfacePattern,
+		cfg.LoopbackInterfacePattern,
+		cfg.DataplaneInterfacePattern,
+		cfg.MgmtVRFPattern,
+		cfg.MgmtInterfacePattern,
+		cfg.DomainSuffix,
+	)
+	if err != nil {
+		slog.Error("failed to create IP categorizer", "err", err)
 		os.Exit(1)
 	}
 
@@ -116,7 +148,7 @@ func main() {
 	}
 
 	// Run the poll loop
-	if err := run(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m, markReady); err != nil {
+	if err := run(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m, markReady); err != nil {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
@@ -139,11 +171,11 @@ func runOnceResult(pollErr error, hasCachedZones bool) error {
 	return pollErr
 }
 
-func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func()) error {
+func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func()) error {
 	firstSuccess := false
 	lastSuccessTime := time.Now()
 	for {
-		pollErr := poll(ctx, cfg, client, forwardDisc, reverseDisc, mgr, m)
+		pollErr := poll(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m)
 		if pollErr != nil {
 			slog.Warn("poll error", "err", pollErr)
 			m.ZoneStalenessSeconds.Set(time.Since(lastSuccessTime).Seconds())
@@ -169,7 +201,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, f
 	}
 }
 
-func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar) error {
+func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar) error {
 	pollStart := time.Now()
 
 	slog.Info("fetching IP addresses from netbox")
@@ -189,8 +221,11 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 		m.NetboxEmptyResponseTotal.Inc()
 	}
 
-	// Discover forward zones
-	forwardZones, err := forwardDisc.Discover(records)
+	// Hybrid approach: combine records with existing dns_name and device-generated names
+	enrichedRecords := enrichRecordsWithDeviceNames(records, categorizer)
+
+	// Discover forward zones from enriched records
+	forwardZones, err := forwardDisc.Discover(enrichedRecords)
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
 		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
@@ -199,10 +234,10 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 
 	slog.Info("discovered forward zones", "count", len(forwardZones))
 
-	// Discover reverse zones if enabled
+	// Discover reverse zones if enabled (use enriched records)
 	combinedZones := forwardZones
 	if reverseDisc != nil {
-		reverseZones, err := reverseDisc.Discover(records)
+		reverseZones, err := reverseDisc.Discover(enrichedRecords)
 		if err != nil {
 			m.PollTotal.WithLabelValues("error").Inc()
 			m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
@@ -236,4 +271,79 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, fo
 
 	slog.Info("zone update complete", "active_zones", mgr.Zones())
 	return nil
+}
+
+// enrichRecordsWithDeviceNames implements a hybrid approach:
+// - Keep records that already have dns_name populated
+// - Generate DNS names from device names for records without dns_name
+func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *ipcategorizer.Categorizer) []netboxclient.IPRecord {
+	var withDNSName []netboxclient.IPRecord
+	var withoutDNSName []netboxclient.IPRecord
+
+	// Split records based on whether dns_name is populated
+	for _, rec := range records {
+		if rec.DNSName != "" {
+			withDNSName = append(withDNSName, rec)
+		} else {
+			withoutDNSName = append(withoutDNSName, rec)
+		}
+	}
+
+	slog.Info("record split", "with_dns_name", len(withDNSName), "without_dns_name", len(withoutDNSName))
+
+	// Generate device-based DNS records for those without dns_name
+	deviceDNS := categorizer.SelectDeviceIPs(withoutDNSName)
+	generatedRecords := deviceDNSToRecords(deviceDNS)
+
+	slog.Info("generated device-based records", "devices", len(deviceDNS), "records", len(generatedRecords))
+
+	// Merge: keep existing dns_name records and add generated ones
+	result := make([]netboxclient.IPRecord, 0, len(withDNSName)+len(generatedRecords))
+	result = append(result, withDNSName...)
+	result = append(result, generatedRecords...)
+
+	return result
+}
+
+// deviceDNSToRecords converts device DNS records to IPRecord format
+func deviceDNSToRecords(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) []netboxclient.IPRecord {
+	var records []netboxclient.IPRecord
+
+	// Sort device names for deterministic output
+	deviceNames := make([]string, 0, len(deviceDNS))
+	for deviceName := range deviceDNS {
+		deviceNames = append(deviceNames, deviceName)
+	}
+	sort.Strings(deviceNames)
+
+	for _, deviceName := range deviceNames {
+		dns := deviceDNS[deviceName]
+		// Primary management IP: devicename.zone
+		if dns.PrimaryIP != nil {
+			fqdn := deviceName + "." + dns.Zone
+			records = append(records, netboxclient.IPRecord{
+				DNSName:       fqdn,
+				Address:       dns.PrimaryIP.Address,
+				Family:        dns.PrimaryIP.Family,
+				DeviceName:    deviceName,
+				InterfaceName: dns.PrimaryIP.InterfaceName,
+				VRF:           dns.PrimaryIP.VRF,
+			})
+		}
+
+		// BMC IP: devicename-bmc.zone
+		if dns.BMCIP != nil {
+			fqdn := deviceName + "-bmc." + dns.Zone
+			records = append(records, netboxclient.IPRecord{
+				DNSName:       fqdn,
+				Address:       dns.BMCIP.Address,
+				Family:        dns.BMCIP.Family,
+				DeviceName:    deviceName,
+				InterfaceName: dns.BMCIP.InterfaceName,
+				VRF:           dns.BMCIP.VRF,
+			})
+		}
+	}
+
+	return records
 }

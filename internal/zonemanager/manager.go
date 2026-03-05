@@ -69,13 +69,15 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 				zoneType = zonegen.ZoneTypeReverse
 			}
 
+			// Pass zone file path so generator can read existing serial for continuity
+			zonePath := m.zonePath(zone)
 			gen = zonegen.NewGenerator(zonegen.ZoneConfig{
 				Origin:     zone,
 				PrimaryNS:  m.primaryNS,
 				AdminEmail: m.adminEmail,
 				TTL:        m.ttl,
 				Type:       zoneType,
-			})
+			}, zonePath)
 			m.generators[zone] = gen
 		}
 

@@ -162,14 +162,15 @@ func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 	totalPages := int(math.Ceil(float64(total) / float64(c.pageSize)))
 
 	// Fan-out with bounded concurrency
+	// Use indexed results to ensure deterministic ordering
 	sem := make(chan struct{}, c.maxConcurrency)
-	resultsCh := make(chan []IPRecord, totalPages)
+	results := make([][]IPRecord, totalPages)
 	errsCh := make(chan error, totalPages)
 
 	var wg sync.WaitGroup
 	for page := 0; page < totalPages; page++ {
 		wg.Add(1)
-		go func(offset int) {
+		go func(pageNum int, offset int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -213,12 +214,11 @@ func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 					VRF:           vrf,
 				})
 			}
-			resultsCh <- records
-		}(page * c.pageSize)
+			results[pageNum] = records
+		}(page, page*c.pageSize)
 	}
 
 	wg.Wait()
-	close(resultsCh)
 	close(errsCh)
 
 	// Check for errors
@@ -226,9 +226,9 @@ func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 		return nil, err
 	}
 
-	// Collect results
+	// Collect results in deterministic page order
 	var all []IPRecord
-	for records := range resultsCh {
+	for _, records := range results {
 		all = append(all, records...)
 	}
 

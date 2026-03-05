@@ -278,6 +278,9 @@ func TestExtractZone(t *testing.T) {
 		{"single part (no dash)", "hostname", "example.com"},
 		{"two parts", "dc1-sw01", "dc1-sw.example.com"},
 		{"site with digits suffix", "dc3-cu2a-leaf-01", "dc3-cu.example.com"},
+		{"single-site rack pattern", "dc1-r101-pdu-left-01", "dc1.example.com"},
+		{"lab device pattern", "loc1-site2a-r301-lab-dev-hv-01", "loc1-lab-dev.example.com"},
+		{"lab device with staging", "loc2-site3b-r401-lab-staging-srv-01", "loc2-lab-staging.example.com"},
 	}
 
 	for _, tt := range tests {
