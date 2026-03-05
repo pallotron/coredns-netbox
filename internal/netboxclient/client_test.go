@@ -126,6 +126,89 @@ func TestFetchIPAddresses(t *testing.T) {
 	}
 }
 
+func TestFetchIPAddresses_Idempotency(t *testing.T) {
+	// Test that multiple fetches with parallel page loading return identical results
+	// This catches hash oscillation bugs caused by non-deterministic ordering
+	allRecords := []mockIPAddr{
+		newMockAddr(1, "10.0.0.1/24", "host1.example.org"),
+		newMockAddr(2, "10.0.0.2/24", "host2.example.org"),
+		newMockAddr(3, "10.0.0.3/24", "host3.example.org"),
+		newMockAddr(4, "10.0.0.4/24", "host4.example.org"),
+		newMockAddr(5, "10.0.0.5/24", "host5.example.org"),
+		newMockAddr(6, "10.0.0.6/24", "host6.example.org"),
+		newMockAddr(7, "10.0.0.7/24", "host7.example.org"),
+		newMockAddr(8, "10.0.0.8/24", "host8.example.org"),
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ipam/ip-addresses/" {
+			http.NotFound(w, r)
+			return
+		}
+
+		q := r.URL.Query()
+		limit := 2
+		offset := 0
+		if v := q.Get("limit"); v != "" {
+			_, _ = fmt.Sscanf(v, "%d", &limit)
+		}
+		if v := q.Get("offset"); v != "" {
+			_, _ = fmt.Sscanf(v, "%d", &offset)
+		}
+
+		end := offset + limit
+		if end > len(allRecords) {
+			end = len(allRecords)
+		}
+		start := offset
+		if start > len(allRecords) {
+			start = len(allRecords)
+		}
+
+		resp := mockIPList{
+			Count:   len(allRecords),
+			Results: allRecords[start:end],
+		}
+
+		// Add artificial delay to increase likelihood of goroutine race conditions
+		time.Sleep(1 * time.Millisecond)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	client, err := New(srv.URL, "testtoken", 2, 4, 0, 0, 0) // 4 concurrent fetches
+	require.NoError(t, err, "New() error")
+
+	// Fetch multiple times and verify results are identical
+	const iterations = 5
+	var previousRecords []IPRecord
+
+	for i := 0; i < iterations; i++ {
+		records, err := client.FetchIPAddresses(context.Background())
+		require.NoError(t, err, "FetchIPAddresses() error on iteration %d", i)
+		require.Len(t, records, len(allRecords), "iteration %d: wrong record count", i)
+
+		if i > 0 {
+			// Compare with previous fetch - should be identical
+			require.Equal(t, len(previousRecords), len(records),
+				"iteration %d: record count changed", i)
+
+			for j := 0; j < len(records); j++ {
+				require.Equal(t, previousRecords[j].DNSName, records[j].DNSName,
+					"iteration %d, record %d: DNSName mismatch", i, j)
+				require.Equal(t, previousRecords[j].Address, records[j].Address,
+					"iteration %d, record %d: Address mismatch", i, j)
+				require.Equal(t, previousRecords[j].Family, records[j].Family,
+					"iteration %d, record %d: Family mismatch", i, j)
+			}
+		}
+
+		previousRecords = records
+	}
+}
+
 func TestStripCIDR(t *testing.T) {
 	tests := []struct {
 		input, want string

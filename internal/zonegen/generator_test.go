@@ -268,3 +268,55 @@ func TestSerialPersistenceNoFile(t *testing.T) {
 	assert.Equal(t, expectedBase+1, gen.serial, "serial should be today's date + 01")
 	assert.Contains(t, content, "host1 IN A 10.0.0.1", "zone file should contain the record")
 }
+
+func TestGenerateIdempotency(t *testing.T) {
+	// Test that generating the same records multiple times produces stable hashes
+	// This catches hash oscillation bugs caused by non-deterministic record ordering
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+	}, "")
+
+	// Create records with fields that could cause sort instability
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4, DeviceName: "device1", InterfaceName: "eth0", VRF: "mgmt"},
+		{DNSName: "host1.example.org", Address: "2001:db8::1", Family: 6, DeviceName: "device1", InterfaceName: "eth0", VRF: "mgmt"}, // Same DNS, different address/family
+		{DNSName: "host2.example.org", Address: "10.0.0.2", Family: 4, DeviceName: "device2", InterfaceName: "eth1", VRF: "prod"},
+		{DNSName: "host3.example.org", Address: "10.0.0.3", Family: 4, DeviceName: "device3", InterfaceName: "eth0", VRF: "mgmt"},
+		{DNSName: "host4.example.org", Address: "10.0.0.4", Family: 4, DeviceName: "device4", InterfaceName: "eth2", VRF: "dev"},
+	}
+
+	// First generation
+	content1, changed, err := gen.Generate(records)
+	require.NoError(t, err)
+	assert.True(t, changed, "should detect change on first generation")
+	assert.NotEmpty(t, content1, "should generate content")
+
+	// Second generation with same records (should be unchanged)
+	content2, changed, err := gen.Generate(records)
+	require.NoError(t, err)
+	assert.False(t, changed, "should not detect change when records identical")
+	assert.Empty(t, content2, "should return empty content when unchanged")
+
+	// Third generation with same records (verify stability)
+	content3, changed, err := gen.Generate(records)
+	require.NoError(t, err)
+	assert.False(t, changed, "should remain unchanged on third generation")
+	assert.Empty(t, content3, "should return empty content when unchanged")
+
+	// Test with shuffled records (same data, different input order)
+	shuffledRecords := []netboxclient.IPRecord{
+		records[4], // host4
+		records[1], // host1 (IPv6)
+		records[0], // host1 (IPv4)
+		records[3], // host3
+		records[2], // host2
+	}
+
+	content4, changed, err := gen.Generate(shuffledRecords)
+	require.NoError(t, err)
+	assert.False(t, changed, "should not detect change when records shuffled")
+	assert.Empty(t, content4, "should return empty content when records just shuffled")
+}
