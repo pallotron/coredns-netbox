@@ -135,7 +135,11 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 			if r.Family == 6 {
 				rrType = "AAAA"
 			}
-			fmt.Fprintf(&b, "%s IN %s %s\n", name, rrType, r.Address)
+			if r.TTL > 0 {
+				fmt.Fprintf(&b, "%s %d IN %s %s\n", name, r.TTL, rrType, r.Address)
+			} else {
+				fmt.Fprintf(&b, "%s IN %s %s\n", name, rrType, r.Address)
+			}
 		}
 	}
 

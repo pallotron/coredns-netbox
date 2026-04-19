@@ -1,6 +1,7 @@
 package zonegen
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,9 +237,12 @@ host1 IN A 10.0.0.1
 	require.NoError(t, err)
 	assert.True(t, changed, "should detect change when IP differs")
 
-	// Serial should have incremented from the loaded value
-	assert.Equal(t, uint32(2026030543), gen.serial, "serial should increment from loaded value")
-	assert.Contains(t, content, "2026030543   ; serial", "zone file should contain incremented serial")
+	// Serial should have advanced past the loaded value (jumps to today's date when loaded serial is stale)
+	assert.Greater(t, gen.serial, uint32(2026030542), "serial should advance past loaded value")
+	now := time.Now().UTC()
+	expectedBase := uint32(now.Year()*1000000 + int(now.Month())*10000 + now.Day()*100)
+	assert.GreaterOrEqual(t, gen.serial, expectedBase+1, "serial should be at least today's base+01")
+	assert.Contains(t, content, fmt.Sprintf("%d   ; serial", gen.serial), "zone file should contain the new serial")
 }
 
 func TestSerialPersistenceNoFile(t *testing.T) {
@@ -267,6 +271,31 @@ func TestSerialPersistenceNoFile(t *testing.T) {
 	expectedBase := uint32(now.Year()*1000000 + int(now.Month())*10000 + now.Day()*100)
 	assert.Equal(t, expectedBase+1, gen.serial, "serial should be today's date + 01")
 	assert.Contains(t, content, "host1 IN A 10.0.0.1", "zone file should contain the record")
+}
+
+func TestGeneratePerRecordTTL(t *testing.T) {
+	cfg := ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+	}
+	g := NewGenerator(cfg, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4, TTL: 0},  // use zone TTL
+		{DNSName: "host2.example.org", Address: "10.0.0.2", Family: 4, TTL: 60}, // per-record TTL
+	}
+
+	content, changed, err := g.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	// host1: no inline TTL (uses $TTL 300)
+	assert.Contains(t, content, "host1 IN A 10.0.0.1")
+	// host2: inline TTL 60
+	assert.Contains(t, content, "host2 60 IN A 10.0.0.2")
 }
 
 func TestGenerateIdempotency(t *testing.T) {
