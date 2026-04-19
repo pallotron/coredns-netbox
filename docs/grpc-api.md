@@ -33,6 +33,11 @@ Requests with a missing or incorrect token receive `codes.Unauthenticated`.
 
 If `GRPC_AUTH_TOKEN` is not set, authentication is disabled and all requests are accepted.
 
+> **Limitations:**
+> - Only a single shared token is supported. There is no per-caller token or RBAC — any holder of the token has full read/write access to all RPCs.
+> - Token rotation requires restarting the sidecar. The token is read once at startup from `GRPC_AUTH_TOKEN`; there is no mechanism to reload it from a Kubernetes Secret without a pod restart.
+> - Multi-token support and zero-downtime token rotation are planned future improvements.
+
 ### Kubernetes Secret setup
 
 Create a Secret with the token value and reference it from the sidecar's environment:

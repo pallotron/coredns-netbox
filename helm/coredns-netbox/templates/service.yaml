@@ -28,6 +28,10 @@ spec:
       targetPort: sidecar-health
       protocol: TCP
     {{- end }}
+    - name: grpc
+      port: 8083
+      targetPort: grpc
+      protocol: TCP
   selector:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: primary

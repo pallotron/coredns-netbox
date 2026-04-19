@@ -11,6 +11,11 @@ sidecar:
   image: coredns-netbox-sidecar
   tag: dev
   pullPolicy: IfNotPresent
+  env:
+    - name: GRPC_ADDR
+      value: ":8083"
+    - name: GRPC_AUTH_TOKEN
+      value: "devtoken"
 
 # Use LoadBalancer for k3d (works with k3d port forwarding)
 # Static ClusterIP for reproducible secondary configuration
