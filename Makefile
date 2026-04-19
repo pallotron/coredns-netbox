@@ -1,4 +1,4 @@
-.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.helm \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.helm proto \
        dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.wait dev.teardown \
        lint clean
 
@@ -36,6 +36,11 @@ test.unit:
 
 test.e2e:
 	go test ./tests/e2e/... -v -count=1 -tags=e2e
+
+proto:
+	protoc --go_out=. --go_opt=paths=source_relative \
+	       --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+	       proto/coredns_netbox/v1/zones.proto
 
 test.helm:
 	helm lint ./helm/coredns-netbox --set netbox.token=test
