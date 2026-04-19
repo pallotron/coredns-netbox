@@ -147,7 +147,8 @@ dev.wait:
 
 dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
-	@echo "Test with: dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A"
+	@echo "DNS:  dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A"
+	@echo "gRPC: grpcurl -plaintext -H 'authorization: bearer devtoken' 127.0.0.1:18083 coredns_netbox.v1.ControlService/GetStatus"
 
 dev.teardown:
 	k3d cluster delete $(K3D_CLUSTER)

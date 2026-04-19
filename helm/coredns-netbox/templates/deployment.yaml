@@ -189,6 +189,9 @@ spec:
             - name: sidecar-health
               containerPort: 8082
               protocol: TCP
+            - name: grpc
+              containerPort: 8083
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz
