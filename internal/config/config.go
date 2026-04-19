@@ -41,6 +41,10 @@ type Config struct {
 	EnableReverseZones bool
 	ReverseZonesIPv4   []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa"])
 	ReverseZonesIPv6   []string // Static IPv6 reverse zones (e.g., ["b.8.0.d.0.1.2.0.ip6.arpa"])
+
+	// gRPC server configuration
+	GRPCAddr      string
+	GRPCAuthToken string
 }
 
 func Load() (*Config, error) {
@@ -74,6 +78,10 @@ func Load() (*Config, error) {
 		EnableReverseZones: envOrDefault("ENABLE_REVERSE_ZONES", "true") == "true",
 		ReverseZonesIPv4:   parseZoneList(envOrDefault("REVERSE_ZONES_IPV4", "10.in-addr.arpa,172.16.in-addr.arpa")),
 		ReverseZonesIPv6:   parseZoneList(envOrDefault("REVERSE_ZONES_IPV6", "")),
+
+		// gRPC server configuration
+		GRPCAddr:      envOrDefault("GRPC_ADDR", ":8083"),
+		GRPCAuthToken: os.Getenv("GRPC_AUTH_TOKEN"),
 	}
 
 	if c.NetboxToken == "" {

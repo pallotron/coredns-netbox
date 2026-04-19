@@ -298,6 +298,31 @@ func TestGeneratePerRecordTTL(t *testing.T) {
 	assert.Contains(t, content, "host2 60 IN A 10.0.0.2")
 }
 
+func TestGenerateTTLChangeTriggersUpdate(t *testing.T) {
+	g := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+	}, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4, TTL: 60},
+	}
+
+	_, changed, err := g.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed, "first generate should always change")
+
+	// Same name/address/family but different TTL — must trigger update
+	records[0].TTL = 120
+	content, changed, err := g.Generate(records)
+	require.NoError(t, err)
+	assert.True(t, changed, "TTL change must trigger zone regeneration")
+	assert.Contains(t, content, "host1 120 IN A 10.0.0.1")
+}
+
 func TestGenerateIdempotency(t *testing.T) {
 	// Test that generating the same records multiple times produces stable hashes
 	// This catches hash oscillation bugs caused by non-deterministic record ordering

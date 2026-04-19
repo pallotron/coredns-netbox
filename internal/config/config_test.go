@@ -34,6 +34,8 @@ var allEnvKeys = []string{
 	"ENABLE_REVERSE_ZONES",
 	"REVERSE_ZONES_IPV4",
 	"REVERSE_ZONES_IPV6",
+	"GRPC_ADDR",
+	"GRPC_AUTH_TOKEN",
 }
 
 // clearEnv unsets all config-related env vars to ensure test isolation.
@@ -209,4 +211,26 @@ func TestLoad_ReverseZones(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, cfg.ReverseZonesIPv6)
 	})
+}
+
+func TestGRPCConfig(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "tok")
+	t.Setenv("GRPC_ADDR", ":9090")
+	t.Setenv("GRPC_AUTH_TOKEN", "mysecret")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, ":9090", cfg.GRPCAddr)
+	assert.Equal(t, "mysecret", cfg.GRPCAuthToken)
+}
+
+func TestGRPCConfigDefaults(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "tok")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, ":8083", cfg.GRPCAddr)
+	assert.Equal(t, "", cfg.GRPCAuthToken)
 }
