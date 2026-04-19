@@ -110,7 +110,10 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 		if sorted[i].InterfaceName != sorted[j].InterfaceName {
 			return sorted[i].InterfaceName < sorted[j].InterfaceName
 		}
-		return sorted[i].VRF < sorted[j].VRF
+		if sorted[i].VRF != sorted[j].VRF {
+			return sorted[i].VRF < sorted[j].VRF
+		}
+		return sorted[i].TTL < sorted[j].TTL
 	})
 
 	// Generate records based on zone type
@@ -209,12 +212,15 @@ func hashRecords(records []netboxclient.IPRecord) string {
 		if sorted[i].InterfaceName != sorted[j].InterfaceName {
 			return sorted[i].InterfaceName < sorted[j].InterfaceName
 		}
-		return sorted[i].VRF < sorted[j].VRF
+		if sorted[i].VRF != sorted[j].VRF {
+			return sorted[i].VRF < sorted[j].VRF
+		}
+		return sorted[i].TTL < sorted[j].TTL
 	})
 
 	h := sha256.New()
 	for _, r := range sorted {
-		_, _ = fmt.Fprintf(h, "%s|%s|%d\n", r.DNSName, r.Address, r.Family)
+		_, _ = fmt.Fprintf(h, "%s|%s|%d|%d\n", r.DNSName, r.Address, r.Family, r.TTL)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
