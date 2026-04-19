@@ -153,7 +153,7 @@ func (f *FileStore) deleteByNames(zone string, names []string) {
 		remove[n] = struct{}{}
 	}
 	src := f.data.Zones[zone]
-	out := src[:0]
+	out := make([]netboxclient.IPRecord, 0, len(src))
 	for _, r := range src {
 		if _, skip := remove[r.DNSName]; !skip {
 			out = append(out, r)

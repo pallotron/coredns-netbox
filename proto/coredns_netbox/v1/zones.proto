@@ -1,0 +1,65 @@
+syntax = "proto3";
+package coredns_netbox.v1;
+option go_package = "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1;netboxv1";
+
+service DynamicZoneService {
+  rpc CreateZone(CreateZoneRequest)     returns (CreateZoneResponse);
+  rpc DeleteZone(DeleteZoneRequest)     returns (DeleteZoneResponse);
+  rpc ListZones(ListZonesRequest)       returns (ListZonesResponse);
+  rpc UpsertRecord(UpsertRecordRequest) returns (UpsertRecordResponse);
+  rpc DeleteRecord(DeleteRecordRequest) returns (DeleteRecordResponse);
+  rpc ListRecords(ListRecordsRequest)   returns (ListRecordsResponse);
+  rpc BatchUpsert(BatchUpsertRequest)   returns (BatchUpsertResponse);
+  rpc BatchDelete(BatchDeleteRequest)   returns (BatchDeleteResponse);
+}
+
+service ControlService {
+  rpc ForceNetboxPoll(ForceNetboxPollRequest)   returns (ForceNetboxPollResponse);
+  rpc ForceMergeWrite(ForceMergeWriteRequest)   returns (ForceMergeWriteResponse);
+  rpc GetStatus(GetStatusRequest)               returns (GetStatusResponse);
+}
+
+message Record {
+  string dns_name = 1;
+  string address  = 2;
+  int32  family   = 3;
+  uint32 ttl      = 4;
+}
+
+message CreateZoneRequest  { string name = 1; }
+message CreateZoneResponse {}
+message DeleteZoneRequest  { string name = 1; }
+message DeleteZoneResponse {}
+message ListZonesRequest   {}
+message ListZonesResponse  { repeated string names = 1; }
+
+message UpsertRecordRequest {
+  string zone   = 1;
+  Record record = 2;
+  bool   force  = 3;
+}
+message UpsertRecordResponse {}
+
+message DeleteRecordRequest  { string zone = 1; string dns_name = 2; }
+message DeleteRecordResponse {}
+message ListRecordsRequest   { string zone = 1; }
+message ListRecordsResponse  { repeated Record records = 1; }
+
+message ZoneRecords          { string zone = 1; repeated Record records = 2; }
+message BatchUpsertRequest   { repeated ZoneRecords zone_records = 1; bool force = 2; }
+message BatchUpsertResponse  {}
+message BatchDeleteRequest   { string zone = 1; repeated string dns_names = 2; }
+message BatchDeleteResponse  {}
+
+message ForceNetboxPollRequest  {}
+message ForceNetboxPollResponse {}
+message ForceMergeWriteRequest  {}
+message ForceMergeWriteResponse {}
+message GetStatusRequest        {}
+message GetStatusResponse {
+  int64  last_netbox_poll_unix  = 1;
+  int64  last_merge_write_unix  = 2;
+  int32  active_zones           = 3;
+  int32  dynamic_record_count   = 4;
+  double zone_staleness_seconds = 5;
+}
