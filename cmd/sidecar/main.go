@@ -5,9 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync/atomic"
@@ -15,6 +17,8 @@ import (
 	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/config"
+	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
+	"github.com/pallotron/coredns-netbox/internal/grpcserver"
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/logging"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
@@ -99,6 +103,19 @@ func main() {
 
 	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.AdminEmail, cfg.TTL)
 
+	// Dynamic store
+	store, err := dynamicstore.NewFileStore(filepath.Join(cfg.ZoneDir, "dynamic.json"))
+	if err != nil {
+		slog.Error("failed to create dynamic store", "err", err)
+		os.Exit(1)
+	}
+
+	// Shared state for gRPC ↔ poll loop coordination
+	netboxCache := &grpcserver.NetboxCache{}
+	statusTracker := &grpcserver.StatusTracker{}
+	mergeSignal := make(chan struct{}, 1)
+	netboxSignal := make(chan struct{}, 1)
+
 	slog.Info("starting sidecar", "discovery_mode", cfg.DiscoveryMode, "zone_dir", cfg.ZoneDir)
 
 	reg := prometheus.NewRegistry()
@@ -145,10 +162,24 @@ func main() {
 			}
 		}()
 		markReady = func() { healthy.Store(true) }
+
+		grpcSrv := grpcserver.New(cfg.GRPCAuthToken, store, netboxCache, statusTracker, mergeSignal, netboxSignal, mgr)
+		lis, err := net.Listen("tcp", cfg.GRPCAddr)
+		if err != nil {
+			slog.Error("failed to listen for gRPC", "addr", cfg.GRPCAddr, "err", err)
+			os.Exit(1)
+		}
+		slog.Info("gRPC server listening", "addr", cfg.GRPCAddr)
+		go grpcSrv.Serve(lis)
+		go func() {
+			<-ctx.Done()
+			grpcSrv.Stop()
+		}()
 	}
 
 	// Run the poll loop
-	if err := run(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m, markReady); err != nil {
+	if err := run(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m, markReady,
+		store, netboxCache, statusTracker, mergeSignal, netboxSignal); err != nil {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
@@ -171,48 +202,110 @@ func runOnceResult(pollErr error, hasCachedZones bool) error {
 	return pollErr
 }
 
-func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client, categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func()) error {
-	firstSuccess := false
+func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
+	categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer,
+	mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func(),
+	store dynamicstore.DynamicStore, netboxCache *grpcserver.NetboxCache,
+	statusTracker *grpcserver.StatusTracker,
+	mergeSignal, netboxSignal <-chan struct{},
+) error {
 	lastSuccessTime := time.Now()
+	firstSuccess := false
+
+	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
+		return fetchNetbox(ctx, client, categorizer, forwardDisc, reverseDisc, m)
+	}
+
+	doMergeAndWrite := func(netboxZones zonediscovery.ZoneMap) error {
+		return mergeAndWrite(netboxZones, store, mgr, m, statusTracker)
+	}
+
+	// Initial full poll
+	netboxZones, fetchErr := doFetchNetbox()
+	if fetchErr != nil {
+		slog.Warn("initial netbox fetch failed", "err", fetchErr)
+	} else {
+		netboxCache.Update(netboxZones)
+		statusTracker.SetNetboxPoll(time.Now())
+	}
+	if mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
+		slog.Warn("initial merge failed", "err", mergeErr)
+	} else {
+		lastSuccessTime = time.Now()
+		statusTracker.SetMergeWrite(time.Now())
+		if !firstSuccess && markReady != nil {
+			firstSuccess = true
+			markReady()
+		}
+	}
+
+	if cfg.RunOnce {
+		slog.Info("run-once mode, exiting")
+		return runOnceResult(fetchErr, mgr.HasExistingZones())
+	}
+
+	ticker := time.NewTicker(cfg.PollInterval)
+	defer ticker.Stop()
+
+	lastNetboxZones := netboxZones
+
 	for {
-		pollErr := poll(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m)
-		if pollErr != nil {
-			slog.Warn("poll error", "err", pollErr)
-			m.ZoneStalenessSeconds.Set(time.Since(lastSuccessTime).Seconds())
-		} else {
-			lastSuccessTime = time.Now()
-			m.ZoneStalenessSeconds.Set(0)
-			if !firstSuccess && markReady != nil {
-				firstSuccess = true
-				markReady()
-			}
-		}
-
-		if cfg.RunOnce {
-			slog.Info("run-once mode, exiting")
-			return runOnceResult(pollErr, mgr.HasExistingZones())
-		}
-
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(cfg.PollInterval):
+
+		case <-ticker.C:
+			zones, err := doFetchNetbox()
+			if err != nil {
+				slog.Warn("poll error", "err", err)
+				m.ZoneStalenessSeconds.Set(time.Since(lastSuccessTime).Seconds())
+				statusTracker.SetStaleness(time.Since(lastSuccessTime).Seconds())
+			} else {
+				lastNetboxZones = zones
+				netboxCache.Update(zones)
+				statusTracker.SetNetboxPoll(time.Now())
+			}
+			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				lastSuccessTime = time.Now()
+				m.ZoneStalenessSeconds.Set(0)
+				statusTracker.SetMergeWrite(time.Now())
+				statusTracker.SetStaleness(0)
+				if !firstSuccess && markReady != nil {
+					firstSuccess = true
+					markReady()
+				}
+			}
+
+		case <-netboxSignal:
+			zones, err := doFetchNetbox()
+			if err == nil {
+				lastNetboxZones = zones
+				netboxCache.Update(zones)
+				statusTracker.SetNetboxPoll(time.Now())
+			}
+			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				statusTracker.SetMergeWrite(time.Now())
+			}
+
+		case <-mergeSignal:
+			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				statusTracker.SetMergeWrite(time.Now())
+			}
 		}
 	}
 }
 
-func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer, mgr *zonemanager.Manager, m *metrics.Sidecar) error {
-	pollStart := time.Now()
-
+func fetchNetbox(ctx context.Context, client *netboxclient.Client,
+	categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer,
+	m *metrics.Sidecar,
+) (zonediscovery.ZoneMap, error) {
 	slog.Info("fetching IP addresses from netbox")
-
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
 	m.NetboxFetchDurationSeconds.Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
-		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
-		return fmt.Errorf("fetch IP addresses: %w", err)
+		return nil, fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
 	slog.Info("fetched records from netbox", "count", len(records))
@@ -221,37 +314,63 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, ca
 		m.NetboxEmptyResponseTotal.Inc()
 	}
 
-	// Hybrid approach: combine records with existing dns_name and device-generated names
-	enrichedRecords := enrichRecordsWithDeviceNames(records, categorizer)
+	enriched := enrichRecordsWithDeviceNames(records, categorizer)
 
-	// Discover forward zones from enriched records
-	forwardZones, err := forwardDisc.Discover(enrichedRecords)
+	forwardZones, err := forwardDisc.Discover(enriched)
 	if err != nil {
-		m.PollTotal.WithLabelValues("error").Inc()
-		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
-		return fmt.Errorf("discover forward zones: %w", err)
+		return nil, fmt.Errorf("discover forward zones: %w", err)
 	}
-
 	slog.Info("discovered forward zones", "count", len(forwardZones))
 
-	// Discover reverse zones if enabled (use enriched records)
-	combinedZones := forwardZones
+	combined := forwardZones
 	if reverseDisc != nil {
-		reverseZones, err := reverseDisc.Discover(enrichedRecords)
+		reverseZones, err := reverseDisc.Discover(enriched)
 		if err != nil {
-			m.PollTotal.WithLabelValues("error").Inc()
-			m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
-			return fmt.Errorf("discover reverse zones: %w", err)
+			return nil, fmt.Errorf("discover reverse zones: %w", err)
 		}
 		slog.Info("discovered reverse zones", "count", len(reverseZones))
-
-		// Merge forward and reverse zones
 		for zone, recs := range reverseZones {
-			combinedZones[zone] = recs
+			combined[zone] = recs
 		}
 	}
+	return combined, nil
+}
 
-	stats, err := mgr.Update(combinedZones)
+func mergeAndWrite(netboxZones zonediscovery.ZoneMap,
+	store dynamicstore.DynamicStore, mgr *zonemanager.Manager,
+	m *metrics.Sidecar, st *grpcserver.StatusTracker,
+) error {
+	pollStart := time.Now()
+
+	// Merge dynamic records into a copy of netboxZones
+	merged := make(zonediscovery.ZoneMap, len(netboxZones))
+	for zone, recs := range netboxZones {
+		merged[zone] = recs
+	}
+	for _, zone := range store.ListZones() {
+		dynRecs := store.GetRecords(zone)
+		if len(dynRecs) == 0 {
+			if _, ok := merged[zone]; !ok {
+				merged[zone] = nil
+			}
+			continue
+		}
+		// dynamic records shadow matching Netbox records (force was validated at upsert time)
+		byName := make(map[string]netboxclient.IPRecord)
+		for _, r := range merged[zone] {
+			byName[r.DNSName] = r
+		}
+		for _, r := range dynRecs {
+			byName[r.DNSName] = r
+		}
+		result := make([]netboxclient.IPRecord, 0, len(byName))
+		for _, r := range byName {
+			result = append(result, r)
+		}
+		merged[zone] = result
+	}
+
+	stats, err := mgr.Update(merged)
 	m.ZoneWritesTotal.WithLabelValues("create").Add(float64(stats.Created))
 	m.ZoneWritesTotal.WithLabelValues("update").Add(float64(stats.Updated))
 	m.ZoneWritesTotal.WithLabelValues("delete").Add(float64(stats.Deleted))
@@ -270,6 +389,7 @@ func poll(ctx context.Context, _ *config.Config, client *netboxclient.Client, ca
 	m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 
 	slog.Info("zone update complete", "active_zones", mgr.Zones())
+	_ = st // staleness is set by the caller; st is available for future use
 	return nil
 }
 
