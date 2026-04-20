@@ -63,7 +63,7 @@ nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
 │   └── zonemanager/              # Multi-zone lifecycle (create/update/remove zone files)
 ├── coredns/
-│   ├── Dockerfile                # CoreDNS with netbox plugin
+│   ├── Dockerfile                # CoreDNS image (standard plugins + auto + secondary)
 │   └── plugin.cfg                # Plugin ordering
 ├── docker/sidecar/Dockerfile     # Sidecar image
 ├── helm/coredns-netbox/          # Helm chart
