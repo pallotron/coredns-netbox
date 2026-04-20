@@ -119,8 +119,6 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `netbox.url` | `http://netbox.netbox.svc.cluster.local` | Netbox API URL |
 | `netbox.token` | `""` | Netbox API token (use `existingSecret` instead for production) |
 | `netbox.existingSecret` | `""` | Name of existing Secret with `token` key |
-| `netboxPlugin.enabled` | `false` | Enable CoreDNS netbox plugin for live API fallthrough |
-| `netboxPlugin.zones` | `[]` | **Required when enabled.** Zones the netbox plugin handles; queries outside these zones go straight to forward |
 | `zoneDiscovery.mode` | `zone-depth` | Zone discovery mode: `zone-depth`, `common-suffix`, or `netbox-dns` |
 | `zoneDiscovery.depth` | `2` | Number of trailing labels to use as zone name (zone-depth mode) |
 | `zoneStorage.sizeLimit` | `256Mi` | emptyDir size limit (used when `zoneStorage.persistent: false`) |
@@ -156,6 +154,8 @@ Customize interface categorization via environment variables:
 | Environment Variable | Default | Description |
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
+| `GRPC_ADDR` | `:8083` | Address the gRPC server listens on |
+| `GRPC_AUTH_TOKEN` | `""` | Bearer token required on all gRPC calls; empty disables auth |
 | `BMC_INTERFACE_PATTERN` | `(?i)bmc\|ipmi\|ilo\|idrac` | Regex for BMC interfaces |
 | `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
 | `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |

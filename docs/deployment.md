@@ -62,10 +62,9 @@ To use a specific StorageClass (e.g. GKE SSD):
 | k3d / k3s | `local-path` | Yes |
 | Bare-metal | *(none)* | Set `storageClass` explicitly |
 
-**Upgrading an existing release** from the default (`persistent: false`) to `persistent: true` changes the workload kind from `Deployment` to `StatefulSet`. Kubernetes rejects a kind change in-place, so delete the old Deployment first (running pods are preserved with `--cascade=orphan`):
+**Upgrading an existing release** from `persistent: false` to `persistent: true` is a rolling upgrade — the workload is always a `StatefulSet`, so no kind change occurs. Helm will add the `volumeClaimTemplates` entry and Kubernetes will provision a PVC for each pod on the next rollout:
 
 ```bash
-kubectl delete deployment <release-name> --cascade=orphan
 helm upgrade coredns-netbox ./helm/coredns-netbox \
   -n coredns-netbox \
   --set netbox.existingSecret=my-netbox-token \

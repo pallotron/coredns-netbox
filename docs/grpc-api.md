@@ -91,7 +91,27 @@ After a `UpsertRecord` call, the dynamic record is stored immediately, but it do
 
 **Why per-record TTL**
 
-RFC 1035 §3.2.1 permits each resource record to carry its own TTL. Kubernetes use cases need this flexibility: ephemeral pod IPs benefit from short TTLs (e.g., 30 s) so stale entries expire quickly after pod termination, while stable service IPs can use longer TTLs (e.g., 300 s) to reduce resolver load. A `ttl` value of `0` in a `Record` message falls back to the global TTL configured in the sidecar (via `ZONE_DEFAULT_TTL`).
+RFC 1035 §3.2.1 permits each resource record to carry its own TTL. Kubernetes use cases need this flexibility: ephemeral pod IPs benefit from short TTLs (e.g., 30 s) so stale entries expire quickly after pod termination, while stable service IPs can use longer TTLs (e.g., 300 s) to reduce resolver load. A `ttl` value of `0` in a `Record` message falls back to the global TTL configured in the sidecar (via the `TTL` environment variable or `ttl` Helm value).
+
+## Known limitations
+
+**Dynamic zones are not propagated to secondaries automatically**
+
+CoreDNS secondaries pull zones via AXFR using a static zone list baked into the Corefile at deploy time (the `secondary { ... }` block). When a new zone is created via `CreateZone`, it materialises on the primary as a zone file on disk, but the secondary has no mechanism to discover it — it only tracks the zones it was configured with at startup.
+
+This does not affect the common case of **adding dynamic records to an existing zone**: the zone is already listed in the secondary's Corefile, and the secondary picks up new records on the next AXFR triggered by the SOA serial bump that `ForceMergeWrite` produces.
+
+The gap only applies to **new zones created purely via gRPC** (zones that have no corresponding Netbox entry and were never part of the initial Corefile). In that scenario, secondary CoreDNS instances will not serve the new zone until they are redeployed with an updated Corefile that includes it.
+
+**Workarounds for multi-zone deployments:**
+
+- Pre-declare all zones expected to be created dynamically in the secondary Corefile, even before they contain any records. An AXFR of an empty zone succeeds and costs nothing.
+- Push records to both primary and secondary gRPC endpoints from the caller, rather than relying on zone transfer for dynamic-only zones.
+- Accept the gap and treat dynamically created zones as primary-only until the next Helm rollout includes the new zone name.
+
+**This is not a concern for single-zone deployments.** If all records live in one zone, the zone is already being transferred to secondaries; dynamic records appear on secondaries after the next AXFR triggered by the serial change.
+
+---
 
 ## `DynamicZoneService` RPC reference
 
