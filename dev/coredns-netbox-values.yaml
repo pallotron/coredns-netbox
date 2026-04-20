@@ -27,16 +27,6 @@ service:
 hostPort:
   enabled: false
 
-# Enable netbox plugin for live API queries (dev only)
-# Scoped to authoritative zones so queries like www.google.com skip the plugin
-netboxPlugin:
-  enabled: true
-  zones:
-    - dc1.mycompany.com
-    - dc2.mycompany.com
-    - dc3.mycompany.com
-    - 10.in-addr.arpa
-
 # Concurrency and discovery settings
 maxConcurrency: 3
 zoneDiscovery:

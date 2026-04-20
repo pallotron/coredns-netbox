@@ -132,14 +132,6 @@ domainSuffix: example.org
 pageSize: 1000
 maxConcurrency: 10
 
-# Enable the CoreDNS netbox plugin for live API fallthrough on cache misses.
-# Only useful in dev — production relies on zone files from the sidecar.
-netboxPlugin:
-  enabled: false
-  # Required when enabled. List the zones you are authoritative for (forward + reverse).
-  # Queries outside these zones skip the netbox plugin and go straight to forward.
-  zones: []
-
 forwardServers:
   - 1.1.1.1
   - 8.8.8.8

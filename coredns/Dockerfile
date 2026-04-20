@@ -8,11 +8,11 @@ RUN git clone --depth 1 --branch ${COREDNS_VERSION} https://github.com/coredns/c
 
 WORKDIR /coredns
 
-# Replace plugin.cfg with our custom one (includes netbox plugin)
+# Replace plugin.cfg with our custom one
 COPY plugin.cfg /coredns/plugin.cfg
 
-# Generate plugin imports, fetch the netbox plugin, and build
-RUN go generate && go get github.com/oz123/coredns-netbox-plugin && go mod tidy && make
+# Generate plugin imports and build
+RUN go generate && go mod tidy && make
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
