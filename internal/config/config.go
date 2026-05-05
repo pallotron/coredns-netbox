@@ -35,7 +35,8 @@ type Config struct {
 	MgmtInterfacePattern      string
 
 	// DNS domain configuration
-	DomainSuffix string
+	DomainSuffix  string
+	StripDCLabel  bool
 
 	// Reverse zone configuration
 	EnableReverseZones bool
@@ -73,6 +74,7 @@ func Load() (*Config, error) {
 
 		// DNS domain configuration
 		DomainSuffix: envOrDefault("DOMAIN_SUFFIX", "example.org"),
+		StripDCLabel: envOrDefault("STRIP_DC_LABEL", "false") == "true",
 
 		// Reverse zone defaults
 		EnableReverseZones: envOrDefault("ENABLE_REVERSE_ZONES", "true") == "true",

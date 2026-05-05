@@ -19,7 +19,7 @@ data:
         }
         {{- end }}
         forward . {{ range .Values.forwardServers }}{{ . }} {{ end }}
-        cache 30
+        cache {{ .Values.cacheTTL }}
         log
         errors
         health :8080
@@ -41,7 +41,7 @@ data:
     {{- end }}
     . {
         forward . {{ range $.Values.forwardServers }}{{ . }} {{ end }}
-        cache 30
+        cache {{ .Values.cacheTTL }}
         log
         errors
         health :8080

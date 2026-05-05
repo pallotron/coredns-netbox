@@ -131,9 +131,11 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `primaryNS` | `ns1.example.org.` | SOA primary nameserver |
 | `adminEmail` | `admin.example.org.` | SOA admin email (dot notation) |
 | `domainSuffix` | `example.org` | DNS domain suffix for device-based record generation (zone extraction from device names) |
+| `stripDCLabel` | `false` | Strip the DC label (immediately before `domainSuffix`) from all Netbox DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
 | `pageSize` | `1000` | Records per API page (max 1000) |
 | `maxConcurrency` | `10` | Parallel API request limit |
 | `forwardServers` | `[1.1.1.1, 8.8.8.8]` | Upstream DNS resolvers |
+| `cacheTTL` | `30` | Maximum TTL (seconds) for cached DNS responses (positive and negative). Reduce in dev/test environments to ensure zone changes are visible quickly. |
 | `transfer.to` | `[]` | IPs allowed to pull AXFR (empty = disabled) |
 | `secondary.enabled` | `false` | Deploy a secondary CoreDNS for AXFR replication |
 | `secondary.zones` | `[]` | Zones to replicate on the secondary |
@@ -162,6 +164,7 @@ Customize interface categorization via environment variables:
 | `MGMT_VRF_PATTERN` | `(?i)mgmt\|oob` | Regex for management VRFs |
 | `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|eth[01]\|mgt\|NET` | Regex for management interfaces |
 | `DOMAIN_SUFFIX` | `example.org` | DNS domain suffix for zone extraction from device names |
+| `STRIP_DC_LABEL` | `false` | Strip the DC label from DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
 
 These can be set in the Helm chart's `sidecar.env` values or directly in the sidecar container.
 
