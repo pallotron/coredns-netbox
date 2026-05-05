@@ -213,7 +213,14 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	firstSuccess := false
 
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
-		return fetchNetbox(ctx, client, categorizer, forwardDisc, reverseDisc, m)
+		zm, err := fetchNetbox(ctx, client, categorizer, forwardDisc, reverseDisc, m)
+		if err != nil || !cfg.StripDCLabel {
+			return zm, err
+		}
+		for zone, recs := range zm {
+			zm[zone] = zonediscovery.StripDCLabel(recs, cfg.DomainSuffix)
+		}
+		return zm, nil
 	}
 
 	doMergeAndWrite := func(netboxZones zonediscovery.ZoneMap) error {
@@ -355,18 +362,20 @@ func mergeAndWrite(netboxZones zonediscovery.ZoneMap,
 			}
 			continue
 		}
-		// dynamic records shadow matching Netbox records (force was validated at upsert time)
-		byName := make(map[string]netboxclient.IPRecord)
-		for _, r := range merged[zone] {
-			byName[r.DNSName] = r
-		}
+		// Dynamic records shadow Netbox records with the same DNS name.
+		// Build an override set first so we preserve multi-A Netbox entries
+		// (e.g. stripDCLabel collapses several DCs into one name with multiple IPs).
+		dynByName := make(map[string]struct{}, len(dynRecs))
 		for _, r := range dynRecs {
-			byName[r.DNSName] = r
+			dynByName[r.DNSName] = struct{}{}
 		}
-		result := make([]netboxclient.IPRecord, 0, len(byName))
-		for _, r := range byName {
-			result = append(result, r)
+		result := make([]netboxclient.IPRecord, 0, len(merged[zone])+len(dynRecs))
+		for _, r := range merged[zone] {
+			if _, overridden := dynByName[r.DNSName]; !overridden {
+				result = append(result, r)
+			}
 		}
+		result = append(result, dynRecs...)
 		merged[zone] = result
 	}
 

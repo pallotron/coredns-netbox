@@ -1,5 +1,6 @@
 .PHONY: build build.sidecar build.analyzer test.unit test.e2e test.helm proto \
        dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.wait dev.teardown \
+       dev.shell dev.shell.sidecar \
        lint clean
 
 # Go settings
@@ -35,7 +36,7 @@ test.unit:
 	go test ./internal/... -v -count=1 -race
 
 test.e2e:
-	go test ./tests/e2e/... -v -count=1 -tags=e2e
+	STRIP_DC_LABEL=true GRPC_AUTH_TOKEN=devtoken go test ./tests/e2e/... -v -count=1 -tags=e2e
 
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative \
@@ -132,14 +133,14 @@ dev.deploy:
 dev.wait:
 	@echo "Waiting for primary DNS (port 15353) to serve correct answers..."
 	@for i in $$(seq 1 30); do \
-		if dig @127.0.0.1 -p 15353 +tcp +time=2 server1-mgmt.dc1.mycompany.com A 2>/dev/null | grep -q "10.1.0.1"; then \
+		if dig @127.0.0.1 -p 15353 +tcp +time=2 server1-mgmt.mycompany.com A 2>/dev/null | grep -q "10.1.0.1"; then \
 			echo "Primary DNS ready."; break; \
 		fi; \
 		echo "  attempt $$i/30 — retrying in 5s..."; sleep 5; \
 	done
 	@echo "Waiting for secondary DNS (port 15354) to complete zone transfer..."
 	@for i in $$(seq 1 30); do \
-		if dig @127.0.0.1 -p 15354 +tcp +time=2 server1-mgmt.dc1.mycompany.com A 2>/dev/null | grep -q "10.1.0.1"; then \
+		if dig @127.0.0.1 -p 15354 +tcp +time=2 server1-mgmt.mycompany.com A 2>/dev/null | grep -q "10.1.0.1"; then \
 			echo "Secondary DNS ready."; break; \
 		fi; \
 		echo "  attempt $$i/30 — retrying in 5s..."; sleep 5; \
@@ -147,8 +148,16 @@ dev.wait:
 
 dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
-	@echo "DNS:  dig @127.0.0.1 -p 15353 server1-mgmt.dc1.mycompany.com A"
+	@echo "DNS:  dig @127.0.0.1 -p 15353 server1-mgmt.mycompany.com A"
 	@echo "gRPC: grpcurl -plaintext -H 'authorization: bearer devtoken' 127.0.0.1:18083 coredns_netbox.v1.ControlService/GetStatus"
+
+dev.shell:
+	kubectl debug -it -n $(HELM_NAMESPACE) coredns-netbox-0 \
+		--image=busybox --target=coredns --profile=general -- sh
+
+dev.shell.sidecar:
+	kubectl debug -it -n $(HELM_NAMESPACE) coredns-netbox-0 \
+		--image=busybox --target=sidecar --profile=general -- sh
 
 dev.teardown:
 	k3d cluster delete $(K3D_CLUSTER)

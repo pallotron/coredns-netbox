@@ -75,6 +75,8 @@ spec:
               value: {{ join "," .Values.reverseZones.ipv6 | quote }}
             - name: DOMAIN_SUFFIX
               value: {{ .Values.domainSuffix | quote }}
+            - name: STRIP_DC_LABEL
+              value: {{ .Values.stripDCLabel | quote }}
             {{- with .Values.sidecar.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -174,6 +176,8 @@ spec:
               value: {{ join "," .Values.reverseZones.ipv6 | quote }}
             - name: DOMAIN_SUFFIX
               value: {{ .Values.domainSuffix | quote }}
+            - name: STRIP_DC_LABEL
+              value: {{ .Values.stripDCLabel | quote }}
             {{- with .Values.sidecar.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

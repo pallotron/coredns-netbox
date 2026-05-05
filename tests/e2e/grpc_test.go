@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -19,6 +20,35 @@ import (
 	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
 )
+
+// coreDNSReloadWait is how long we sleep after a confirmed zone write before
+// making DNS assertions. CoreDNS reloads zone files every 10s; sleeping 11s
+// guarantees the reload has fired. Combined with cacheTTL=5 in dev values,
+// this also ensures any previously cached answers (positive or negative) have
+// expired before we query, making DNS checks deterministic.
+const coreDNSReloadWait = 11 * time.Second
+
+// forceMerge triggers a zone merge, waits for the zone file to be written,
+// then sleeps for coreDNSReloadWait so CoreDNS has time to reload and any
+// cached DNS answers have expired. Call it before any DNS assertion that
+// depends on the current dynamic store state.
+func forceMerge(t *testing.T, conn *grpc.ClientConn, ctx context.Context) {
+	t.Helper()
+	cc := pb.NewControlServiceClient(conn)
+
+	before, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+	require.NoError(t, err, "GetStatus before ForceMergeWrite")
+
+	_, err = cc.ForceMergeWrite(ctx, &pb.ForceMergeWriteRequest{})
+	require.NoError(t, err, "ForceMergeWrite")
+
+	require.Eventually(t, func() bool {
+		status, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+		return err == nil && status.LastMergeWriteUnix > before.LastMergeWriteUnix
+	}, 15*time.Second, 100*time.Millisecond, "zone write not confirmed within 15s")
+
+	time.Sleep(coreDNSReloadWait)
+}
 
 func grpcAddr() string {
 	if v := os.Getenv("GRPC_ADDR"); v != "" {
@@ -49,7 +79,9 @@ func authCtx(t *testing.T) context.Context {
 	return metadata.NewOutgoingContext(context.Background(), md)
 }
 
-// waitForDNS polls until the DNS record resolves or times out.
+// waitForDNS polls until the DNS record resolves or times out. When called
+// after forceMerge, CoreDNS has already reloaded and cached answers have
+// expired, so a short timeout (3-5s) is sufficient.
 func waitForDNS(t *testing.T, name string, qtype uint16, wantIP string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -65,20 +97,26 @@ func waitForDNS(t *testing.T, name string, qtype uint16, wantIP string, timeout 
 	t.Fatalf("DNS record %s -> %s did not appear within %s", name, wantIP, timeout)
 }
 
+// dynamicFQDN returns a test FQDN for a dynamic record, using the correct zone.
+func dynamicFQDN(name string) string {
+	return fmt.Sprintf("%s.%s", name, forwardZone("dc1"))
+}
+
 func TestDynamicZoneCreate(t *testing.T) {
 	conn := grpcConn(t)
 	ctx := authCtx(t)
 	zc := pb.NewDynamicZoneServiceClient(conn)
 
-	_, err := zc.CreateZone(ctx, &pb.CreateZoneRequest{Name: "e2e-test.mycompany.com"})
+	zoneName := fmt.Sprintf("e2e-test.%s", forwardZone("dc1"))
+	_, err := zc.CreateZone(ctx, &pb.CreateZoneRequest{Name: zoneName})
 	require.NoError(t, err)
 
 	resp, err := zc.ListZones(ctx, &pb.ListZonesRequest{})
 	require.NoError(t, err)
-	assert.Contains(t, resp.Names, "e2e-test.mycompany.com")
+	assert.Contains(t, resp.Names, zoneName)
 
 	t.Cleanup(func() {
-		_, _ = zc.DeleteZone(authCtx(t), &pb.DeleteZoneRequest{Name: "e2e-test.mycompany.com"})
+		_, _ = zc.DeleteZone(authCtx(t), &pb.DeleteZoneRequest{Name: zoneName})
 	})
 }
 
@@ -87,17 +125,20 @@ func TestDynamicRecordUpsertAndResolve(t *testing.T) {
 	ctx := authCtx(t)
 	zc := pb.NewDynamicZoneServiceClient(conn)
 
+	zone := forwardZone("dc1")
+	fqdn := dynamicFQDN("e2e-dynamic")
 	_, err := zc.UpsertRecord(ctx, &pb.UpsertRecordRequest{
-		Zone:   "dc1.mycompany.com",
-		Record: &pb.Record{DnsName: "e2e-dynamic.dc1.mycompany.com", Address: "10.99.99.1", Family: 4},
+		Zone:   zone,
+		Record: &pb.Record{DnsName: fqdn, Address: "10.99.99.1", Family: 4},
 	})
 	require.NoError(t, err)
+	forceMerge(t, conn, ctx)
 
-	waitForDNS(t, "e2e-dynamic.dc1.mycompany.com", dns.TypeA, "10.99.99.1", 10*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.1", 5*time.Second)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
-			Zone: "dc1.mycompany.com", DnsName: "e2e-dynamic.dc1.mycompany.com",
+			Zone: zone, DnsName: fqdn,
 		})
 	})
 }
@@ -107,22 +148,26 @@ func TestDynamicRecordDelete(t *testing.T) {
 	ctx := authCtx(t)
 	zc := pb.NewDynamicZoneServiceClient(conn)
 
+	zone := forwardZone("dc1")
+	fqdn := dynamicFQDN("e2e-todelete")
 	_, err := zc.UpsertRecord(ctx, &pb.UpsertRecordRequest{
-		Zone:   "dc1.mycompany.com",
-		Record: &pb.Record{DnsName: "e2e-todelete.dc1.mycompany.com", Address: "10.99.99.2", Family: 4},
+		Zone:   zone,
+		Record: &pb.Record{DnsName: fqdn, Address: "10.99.99.2", Family: 4},
 	})
 	require.NoError(t, err)
-	waitForDNS(t, "e2e-todelete.dc1.mycompany.com", dns.TypeA, "10.99.99.2", 10*time.Second)
+	forceMerge(t, conn, ctx)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.2", 5*time.Second)
 
 	_, err = zc.DeleteRecord(ctx, &pb.DeleteRecordRequest{
-		Zone: "dc1.mycompany.com", DnsName: "e2e-todelete.dc1.mycompany.com",
+		Zone: zone, DnsName: fqdn,
 	})
 	require.NoError(t, err)
+	forceMerge(t, conn, ctx)
 
 	require.Eventually(t, func() bool {
-		r := queryServer(t, "e2e-todelete.dc1.mycompany.com", dns.TypeA, dnsServer())
+		r := queryServer(t, fqdn, dns.TypeA, dnsServer())
 		return r.Rcode == dns.RcodeNameError || len(r.Answer) == 0
-	}, 10*time.Second, 200*time.Millisecond, "expected NXDOMAIN after delete")
+	}, 5*time.Second, 200*time.Millisecond, "expected NXDOMAIN after delete")
 }
 
 func TestBatchUpsert(t *testing.T) {
@@ -130,18 +175,20 @@ func TestBatchUpsert(t *testing.T) {
 	ctx := authCtx(t)
 	zc := pb.NewDynamicZoneServiceClient(conn)
 
+	zone := forwardZone("dc1")
 	records := []*pb.Record{
-		{DnsName: "e2e-batch1.dc1.mycompany.com", Address: "10.99.98.1", Family: 4},
-		{DnsName: "e2e-batch2.dc1.mycompany.com", Address: "10.99.98.2", Family: 4},
-		{DnsName: "e2e-batch3.dc1.mycompany.com", Address: "10.99.98.3", Family: 4},
+		{DnsName: dynamicFQDN("e2e-batch1"), Address: "10.99.98.1", Family: 4},
+		{DnsName: dynamicFQDN("e2e-batch2"), Address: "10.99.98.2", Family: 4},
+		{DnsName: dynamicFQDN("e2e-batch3"), Address: "10.99.98.3", Family: 4},
 	}
 	_, err := zc.BatchUpsert(ctx, &pb.BatchUpsertRequest{
-		ZoneRecords: []*pb.ZoneRecords{{Zone: "dc1.mycompany.com", Records: records}},
+		ZoneRecords: []*pb.ZoneRecords{{Zone: zone, Records: records}},
 	})
 	require.NoError(t, err)
+	forceMerge(t, conn, ctx)
 
 	for _, r := range records {
-		waitForDNS(t, r.DnsName, dns.TypeA, r.Address, 10*time.Second)
+		waitForDNS(t, r.DnsName, dns.TypeA, r.Address, 5*time.Second)
 	}
 
 	t.Cleanup(func() {
@@ -150,7 +197,7 @@ func TestBatchUpsert(t *testing.T) {
 			names[i] = r.DnsName
 		}
 		_, _ = zc.BatchDelete(authCtx(t), &pb.BatchDeleteRequest{
-			Zone: "dc1.mycompany.com", DnsNames: names,
+			Zone: zone, DnsNames: names,
 		})
 	})
 }
@@ -161,22 +208,27 @@ func TestDynamicRecordSurvivesNetboxPoll(t *testing.T) {
 	zc := pb.NewDynamicZoneServiceClient(conn)
 	cc := pb.NewControlServiceClient(conn)
 
+	zone := forwardZone("dc1")
+	fqdn := dynamicFQDN("e2e-survives")
 	_, err := zc.UpsertRecord(ctx, &pb.UpsertRecordRequest{
-		Zone:   "dc1.mycompany.com",
-		Record: &pb.Record{DnsName: "e2e-survives.dc1.mycompany.com", Address: "10.99.97.1", Family: 4},
+		Zone:   zone,
+		Record: &pb.Record{DnsName: fqdn, Address: "10.99.97.1", Family: 4},
 	})
 	require.NoError(t, err)
-	waitForDNS(t, "e2e-survives.dc1.mycompany.com", dns.TypeA, "10.99.97.1", 10*time.Second)
+	forceMerge(t, conn, ctx)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", 5*time.Second)
 
+	// ForceNetboxPoll rewrites the zone merging Netbox + dynamic records.
+	// The dynamic record must survive (remain in DNS after the poll).
+	// No forceMerge here — the poll drives its own zone write. Allow up to
+	// 5s (Netbox fetch) + 10s (CoreDNS reload) + 5s (cache expiry) + buffer.
 	_, err = cc.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
 	require.NoError(t, err)
-	time.Sleep(2 * time.Second)
-
-	waitForDNS(t, "e2e-survives.dc1.mycompany.com", dns.TypeA, "10.99.97.1", 5*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", 25*time.Second)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
-			Zone: "dc1.mycompany.com", DnsName: "e2e-survives.dc1.mycompany.com",
+			Zone: zone, DnsName: fqdn,
 		})
 	})
 }
@@ -192,11 +244,11 @@ func TestForceNetboxPollUpdatesStatus(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	_, err = cc.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
 	require.NoError(t, err)
-	time.Sleep(2 * time.Second)
 
-	after, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
-	require.NoError(t, err)
-	assert.Greater(t, after.LastNetboxPollUnix, before.LastNetboxPollUnix)
+	require.Eventually(t, func() bool {
+		after, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+		return err == nil && after.LastNetboxPollUnix > before.LastNetboxPollUnix
+	}, 30*time.Second, 500*time.Millisecond, "LastNetboxPollUnix not updated after force poll")
 }
 
 func TestForceMergeWriteUpdatesStatus(t *testing.T) {
@@ -210,11 +262,11 @@ func TestForceMergeWriteUpdatesStatus(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	_, err = cc.ForceMergeWrite(ctx, &pb.ForceMergeWriteRequest{})
 	require.NoError(t, err)
-	time.Sleep(500 * time.Millisecond)
 
-	after, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
-	require.NoError(t, err)
-	assert.Greater(t, after.LastMergeWriteUnix, before.LastMergeWriteUnix)
+	require.Eventually(t, func() bool {
+		after, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+		return err == nil && after.LastMergeWriteUnix > before.LastMergeWriteUnix
+	}, 10*time.Second, 200*time.Millisecond, "LastMergeWriteUnix not updated after force merge")
 }
 
 func TestAuthRejectsWrongToken(t *testing.T) {

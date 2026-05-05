@@ -129,12 +129,21 @@ adminEmail: admin.example.org.
 # IMPORTANT: Set this to your actual domain (e.g., "infra.example.com") in production.
 domainSuffix: example.org
 
+# Strip the DC label (the label immediately before domainSuffix) from all DNS names fetched
+# from Netbox before zone discovery. Useful when records are named host.dc.domain and you want
+# a single zone for all DCs: host.dc.domain → host.domain.
+# Requires domainSuffix to be set correctly.
+stripDCLabel: false
+
 pageSize: 1000
 maxConcurrency: 10
 
 forwardServers:
   - 1.1.1.1
   - 8.8.8.8
+
+# Maximum TTL (seconds) for cached DNS responses (both positive and negative).
+cacheTTL: 30
 
 # Primary: who can pull zones via AXFR
 transfer:

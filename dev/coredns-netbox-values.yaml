@@ -30,11 +30,19 @@ hostPort:
 # Concurrency and discovery settings
 maxConcurrency: 3
 zoneDiscovery:
-  depth: 3
+  depth: 2
+
+# Strip DC label: server1-mgmt.dc1.mycompany.com → server1-mgmt.mycompany.com
+stripDCLabel: true
+domainSuffix: mycompany.com
 
 # DNS metadata
 primaryNS: ns1.mycompany.com.
 adminEmail: admin.mycompany.com.
+
+# Reduce cache TTL for dev/e2e: ensures CoreDNS reload (10s) outlasts any
+# cached positive or negative answer, so DNS checks after forceMerge are fresh.
+cacheTTL: 5
 
 # Allow zone transfers to anyone in dev
 transfer:
@@ -55,9 +63,7 @@ secondary:
   hostPort:
     enabled: false
   zones:
-    - dc1.mycompany.com
-    - dc2.mycompany.com
-    - dc3.mycompany.com
+    - mycompany.com
     - 10.in-addr.arpa
   # Transfer zones from primary (using static ClusterIP above)
   transferFrom:

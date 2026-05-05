@@ -47,8 +47,8 @@ func (s *controlService) GetStatus(_ context.Context, _ *pb.GetStatusRequest) (*
 	}
 
 	return &pb.GetStatusResponse{
-		LastNetboxPollUnix:   netboxPoll.Unix(),
-		LastMergeWriteUnix:   mergeWrite.Unix(),
+		LastNetboxPollUnix:   netboxPoll.UnixMilli(),
+		LastMergeWriteUnix:   mergeWrite.UnixMilli(),
 		ActiveZones:          activeZones,
 		DynamicRecordCount:   dynamicCount,
 		ZoneStalenessSeconds: staleness,
