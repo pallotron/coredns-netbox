@@ -227,6 +227,15 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 		return mergeAndWrite(netboxZones, store, mgr, m, statusTracker)
 	}
 
+	// In run-once (zone-init) mode, skip the Netbox fetch if zone files already
+	// exist on disk. This allows fast pod restarts when zoneStorage.persistent
+	// is enabled: CoreDNS starts immediately from the existing PVC content while
+	// the sidecar refreshes zones in the background on the next poll cycle.
+	if cfg.RunOnce && mgr.HasExistingZones() {
+		slog.Info("zone-init: zones already exist, skipping Netbox fetch")
+		return nil
+	}
+
 	// Initial full poll
 	netboxZones, fetchErr := doFetchNetbox()
 	if fetchErr != nil {
