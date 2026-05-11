@@ -10,10 +10,12 @@ spec:
   clusterIP: {{ .Values.service.clusterIP }}
   {{- end }}
   ports:
+    {{- if not .Values.service.tcpOnly }}
     - name: dns-udp
       port: {{ .Values.service.port }}
       targetPort: dns-udp
       protocol: UDP
+    {{- end }}
     - name: dns-tcp
       port: {{ .Values.service.port }}
       targetPort: dns-tcp
