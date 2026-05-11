@@ -7,7 +7,7 @@ metadata:
     {{- include "coredns-netbox.labels" . | nindent 4 }}
     app.kubernetes.io/component: secondary
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .Values.secondary.serviceType | default "LoadBalancer" }}
   ports:
     - name: dns-udp
       port: {{ .Values.secondary.servicePort }}

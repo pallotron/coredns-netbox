@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: ['**']
 
@@ -48,3 +48,6 @@ jobs:
 
       - name: Run Helm chart tests
         run: make test.helm
+
+  e2e:
+    uses: ./.github/workflows/e2e.yaml

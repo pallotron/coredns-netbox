@@ -1,0 +1,59 @@
+name: E2E Tests
+
+on:
+  workflow_call:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install k3d, kubectl, and helm
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Setup dev environment and run E2E tests
+        run: |
+          make dev
+          make dev.wait
+          make test.e2e
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Cluster Info ==="
+          kubectl cluster-info dump
+
+          echo "=== Netbox Pods ==="
+          kubectl get pods -n netbox
+          kubectl describe pods -n netbox
+
+          echo "=== CoreDNS Pods ==="
+          kubectl get pods -n coredns-netbox
+          kubectl describe pods -n coredns-netbox
+
+          echo "=== Netbox Logs ==="
+          kubectl logs -n netbox deploy/netbox -c netbox --tail=100 || true
+
+          echo "=== CoreDNS Logs ==="
+          kubectl logs -n coredns-netbox -l app.kubernetes.io/component=primary --all-containers --tail=100 || true
+
+      - name: Upload logs as artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-test-logs
+          path: /tmp/k3d-*.log
+          retention-days: 7

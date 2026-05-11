@@ -20,62 +20,9 @@ env:
 
 jobs:
   e2e-tests:
-    runs-on: ubuntu-latest
     # Run on tag pushes, or on manual trigger when skip_e2e is false
     if: github.event_name == 'push' || !inputs.skip_e2e
-    env:
-      CI: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          cache: true
-
-      - name: Install k3d, kubectl, and helm
-        run: |
-          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-      - name: Setup dev environment and run E2E tests
-        run: |
-          make dev
-          make dev.wait
-          make test.e2e
-
-      - name: Collect logs on failure
-        if: failure()
-        run: |
-          echo "=== Cluster Info ==="
-          kubectl cluster-info dump
-
-          echo "=== Netbox Pods ==="
-          kubectl get pods -n netbox
-          kubectl describe pods -n netbox
-
-          echo "=== CoreDNS Pods ==="
-          kubectl get pods -n coredns-netbox
-          kubectl describe pods -n coredns-netbox
-
-          echo "=== Netbox Logs ==="
-          kubectl logs -n netbox deploy/netbox -c netbox --tail=100 || true
-
-          echo "=== CoreDNS Logs ==="
-          kubectl logs -n coredns-netbox deploy/coredns-netbox --all-containers --tail=100 || true
-
-      - name: Upload logs as artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-test-logs
-          path: |
-            /tmp/k3d-*.log
-          retention-days: 7
+    uses: ./.github/workflows/e2e.yaml
 
   publish-images:
     needs: [e2e-tests]

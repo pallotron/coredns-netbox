@@ -164,6 +164,9 @@ secondary:
     enabled: false
   # Service port for secondary (default 53, override in dev to avoid conflicts)
   servicePort: 53
+  # Service type for the secondary DNS service. LoadBalancer exposes it via a
+  # cloud LB or k3s svclb. Set to ClusterIP if external access is not needed.
+  serviceType: LoadBalancer
 
 metrics:
   enabled: true
@@ -190,6 +193,10 @@ service:
 
 hostPort:
   enabled: false
+  # Enable hostPort for sidecar ports (8082 metrics, 8083 gRPC) on the k3d node.
+  # Required in k3d dev so the e2e test process can reach the sidecar from the host.
+  # Leave false in production — access goes through the ClusterIP service instead.
+  sidecar: false
 
 resources:
   coredns:
