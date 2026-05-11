@@ -17,11 +17,14 @@ sidecar:
     - name: GRPC_AUTH_TOKEN
       value: "devtoken"
 
-# Use LoadBalancer for k3d (works with k3d port forwarding)
-# Static ClusterIP for reproducible secondary configuration
+# Static ClusterIP for reproducible secondary configuration in e2e tests
 service:
-  type: LoadBalancer
   clusterIP: 10.43.100.53
+  # Enable external service for k3d port forwarding in e2e tests
+  external:
+    enabled: true
+    type: LoadBalancer
+    annotations: {}
 
 # Disable hostPort in dev (conflicts with LoadBalancer svclb pods)
 hostPort:
