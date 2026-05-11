@@ -179,12 +179,14 @@ pdb:
   minAvailable: 1
 
 service:
-  type: ClusterIP
   port: 53
-  # Set to true when using type: LoadBalancer on GCP to avoid the
-  # "mixed protocol is not supported" error. Disables the UDP/53 port,
-  # keeping only TCP/53 (sufficient for AXFR and NOTIFY fallback).
-  tcpOnly: false
+  # External service — exposes TCP/53 only for DC secondaries (AXFR/NOTIFY)
+  # and engineer laptops (Tailscale). Kept separate from the ClusterIP service
+  # so internal ports (gRPC, metrics, health) are never exposed outside the cluster.
+  external:
+    enabled: false
+    type: LoadBalancer
+    annotations: {}
 
 hostPort:
   enabled: false
