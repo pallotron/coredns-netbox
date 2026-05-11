@@ -26,9 +26,12 @@ service:
     type: LoadBalancer
     annotations: {}
 
-# Disable hostPort in dev (conflicts with LoadBalancer svclb pods)
+# Disable hostPort for DNS port 53 (conflicts with LoadBalancer svclb pods),
+# but enable sidecar hostPort so e2e tests can reach gRPC (8083) and metrics (8082)
+# from the host via k3d's port mappings (18083:8083, 18082:8082).
 hostPort:
   enabled: false
+  sidecar: true
 
 # Concurrency and discovery settings
 maxConcurrency: 3
