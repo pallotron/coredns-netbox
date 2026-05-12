@@ -52,6 +52,9 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.service.external.type | default "LoadBalancer" }}
+  {{- with .Values.service.external.loadBalancerIP }}
+  loadBalancerIP: {{ . | quote }}
+  {{- end }}
   ports:
     - name: dns-tcp
       port: {{ .Values.service.port }}
