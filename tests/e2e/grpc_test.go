@@ -97,6 +97,25 @@ func waitForDNS(t *testing.T, name string, qtype uint16, wantIP string, timeout 
 	t.Fatalf("DNS record %s -> %s did not appear within %s", name, wantIP, timeout)
 }
 
+// waitForPTR polls until the PTR query for addr returns wantFQDN or times out.
+func waitForPTR(t *testing.T, addr, wantFQDN string, timeout time.Duration) {
+	t.Helper()
+	ptrName, err := dns.ReverseAddr(addr)
+	require.NoError(t, err)
+	want := dns.Fqdn(wantFQDN)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		r := queryServer(t, ptrName, dns.TypePTR, dnsServer())
+		for _, ans := range r.Answer {
+			if ptr, ok := ans.(*dns.PTR); ok && ptr.Ptr == want {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("PTR %s -> %s did not appear within %s", addr, wantFQDN, timeout)
+}
+
 // dynamicFQDN returns a test FQDN for a dynamic record, using the correct zone.
 func dynamicFQDN(name string) string {
 	return fmt.Sprintf("%s.%s", name, forwardZone("dc1"))
@@ -292,4 +311,32 @@ func TestAuthRejectsMissingToken(t *testing.T) {
 	_, err := zc.ListZones(context.Background(), &pb.ListZonesRequest{})
 	require.Error(t, err)
 	assert.Equal(t, codes.Unauthenticated, grpcstatus.Code(err))
+}
+
+func TestDynamicRecordGetsPTR(t *testing.T) {
+	conn := grpcConn(t)
+	ctx := authCtx(t)
+	zc := pb.NewDynamicZoneServiceClient(conn)
+
+	zone := forwardZone("dc1")
+	const ip = "10.99.96.1"
+	fqdn := dynamicFQDN("e2e-ptr")
+
+	_, err := zc.UpsertRecord(ctx, &pb.UpsertRecordRequest{
+		Zone:   zone,
+		Record: &pb.Record{DnsName: fqdn, Address: ip, Family: 4},
+	})
+	require.NoError(t, err)
+	forceMerge(t, conn, ctx)
+
+	// Forward lookup must resolve first.
+	waitForDNS(t, fqdn, dns.TypeA, ip, 5*time.Second)
+	// Reverse lookup must return the FQDN.
+	waitForPTR(t, ip, fqdn, 5*time.Second)
+
+	t.Cleanup(func() {
+		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
+			Zone: zone, DnsName: fqdn,
+		})
+	})
 }
