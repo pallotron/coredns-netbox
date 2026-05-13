@@ -16,11 +16,14 @@ import (
 	"syscall"
 	"time"
 
+	"maps"
+
 	"github.com/pallotron/coredns-netbox/internal/config"
 	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
 	"github.com/pallotron/coredns-netbox/internal/grpcserver"
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/logging"
+	"github.com/pallotron/coredns-netbox/internal/merge"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
@@ -224,7 +227,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	}
 
 	doMergeAndWrite := func(netboxZones zonediscovery.ZoneMap) error {
-		return mergeAndWrite(netboxZones, store, mgr, m, statusTracker)
+		return merge.Write(netboxZones, store, mgr, m, reverseDisc)
 	}
 
 	// In run-once (zone-init) mode, skip the Netbox fetch if zone files already
@@ -345,71 +348,11 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 			return nil, fmt.Errorf("discover reverse zones: %w", err)
 		}
 		slog.Info("discovered reverse zones", "count", len(reverseZones))
-		for zone, recs := range reverseZones {
-			combined[zone] = recs
-		}
+		maps.Copy(combined, reverseZones)
 	}
 	return combined, nil
 }
 
-func mergeAndWrite(netboxZones zonediscovery.ZoneMap,
-	store dynamicstore.DynamicStore, mgr *zonemanager.Manager,
-	m *metrics.Sidecar, st *grpcserver.StatusTracker,
-) error {
-	pollStart := time.Now()
-
-	// Merge dynamic records into a copy of netboxZones
-	merged := make(zonediscovery.ZoneMap, len(netboxZones))
-	for zone, recs := range netboxZones {
-		merged[zone] = recs
-	}
-	for _, zone := range store.ListZones() {
-		dynRecs := store.GetRecords(zone)
-		if len(dynRecs) == 0 {
-			if _, ok := merged[zone]; !ok {
-				merged[zone] = nil
-			}
-			continue
-		}
-		// Dynamic records shadow Netbox records with the same DNS name.
-		// Build an override set first so we preserve multi-A Netbox entries
-		// (e.g. stripDCLabel collapses several DCs into one name with multiple IPs).
-		dynByName := make(map[string]struct{}, len(dynRecs))
-		for _, r := range dynRecs {
-			dynByName[r.DNSName] = struct{}{}
-		}
-		result := make([]netboxclient.IPRecord, 0, len(merged[zone])+len(dynRecs))
-		for _, r := range merged[zone] {
-			if _, overridden := dynByName[r.DNSName]; !overridden {
-				result = append(result, r)
-			}
-		}
-		result = append(result, dynRecs...)
-		merged[zone] = result
-	}
-
-	stats, err := mgr.Update(merged)
-	m.ZoneWritesTotal.WithLabelValues("create").Add(float64(stats.Created))
-	m.ZoneWritesTotal.WithLabelValues("update").Add(float64(stats.Updated))
-	m.ZoneWritesTotal.WithLabelValues("delete").Add(float64(stats.Deleted))
-	if stats.WriteErrors > 0 {
-		m.ZoneWriteErrorsTotal.Add(float64(stats.WriteErrors))
-	}
-	if err != nil {
-		m.PollTotal.WithLabelValues("error").Inc()
-		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
-		return fmt.Errorf("update zones: %w", err)
-	}
-
-	m.ZonesActive.Set(float64(len(mgr.Zones())))
-	m.LastSuccessfulPollTimestamp.SetToCurrentTime()
-	m.PollTotal.WithLabelValues("success").Inc()
-	m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
-
-	slog.Info("zone update complete", "active_zones", mgr.Zones())
-	_ = st // staleness is set by the caller; st is available for future use
-	return nil
-}
 
 // enrichRecordsWithDeviceNames implements a hybrid approach:
 // - Keep records that already have dns_name populated
