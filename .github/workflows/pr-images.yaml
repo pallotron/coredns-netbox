@@ -11,13 +11,13 @@ env:
 
 jobs:
   build-images:
+    name: build-images (${{ matrix.name }})
     # Only build when PR is open (not closed)
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      pull-requests: write
     strategy:
       matrix:
         include:
@@ -62,8 +62,14 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
+  comment-pr:
+    needs: [build-images]
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
       - name: Comment on PR
-        if: matrix.name == 'sidecar'
         uses: actions/github-script@v7
         with:
           script: |
