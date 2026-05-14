@@ -183,9 +183,10 @@ pdb:
 
 service:
   port: 53
-  # External service — exposes TCP/53 only for DC secondaries (AXFR/NOTIFY)
-  # and engineer laptops (Tailscale). Kept separate from the ClusterIP service
-  # so internal ports (gRPC, metrics, health) are never exposed outside the cluster.
+  annotations: {}
+  # External service — exposes TCP/53 only for DC secondaries (AXFR/NOTIFY).
+  # Kept separate from the ClusterIP service so internal ports (gRPC, metrics,
+  # health) are never exposed outside the cluster.
   external:
     enabled: false
     type: LoadBalancer
