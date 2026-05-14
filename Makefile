@@ -56,6 +56,27 @@ test.helm:
 		--set 'secondary.transferFrom[0]=10.0.0.1' > /dev/null
 	helm template test ./helm/coredns-netbox --set netbox.token=test \
 		--set metrics.enabled=false > /dev/null
+	# service.annotations renders on ClusterIP service
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set 'service.annotations.example\.com/foo=bar' 2>&1 | grep -q "example.com/foo" && \
+		echo "PASS: service.annotations rendered on ClusterIP service" || \
+		(echo "FAIL: service.annotations not rendered" && exit 1)
+	# service.external.enabled renders the external LoadBalancer service
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true 2>&1 | grep -q "coredns-netbox-external" && \
+		echo "PASS: external service rendered" || \
+		(echo "FAIL: external service not rendered" && exit 1)
+	# service.external.annotations renders on external service only
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true \
+		--set 'service.external.annotations.example\.com/foo=bar' 2>&1 | grep -q "example.com/foo" && \
+		echo "PASS: service.external.annotations rendered" || \
+		(echo "FAIL: service.external.annotations not rendered" && exit 1)
+	# metrics.enabled adds metrics ports
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set metrics.enabled=true 2>&1 | grep -q "name: metrics" && \
+		echo "PASS: metrics ports rendered" || \
+		(echo "FAIL: metrics ports not rendered" && exit 1)
 	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------
