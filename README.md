@@ -165,6 +165,7 @@ nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
 |---|---|
 | [Configuration](docs/configuration.md) | Interface categorization, reverse DNS, Helm values, env vars, zone discovery modes |
 | [Deployment](docs/deployment.md) | Production install, zone transfers, external secondaries |
+| [gRPC API](docs/grpc-api.md) | Dynamic record injection, force poll/merge, conflict handling, design decisions |
 | [Observability](docs/observability.md) | Prometheus metrics reference |
 | [Development](docs/development.md) | Prerequisites, quick start, project structure, Makefile targets, step-by-step setup, seed data |
 | [Analyzer CLI](cmd/analyzer/README.md) | Analyze Netbox data and preview DNS records before deploying |

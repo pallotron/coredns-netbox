@@ -113,7 +113,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Shared state for gRPC ↔ poll loop coordination
+	// Shared state for gRPC ↔ poll loop coordination.
+	//
+	// mergeSignal and netboxSignal are buffered channels of size 1. This is an
+	// intentional debounce: if a second signal arrives while one is already
+	// pending in the buffer, the non-blocking send in the gRPC handler is
+	// dropped. Rapid-fire ForceNetboxPoll or ForceMergeWrite calls therefore
+	// coalesce into a single poll/merge cycle rather than queuing up redundant
+	// work. The poll loop drains each channel before re-blocking on select, so
+	// no signal is ever lost when the loop is idle.
 	netboxCache := &grpcserver.NetboxCache{}
 	statusTracker := &grpcserver.StatusTracker{}
 	mergeSignal := make(chan struct{}, 1)
