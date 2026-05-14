@@ -85,6 +85,10 @@ Allowing partial success in a `BatchUpsert` call creates an ambiguous state: the
 
 There are legitimate emergency use cases — for example, temporarily overriding a Netbox record whose IP is wrong while the Netbox entry is being corrected. Making the intent visible in the API (`force: true`) is preferable to silently shadowing existing records, because it makes auditing and code review easier and prevents accidental overwrites.
 
+**Why rapid gRPC trigger calls do not queue up**
+
+`ForceNetboxPoll` and `ForceMergeWrite` signal the poll loop via buffered channels of size 1. A buffered channel of size 1 is a natural debounce: if a signal is already waiting in the buffer when a second call arrives, the non-blocking send is silently dropped. Rapid-fire calls therefore coalesce into a single poll or merge cycle rather than accumulating a backlog of redundant work. The poll loop is never blocked on an empty channel when idle, so no signal is lost in the common case — only duplicates during bursts are discarded. Callers that need confirmation of completion should poll `GetStatus` after calling `ForceNetboxPoll` or `ForceMergeWrite`.
+
 **Why `ForceMergeWrite` is independently triggerable**
 
 After a `UpsertRecord` call, the dynamic record is stored immediately, but it does not appear in DNS until the next merge+write cycle (which normally coincides with a Netbox poll). `ForceMergeWrite` triggers only the merge+write step — no Netbox round-trip — so dynamic records can propagate to DNS in milliseconds. This is especially useful for time-sensitive operations such as adding a pod IP during a rolling deployment.
