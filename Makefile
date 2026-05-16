@@ -17,6 +17,10 @@ HELM_NAMESPACE := coredns-netbox
 K3D_CLUSTER := coredns-netbox
 NETBOX_NAMESPACE := netbox
 
+# Netbox chart and app version — must match the fixture image tag
+NETBOX_CHART_VERSION := 8.2.15
+NETBOX_APP_VERSION   := 4.6.0
+
 # Shared secret name for the Netbox API token
 NETBOX_TOKEN_SECRET := netbox-api-token
 
@@ -110,6 +114,7 @@ dev.netbox:
 	kubectl apply -f dev/netbox-extra-configmap.yaml
 	helm upgrade --install netbox netbox-community/netbox \
 		-n $(NETBOX_NAMESPACE) \
+		--version $(NETBOX_CHART_VERSION) \
 		-f dev/netbox-values.yaml \
 		--wait --timeout 10m
 	@echo "Netbox deployed."
