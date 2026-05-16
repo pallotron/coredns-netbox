@@ -25,9 +25,35 @@ jobs:
       - name: Install helm
         uses: azure/setup-helm@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build coredns image
+        uses: docker/build-push-action@v6
+        with:
+          context: coredns/
+          file: coredns/Dockerfile
+          load: true
+          tags: coredns-netbox:dev
+          cache-from: type=gha,scope=coredns
+          cache-to: type=gha,mode=max,scope=coredns
+
+      - name: Build sidecar image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sidecar/Dockerfile
+          load: true
+          tags: coredns-netbox-sidecar:dev
+          cache-from: type=gha,scope=sidecar
+          cache-to: type=gha,mode=max,scope=sidecar
+
       - name: Setup dev environment and run E2E tests
         run: |
-          make dev
+          make dev.cluster
+          k3d image import coredns-netbox:dev -c coredns-netbox
+          k3d image import coredns-netbox-sidecar:dev -c coredns-netbox
+          make dev.netbox dev.token dev.seed dev.deploy
           make dev.wait
           make test.e2e
 
