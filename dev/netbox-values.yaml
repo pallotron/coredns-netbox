@@ -67,14 +67,14 @@ customLivenessProbe:
   httpGet:
     path: /login/
     port: http
-  initialDelaySeconds: 120
+  initialDelaySeconds: 30
   periodSeconds: 10
   timeoutSeconds: 1
   failureThreshold: 6
   successThreshold: 1
 
 readinessProbe:
-  initialDelaySeconds: 120
+  initialDelaySeconds: 30
   periodSeconds: 10
   failureThreshold: 6
 
