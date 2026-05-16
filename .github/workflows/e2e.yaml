@@ -16,13 +16,14 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Install k3d, kubectl, and helm
-        run: |
-          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - name: Install k3d
+        uses: medyagh/setup-k3d@v0.0.7
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
 
       - name: Setup dev environment and run E2E tests
         run: |
