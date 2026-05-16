@@ -1,0 +1,90 @@
+name: Build Netbox PostgreSQL Fixture
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'dev/netbox-values.yaml'
+      - 'dev/netbox-extra-configmap.yaml'
+      - '.github/workflows/build-netbox-fixture.yaml'
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k3d
+        uses: nolar/setup-k3d-k3s@v1
+        with:
+          skip-creation: true
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+
+      - name: Boot Netbox
+        run: make dev.cluster dev.netbox
+
+      - name: Detect PostgreSQL image
+        id: pg-image
+        run: |
+          PG_IMAGE=$(kubectl get pod -n netbox netbox-postgresql-0 \
+            -o jsonpath='{.spec.containers[0].image}')
+          echo "image=$PG_IMAGE" >> $GITHUB_OUTPUT
+          echo "Detected PostgreSQL image: $PG_IMAGE"
+
+      - name: Dump schema and migration records
+        run: |
+          set -euo pipefail
+          # Schema: all tables, indexes, sequences, constraints
+          kubectl exec -n netbox netbox-postgresql-0 -- \
+            pg_dump -U netbox --schema-only netbox \
+            > /tmp/netbox-fixture.sql
+
+          # Migration records: tells Django all migrations already applied
+          kubectl exec -n netbox netbox-postgresql-0 -- \
+            pg_dump -U netbox --data-only --table=public.django_migrations netbox \
+            >> /tmp/netbox-fixture.sql
+
+          echo "Fixture dump: $(wc -l < /tmp/netbox-fixture.sql) lines"
+
+      - name: Build fixture image
+        run: |
+          mkdir /tmp/fixture-build
+          cp /tmp/netbox-fixture.sql /tmp/fixture-build/
+
+          cat > /tmp/fixture-build/Dockerfile <<'EOF'
+          FROM ${{ steps.pg-image.outputs.image }}
+          COPY netbox-fixture.sql /docker-entrypoint-initdb.d/01-netbox-fixture.sql
+          EOF
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push fixture image
+        uses: docker/build-push-action@v6
+        with:
+          context: /tmp/fixture-build
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ env.OWNER }}/netbox-pg-fixture:4.6.0
+            ghcr.io/${{ env.OWNER }}/netbox-pg-fixture:latest
