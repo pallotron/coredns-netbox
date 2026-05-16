@@ -79,16 +79,12 @@ jobs:
 
       - name: Setup dev environment and run E2E tests
         run: |
-          ts() { echo "$(date '+%T') $*"; }
-          ts "dev.cluster start"   && make dev.cluster   && ts "dev.cluster done"
+          make dev.cluster
           k3d image import coredns-netbox:dev -c coredns-netbox
           k3d image import coredns-netbox-sidecar:dev -c coredns-netbox
-          ts "dev.netbox start"    && make dev.netbox    && ts "dev.netbox done"
-          ts "dev.token start"     && make dev.token     && ts "dev.token done"
-          ts "dev.seed start"      && make dev.seed      && ts "dev.seed done"
-          ts "dev.deploy start"    && make dev.deploy    && ts "dev.deploy done"
-          ts "dev.wait start"      && make dev.wait      && ts "dev.wait done"
-          ts "test.e2e start"      && make test.e2e      && ts "test.e2e done"
+          make dev.netbox dev.token dev.seed dev.deploy
+          make dev.wait
+          make test.e2e
 
       - name: Collect logs on failure
         if: failure()
