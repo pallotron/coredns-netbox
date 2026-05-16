@@ -35,6 +35,10 @@ persistence:
   enabled: false
 
 postgresql:
+  image:
+    registry: ghcr.io
+    repository: pallotron/netbox-pg-fixture
+    tag: "4.6.0"
   auth:
     username: netbox
     database: netbox
