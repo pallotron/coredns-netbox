@@ -47,17 +47,21 @@ jobs:
       - name: Dump schema and migration records
         run: |
           set -euo pipefail
+          # Bitnami sets POSTGRESQL_PASSWORD inside the container for the netbox
+          # user. Expose it via PGPASSWORD so pg_dump can authenticate without
+          # a .pgpass file. Use bash -c to expand the variable inside the pod.
           # Schema: all tables, indexes, sequences, constraints
           kubectl exec -n netbox netbox-postgresql-0 -- \
-            pg_dump -U netbox --schema-only netbox \
+            bash -c 'PGPASSWORD=$POSTGRESQL_PASSWORD pg_dump -U netbox --schema-only netbox' \
             > /tmp/netbox-fixture.sql
 
           # Migration records: tells Django all migrations already applied
           kubectl exec -n netbox netbox-postgresql-0 -- \
-            pg_dump -U netbox --data-only --table=public.django_migrations netbox \
+            bash -c 'PGPASSWORD=$POSTGRESQL_PASSWORD pg_dump -U netbox --data-only --table=public.django_migrations netbox' \
             >> /tmp/netbox-fixture.sql
 
           echo "Fixture dump: $(wc -l < /tmp/netbox-fixture.sql) lines"
+          test -s /tmp/netbox-fixture.sql || { echo "ERROR: fixture dump is empty"; exit 1; }
 
       - name: Build fixture image
         run: |
