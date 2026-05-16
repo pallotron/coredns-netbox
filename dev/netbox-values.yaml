@@ -1,3 +1,8 @@
+# Allow our custom pre-baked PostgreSQL fixture image (Bitnami image verification).
+global:
+  security:
+    allowInsecureImages: true
+
 # Bootstrap admin user — used by dev/create-token.py to create v2 API tokens.
 # The apiToken below is a legacy v1 token placeholder required by the chart;
 # the actual usable v2 token is created by `make dev.token`.
