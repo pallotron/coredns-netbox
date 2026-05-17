@@ -145,11 +145,13 @@ forwardServers:
 # Maximum TTL (seconds) for cached DNS responses (both positive and negative).
 cacheTTL: 30
 
-# Primary: who can pull zones via AXFR
+# Primary: who can pull zones via AXFR, and who to notify on zone changes
 transfer:
   to: []
   # Production: ["10.0.1.5", "10.0.1.6"]
   # Dev: ["*"]
+  notify: []
+  # Production: ["10.0.1.5", "10.0.1.6"]
 
 # Secondary
 secondary:

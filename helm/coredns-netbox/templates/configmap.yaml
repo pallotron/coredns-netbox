@@ -11,10 +11,13 @@ data:
             directory {{ .Values.zoneDir }} db\.(.*) {1}
             reload 10s
         }
-        {{- if .Values.transfer.to }}
+        {{- if or .Values.transfer.to .Values.transfer.notify }}
         transfer {
             {{- range .Values.transfer.to }}
             to {{ . }}
+            {{- end }}
+            {{- if .Values.transfer.notify }}
+            notify {{ join " " .Values.transfer.notify }}
             {{- end }}
         }
         {{- end }}
