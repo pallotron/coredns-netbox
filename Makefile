@@ -81,6 +81,17 @@ test.helm:
 		--set metrics.enabled=true 2>&1 | grep -q "name: metrics" && \
 		echo "PASS: metrics ports rendered" || \
 		(echo "FAIL: metrics ports not rendered" && exit 1)
+	# transfer.notify renders notify line in transfer block
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set 'transfer.to[0]=*' \
+		--set 'transfer.notify[0]=10.0.1.5' \
+		--set 'transfer.notify[1]=10.0.1.6' 2>&1 | grep -q "notify 10.0.1.5 10.0.1.6" && \
+		echo "PASS: transfer.notify rendered" || \
+		(echo "FAIL: transfer.notify not rendered" && exit 1)
+	# transfer block absent when neither to nor notify is set
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -qv "transfer {" && \
+		echo "PASS: transfer block absent when empty" || \
+		(echo "FAIL: transfer block present when it should be absent" && exit 1)
 	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------
