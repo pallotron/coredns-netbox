@@ -40,7 +40,7 @@ test.unit:
 	go test ./internal/... -v -count=1 -race
 
 test.e2e:
-	STRIP_DC_LABEL=true GRPC_AUTH_TOKEN=devtoken go test ./tests/e2e/... -v -count=1 -tags=e2e
+	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken go test ./tests/e2e/... -v -count=1 -tags=e2e
 
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative \
@@ -92,6 +92,15 @@ test.helm:
 	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -qv "transfer {" && \
 		echo "PASS: transfer block absent when empty" || \
 		(echo "FAIL: transfer block present when it should be absent" && exit 1)
+	# coredns.extraConfig injects directive into primary server block
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set 'coredns.extraConfig=rewrite name exact foo.example.com. bar.example.com.' 2>&1 | grep -q "rewrite name exact" && \
+		echo "PASS: coredns.extraConfig rendered" || \
+		(echo "FAIL: coredns.extraConfig not rendered" && exit 1)
+	# coredns.extraConfig absent when empty
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -qv "extraConfig" && \
+		echo "PASS: coredns.extraConfig absent when empty" || \
+		(echo "FAIL: coredns.extraConfig present when it should be absent" && exit 1)
 	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------

@@ -79,6 +79,14 @@ coredns:
   image: ghcr.io/pallotron/coredns-netbox
   tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
+  # Extra CoreDNS plugin directives appended to the primary server block.
+  # Use this to inject additional plugins (e.g. rewrite, acl, metadata) without
+  # forking the chart. Each directive must be valid Corefile syntax.
+  # Example — rewrite DC-labelled queries to the flat zone so that both
+  # hostname.dc.domain and hostname.domain resolve from the same zone:
+  #   extraConfig: |
+  #     rewrite name regex ^([^.]+)\.([^.]+)\.example\.com\.$ {1}.example.com. answer auto
+  extraConfig: ""
 
 sidecar:
   image: ghcr.io/pallotron/coredns-netbox-sidecar
