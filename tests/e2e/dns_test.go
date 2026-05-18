@@ -204,6 +204,52 @@ func TestPTRRecordLookup(t *testing.T) {
 	}
 }
 
+// TestDCLabelRewrite verifies that DC-labelled queries (host.dc.domain) resolve
+// correctly when coredns.extraConfig contains a rewrite rule that strips the DC
+// label before lookup and restores it in the answer.
+// Only runs when DC_LABEL_REWRITE=true and STRIP_DC_LABEL=true.
+func TestDCLabelRewrite(t *testing.T) {
+	if os.Getenv("DC_LABEL_REWRITE") != "true" {
+		t.Skip("DC_LABEL_REWRITE not set; skipping rewrite test")
+	}
+	if os.Getenv("STRIP_DC_LABEL") != "true" {
+		t.Skip("DC_LABEL_REWRITE requires STRIP_DC_LABEL=true")
+	}
+
+	waitForPrimary(t)
+
+	cases := []struct {
+		dcFQDN string // DC-labelled query name
+		wantIP string
+	}{
+		{"server1-mgmt.dc1.mycompany.com", "10.1.0.1"},
+		{"server2-mgmt.dc1.mycompany.com", "10.1.0.2"},
+		{"server1-bmc.dc1.mycompany.com", "10.1.8.1"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.dcFQDN, func(t *testing.T) {
+			r := query(t, tc.dcFQDN, dns.TypeA)
+
+			require.Equal(t, dns.RcodeSuccess, r.Rcode,
+				"expected NOERROR for DC-labelled query %s, got %s", tc.dcFQDN, dns.RcodeToString[r.Rcode])
+			require.NotEmpty(t, r.Answer, "expected answer for %s", tc.dcFQDN)
+
+			wantIP := net.ParseIP(tc.wantIP)
+			wantName := dns.Fqdn(tc.dcFQDN)
+			found := false
+			for _, ans := range r.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
+					require.Equal(t, wantName, a.Hdr.Name,
+						"answer name should be the original DC-labelled FQDN (answer auto rewrite)")
+					found = true
+				}
+			}
+			require.True(t, found, "expected %s in A record answers for %s", tc.wantIP, tc.dcFQDN)
+		})
+	}
+}
+
 func TestAXFRTransfer(t *testing.T) {
 	waitForPrimary(t)
 	zone := forwardZone("dc1")

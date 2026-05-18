@@ -30,6 +30,9 @@ data:
         {{- if .Values.metrics.enabled }}
         prometheus :{{ .Values.metrics.port }}
         {{- end }}
+        {{- if .Values.coredns.extraConfig }}
+        {{ .Values.coredns.extraConfig | nindent 8 | trim }}
+        {{- end }}
     }
 {{- if .Values.secondary.enabled }}
   Corefile-secondary: |

@@ -42,6 +42,12 @@ zoneDiscovery:
 stripDCLabel: true
 domainSuffix: mycompany.com
 
+# Rewrite DC-labelled queries to the flat zone so both
+# server1-mgmt.dc1.mycompany.com and server1-mgmt.mycompany.com resolve.
+coredns:
+  extraConfig: |
+    rewrite name regex ^([^.]+)\.([^.]+)\.mycompany\.com\.$ {1}.mycompany.com. answer auto
+
 # DNS metadata
 primaryNS: ns1.mycompany.com.
 adminEmail: admin.mycompany.com.
