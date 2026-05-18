@@ -77,9 +77,9 @@ jobs:
             ghcr.io/${{ env.OWNER }}/coredns-netbox-sidecar:latest
 
   publish-chart:
-    needs: [e2e-tests]
-    # Run if E2E passed OR was skipped (but not if cancelled/failed)
-    if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')
+    needs: [e2e-tests, publish-images]
+    # Run if E2E passed OR was skipped, and images published successfully
+    if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped') && needs.publish-images.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
