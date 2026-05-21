@@ -313,6 +313,35 @@ func TestAuthRejectsMissingToken(t *testing.T) {
 	assert.Equal(t, codes.Unauthenticated, grpcstatus.Code(err))
 }
 
+func TestZoneReloadService(t *testing.T) {
+	// Verify that Reload() RPC is reachable and returns no error.
+	conn := grpcConn(t)
+	ctx := authCtx(t)
+
+	// Force sidecar to rewrite zones via a Netbox poll.
+	ctrl := pb.NewControlServiceClient(conn)
+	_, err := ctrl.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
+	require.NoError(t, err)
+
+	// Wait for zone write to complete (staleness < 5s).
+	require.Eventually(t, func() bool {
+		s, err := ctrl.GetStatus(authCtx(t), &pb.GetStatusRequest{})
+		return err == nil && s.ZoneStalenessSeconds < 5
+	}, 30*time.Second, 500*time.Millisecond, "zone write did not complete")
+
+	// Call Reload directly on CoreDNS.
+	reloadAddr := os.Getenv("COREDNS_RELOAD_ADDR")
+	if reloadAddr == "" {
+		t.Skip("COREDNS_RELOAD_ADDR not set")
+	}
+	rconn, err := grpc.NewClient(reloadAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer rconn.Close()
+
+	_, err = pb.NewZoneReloadServiceClient(rconn).Reload(authCtx(t), &pb.ZoneReloadRequest{})
+	require.NoError(t, err)
+}
+
 func TestDynamicRecordGetsPTR(t *testing.T) {
 	conn := grpcConn(t)
 	ctx := authCtx(t)

@@ -101,6 +101,19 @@ test.helm:
 	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -qv "extraConfig" && \
 		echo "PASS: coredns.extraConfig absent when empty" || \
 		(echo "FAIL: coredns.extraConfig present when it should be absent" && exit 1)
+	# netboxreload directive present in Corefile
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -q "netboxreload {" && \
+		echo "PASS: netboxreload in Corefile" || \
+		(echo "FAIL: netboxreload missing from Corefile" && exit 1)
+	# grpc-reload port declared on coredns container
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -q "name: grpc-reload" && \
+		echo "PASS: grpc-reload port declared" || \
+		(echo "FAIL: grpc-reload port missing" && exit 1)
+	# standalone mode generates per-pod reload addresses
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set sidecar.standalone=true --set replicaCount=2 2>&1 | grep -A1 "COREDNS_RELOAD_ADDRS" | grep -q "svc.cluster.local" && \
+		echo "PASS: standalone mode generates per-pod reload addrs" || \
+		(echo "FAIL: standalone mode reload addrs wrong" && exit 1)
 	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------
@@ -113,7 +126,7 @@ lint:
 dev.images: dev.images.coredns dev.images.sidecar
 
 dev.images.coredns:
-	docker build -t $(COREDNS_IMAGE) -f coredns/Dockerfile coredns/
+	docker build -t $(COREDNS_IMAGE) -f coredns/Dockerfile .
 	k3d image import $(COREDNS_IMAGE) -c $(K3D_CLUSTER)
 
 dev.images.sidecar:

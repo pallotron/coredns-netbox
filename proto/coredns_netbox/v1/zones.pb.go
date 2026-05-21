@@ -1085,6 +1085,78 @@ func (x *GetStatusResponse) GetZoneStalenessSeconds() float64 {
 	return 0
 }
 
+type ZoneReloadRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZoneReloadRequest) Reset() {
+	*x = ZoneReloadRequest{}
+	mi := &file_proto_coredns_netbox_v1_zones_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZoneReloadRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZoneReloadRequest) ProtoMessage() {}
+
+func (x *ZoneReloadRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_coredns_netbox_v1_zones_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZoneReloadRequest.ProtoReflect.Descriptor instead.
+func (*ZoneReloadRequest) Descriptor() ([]byte, []int) {
+	return file_proto_coredns_netbox_v1_zones_proto_rawDescGZIP(), []int{24}
+}
+
+type ZoneReloadResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZoneReloadResponse) Reset() {
+	*x = ZoneReloadResponse{}
+	mi := &file_proto_coredns_netbox_v1_zones_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZoneReloadResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZoneReloadResponse) ProtoMessage() {}
+
+func (x *ZoneReloadResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_coredns_netbox_v1_zones_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZoneReloadResponse.ProtoReflect.Descriptor instead.
+func (*ZoneReloadResponse) Descriptor() ([]byte, []int) {
+	return file_proto_coredns_netbox_v1_zones_proto_rawDescGZIP(), []int{25}
+}
+
 var File_proto_coredns_netbox_v1_zones_proto protoreflect.FileDescriptor
 
 const file_proto_coredns_netbox_v1_zones_proto_rawDesc = "" +
@@ -1138,7 +1210,9 @@ const file_proto_coredns_netbox_v1_zones_proto_rawDesc = "" +
 	"\x15last_merge_write_unix\x18\x02 \x01(\x03R\x12lastMergeWriteUnix\x12!\n" +
 	"\factive_zones\x18\x03 \x01(\x05R\vactiveZones\x120\n" +
 	"\x14dynamic_record_count\x18\x04 \x01(\x05R\x12dynamicRecordCount\x124\n" +
-	"\x16zone_staleness_seconds\x18\x05 \x01(\x01R\x14zoneStalenessSeconds2\xfe\x05\n" +
+	"\x16zone_staleness_seconds\x18\x05 \x01(\x01R\x14zoneStalenessSeconds\"\x13\n" +
+	"\x11ZoneReloadRequest\"\x14\n" +
+	"\x12ZoneReloadResponse2\xfe\x05\n" +
 	"\x12DynamicZoneService\x12Y\n" +
 	"\n" +
 	"CreateZone\x12$.coredns_netbox.v1.CreateZoneRequest\x1a%.coredns_netbox.v1.CreateZoneResponse\x12Y\n" +
@@ -1153,7 +1227,9 @@ const file_proto_coredns_netbox_v1_zones_proto_rawDesc = "" +
 	"\x0eControlService\x12h\n" +
 	"\x0fForceNetboxPoll\x12).coredns_netbox.v1.ForceNetboxPollRequest\x1a*.coredns_netbox.v1.ForceNetboxPollResponse\x12h\n" +
 	"\x0fForceMergeWrite\x12).coredns_netbox.v1.ForceMergeWriteRequest\x1a*.coredns_netbox.v1.ForceMergeWriteResponse\x12V\n" +
-	"\tGetStatus\x12#.coredns_netbox.v1.GetStatusRequest\x1a$.coredns_netbox.v1.GetStatusResponseBFZDgithub.com/pallotron/coredns-netbox/proto/coredns_netbox/v1;netboxv1b\x06proto3"
+	"\tGetStatus\x12#.coredns_netbox.v1.GetStatusRequest\x1a$.coredns_netbox.v1.GetStatusResponse2j\n" +
+	"\x11ZoneReloadService\x12U\n" +
+	"\x06Reload\x12$.coredns_netbox.v1.ZoneReloadRequest\x1a%.coredns_netbox.v1.ZoneReloadResponseBFZDgithub.com/pallotron/coredns-netbox/proto/coredns_netbox/v1;netboxv1b\x06proto3"
 
 var (
 	file_proto_coredns_netbox_v1_zones_proto_rawDescOnce sync.Once
@@ -1167,7 +1243,7 @@ func file_proto_coredns_netbox_v1_zones_proto_rawDescGZIP() []byte {
 	return file_proto_coredns_netbox_v1_zones_proto_rawDescData
 }
 
-var file_proto_coredns_netbox_v1_zones_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_proto_coredns_netbox_v1_zones_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_proto_coredns_netbox_v1_zones_proto_goTypes = []any{
 	(*Record)(nil),                  // 0: coredns_netbox.v1.Record
 	(*CreateZoneRequest)(nil),       // 1: coredns_netbox.v1.CreateZoneRequest
@@ -1193,6 +1269,8 @@ var file_proto_coredns_netbox_v1_zones_proto_goTypes = []any{
 	(*ForceMergeWriteResponse)(nil), // 21: coredns_netbox.v1.ForceMergeWriteResponse
 	(*GetStatusRequest)(nil),        // 22: coredns_netbox.v1.GetStatusRequest
 	(*GetStatusResponse)(nil),       // 23: coredns_netbox.v1.GetStatusResponse
+	(*ZoneReloadRequest)(nil),       // 24: coredns_netbox.v1.ZoneReloadRequest
+	(*ZoneReloadResponse)(nil),      // 25: coredns_netbox.v1.ZoneReloadResponse
 }
 var file_proto_coredns_netbox_v1_zones_proto_depIdxs = []int32{
 	0,  // 0: coredns_netbox.v1.UpsertRecordRequest.record:type_name -> coredns_netbox.v1.Record
@@ -1210,19 +1288,21 @@ var file_proto_coredns_netbox_v1_zones_proto_depIdxs = []int32{
 	18, // 12: coredns_netbox.v1.ControlService.ForceNetboxPoll:input_type -> coredns_netbox.v1.ForceNetboxPollRequest
 	20, // 13: coredns_netbox.v1.ControlService.ForceMergeWrite:input_type -> coredns_netbox.v1.ForceMergeWriteRequest
 	22, // 14: coredns_netbox.v1.ControlService.GetStatus:input_type -> coredns_netbox.v1.GetStatusRequest
-	2,  // 15: coredns_netbox.v1.DynamicZoneService.CreateZone:output_type -> coredns_netbox.v1.CreateZoneResponse
-	4,  // 16: coredns_netbox.v1.DynamicZoneService.DeleteZone:output_type -> coredns_netbox.v1.DeleteZoneResponse
-	6,  // 17: coredns_netbox.v1.DynamicZoneService.ListZones:output_type -> coredns_netbox.v1.ListZonesResponse
-	8,  // 18: coredns_netbox.v1.DynamicZoneService.UpsertRecord:output_type -> coredns_netbox.v1.UpsertRecordResponse
-	10, // 19: coredns_netbox.v1.DynamicZoneService.DeleteRecord:output_type -> coredns_netbox.v1.DeleteRecordResponse
-	12, // 20: coredns_netbox.v1.DynamicZoneService.ListRecords:output_type -> coredns_netbox.v1.ListRecordsResponse
-	15, // 21: coredns_netbox.v1.DynamicZoneService.BatchUpsert:output_type -> coredns_netbox.v1.BatchUpsertResponse
-	17, // 22: coredns_netbox.v1.DynamicZoneService.BatchDelete:output_type -> coredns_netbox.v1.BatchDeleteResponse
-	19, // 23: coredns_netbox.v1.ControlService.ForceNetboxPoll:output_type -> coredns_netbox.v1.ForceNetboxPollResponse
-	21, // 24: coredns_netbox.v1.ControlService.ForceMergeWrite:output_type -> coredns_netbox.v1.ForceMergeWriteResponse
-	23, // 25: coredns_netbox.v1.ControlService.GetStatus:output_type -> coredns_netbox.v1.GetStatusResponse
-	15, // [15:26] is the sub-list for method output_type
-	4,  // [4:15] is the sub-list for method input_type
+	24, // 15: coredns_netbox.v1.ZoneReloadService.Reload:input_type -> coredns_netbox.v1.ZoneReloadRequest
+	2,  // 16: coredns_netbox.v1.DynamicZoneService.CreateZone:output_type -> coredns_netbox.v1.CreateZoneResponse
+	4,  // 17: coredns_netbox.v1.DynamicZoneService.DeleteZone:output_type -> coredns_netbox.v1.DeleteZoneResponse
+	6,  // 18: coredns_netbox.v1.DynamicZoneService.ListZones:output_type -> coredns_netbox.v1.ListZonesResponse
+	8,  // 19: coredns_netbox.v1.DynamicZoneService.UpsertRecord:output_type -> coredns_netbox.v1.UpsertRecordResponse
+	10, // 20: coredns_netbox.v1.DynamicZoneService.DeleteRecord:output_type -> coredns_netbox.v1.DeleteRecordResponse
+	12, // 21: coredns_netbox.v1.DynamicZoneService.ListRecords:output_type -> coredns_netbox.v1.ListRecordsResponse
+	15, // 22: coredns_netbox.v1.DynamicZoneService.BatchUpsert:output_type -> coredns_netbox.v1.BatchUpsertResponse
+	17, // 23: coredns_netbox.v1.DynamicZoneService.BatchDelete:output_type -> coredns_netbox.v1.BatchDeleteResponse
+	19, // 24: coredns_netbox.v1.ControlService.ForceNetboxPoll:output_type -> coredns_netbox.v1.ForceNetboxPollResponse
+	21, // 25: coredns_netbox.v1.ControlService.ForceMergeWrite:output_type -> coredns_netbox.v1.ForceMergeWriteResponse
+	23, // 26: coredns_netbox.v1.ControlService.GetStatus:output_type -> coredns_netbox.v1.GetStatusResponse
+	25, // 27: coredns_netbox.v1.ZoneReloadService.Reload:output_type -> coredns_netbox.v1.ZoneReloadResponse
+	16, // [16:28] is the sub-list for method output_type
+	4,  // [4:16] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
 	4,  // [4:4] is the sub-list for extension extendee
 	0,  // [0:4] is the sub-list for field type_name
@@ -1239,9 +1319,9 @@ func file_proto_coredns_netbox_v1_zones_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_coredns_netbox_v1_zones_proto_rawDesc), len(file_proto_coredns_netbox_v1_zones_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   24,
+			NumMessages:   26,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_proto_coredns_netbox_v1_zones_proto_goTypes,
 		DependencyIndexes: file_proto_coredns_netbox_v1_zones_proto_depIdxs,

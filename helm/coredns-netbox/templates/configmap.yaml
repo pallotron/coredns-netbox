@@ -7,9 +7,10 @@ metadata:
 data:
   Corefile: |
     . {
-        auto {
-            directory {{ .Values.zoneDir }} db\.(.*) {1}
-            reload 10s
+        netboxreload {
+            directory {{ .Values.zoneDir }}
+            grpc_port {{ .Values.coredns.reloadGRPCPort | default ":8054" }}
+            reload    {{ .Values.coredns.reloadPollInterval | default "60s" }}
         }
         {{- if or .Values.transfer.to .Values.transfer.notify }}
         transfer {

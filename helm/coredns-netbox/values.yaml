@@ -79,6 +79,8 @@ coredns:
   image: ghcr.io/pallotron/coredns-netbox
   tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
+  reloadGRPCPort: ":8054"          # gRPC port for ZoneReloadService
+  reloadPollInterval: "60s"        # Fallback poll interval (0s to disable)
   # Extra CoreDNS plugin directives appended to the primary server block.
   # Use this to inject additional plugins (e.g. rewrite, acl, metadata) without
   # forking the chart. Each directive must be valid Corefile syntax.
@@ -92,6 +94,8 @@ sidecar:
   image: ghcr.io/pallotron/coredns-netbox-sidecar
   tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
+  standalone: false   # Set true to run sidecar as a separate Deployment (requires RWX storage)
+  reloadToken: ""   # Bearer token for CoreDNS gRPC reload endpoint; empty disables auth
   # Additional environment variables for the sidecar container
   # Example:
   # env:

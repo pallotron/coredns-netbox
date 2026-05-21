@@ -26,6 +26,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/merge"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/pallotron/coredns-netbox/internal/reloader"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	"github.com/prometheus/client_golang/prometheus"
@@ -188,9 +189,11 @@ func main() {
 		}()
 	}
 
+	rl := reloader.New(cfg.CoreDNSReloadAddrs, cfg.CoreDNSReloadToken)
+
 	// Run the poll loop
 	if err := run(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m, markReady,
-		store, netboxCache, statusTracker, mergeSignal, netboxSignal); err != nil {
+		store, netboxCache, statusTracker, mergeSignal, netboxSignal, rl); err != nil {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
@@ -219,6 +222,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	store dynamicstore.DynamicStore, netboxCache *grpcserver.NetboxCache,
 	statusTracker *grpcserver.StatusTracker,
 	mergeSignal, netboxSignal <-chan struct{},
+	rl *reloader.Reloader,
 ) error {
 	lastSuccessTime := time.Now()
 	firstSuccess := false
@@ -258,6 +262,9 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	if mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
 		slog.Warn("initial merge failed", "err", mergeErr)
 	} else {
+		if !cfg.RunOnce {
+			rl.Reload(ctx)
+		}
 		lastSuccessTime = time.Now()
 		statusTracker.SetMergeWrite(time.Now())
 		if !firstSuccess && markReady != nil {
@@ -293,6 +300,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				statusTracker.SetNetboxPoll(time.Now())
 			}
 			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				rl.Reload(ctx)
 				lastSuccessTime = time.Now()
 				m.ZoneStalenessSeconds.Set(0)
 				statusTracker.SetMergeWrite(time.Now())
@@ -311,11 +319,13 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				statusTracker.SetNetboxPoll(time.Now())
 			}
 			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				rl.Reload(ctx)
 				statusTracker.SetMergeWrite(time.Now())
 			}
 
 		case <-mergeSignal:
 			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				rl.Reload(ctx)
 				statusTracker.SetMergeWrite(time.Now())
 			}
 		}
