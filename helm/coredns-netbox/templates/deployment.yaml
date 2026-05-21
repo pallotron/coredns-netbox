@@ -111,6 +111,9 @@ spec:
             - name: ready
               containerPort: 8181
               protocol: TCP
+            - name: grpc-reload
+              containerPort: {{ .Values.coredns.reloadGRPCPort | default ":8054" | trimPrefix ":" | int }}
+              protocol: TCP
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
@@ -178,6 +181,10 @@ spec:
               value: {{ .Values.domainSuffix | quote }}
             - name: STRIP_DC_LABEL
               value: {{ .Values.stripDCLabel | quote }}
+            - name: COREDNS_RELOAD_ADDRS
+              value: {{ include "coredns-netbox.reloadAddrs" . | quote }}
+            - name: COREDNS_RELOAD_TOKEN
+              value: {{ .Values.sidecar.reloadToken | quote }}
             {{- with .Values.sidecar.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

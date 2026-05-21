@@ -46,6 +46,10 @@ type Config struct {
 	// gRPC server configuration
 	GRPCAddr      string
 	GRPCAuthToken string
+
+	// CoreDNS reload notification
+	CoreDNSReloadAddrs []string // host:port addresses to call Reload() on after zone write
+	CoreDNSReloadToken string   // bearer token for CoreDNS gRPC reload (usually empty)
 }
 
 func Load() (*Config, error) {
@@ -84,6 +88,9 @@ func Load() (*Config, error) {
 		// gRPC server configuration
 		GRPCAddr:      envOrDefault("GRPC_ADDR", ":8083"),
 		GRPCAuthToken: os.Getenv("GRPC_AUTH_TOKEN"),
+
+		CoreDNSReloadAddrs: parseZoneList(os.Getenv("COREDNS_RELOAD_ADDRS")),
+		CoreDNSReloadToken: os.Getenv("COREDNS_RELOAD_TOKEN"),
 	}
 
 	if c.NetboxToken == "" {

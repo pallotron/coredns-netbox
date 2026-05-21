@@ -78,3 +78,23 @@ Name of the secret containing the Netbox API token.
 {{- include "coredns-netbox.fullname" . }}
 {{- end }}
 {{- end }}
+
+{{/*
+Comma-separated CoreDNS pod addresses for the sidecar's COREDNS_RELOAD_ADDRS.
+When sidecar is a sidecar container (same pod), localhost suffices.
+When sidecar.standalone is true, enumerate StatefulSet pod DNS names.
+*/}}
+{{- define "coredns-netbox.reloadAddrs" -}}
+{{- $port := .Values.coredns.reloadGRPCPort | default ":8054" | trimPrefix ":" -}}
+{{- if .Values.sidecar.standalone -}}
+{{- $addrs := list -}}
+{{- $name := include "coredns-netbox.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- range $i := until (.Values.replicaCount | int) -}}
+{{- $addrs = append $addrs (printf "%s-%d.%s-headless.%s.svc.cluster.local:%s" $name $i $name $ns $port) -}}
+{{- end -}}
+{{- join "," $addrs -}}
+{{- else -}}
+{{- printf "localhost:%s" $port -}}
+{{- end -}}
+{{- end -}}

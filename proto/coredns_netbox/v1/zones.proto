@@ -63,3 +63,10 @@ message GetStatusResponse {
   int32  dynamic_record_count   = 4;
   double zone_staleness_seconds = 5;
 }
+
+service ZoneReloadService {
+  rpc Reload(ZoneReloadRequest) returns (ZoneReloadResponse);
+}
+
+message ZoneReloadRequest  {}
+message ZoneReloadResponse {}
