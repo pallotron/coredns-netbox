@@ -1,16 +1,26 @@
 # Dev-specific values for coredns-netbox helm chart
 # Used by k3d cluster for local development
 
+# Two replicas — validates multi-replica DNS serving and gRPC zone reload propagation
+replicaCount: 2
+
 # Use locally built images (imported into k3d via `make dev.images`)
 coredns:
   image: coredns-netbox
   tag: dev
   pullPolicy: IfNotPresent
+  # Rewrite DC-labelled queries to the flat zone so both
+  # server1-mgmt.dc1.mycompany.com and server1-mgmt.mycompany.com resolve.
+  extraConfig: |
+    rewrite name regex ^([^.]+)\.([^.]+)\.mycompany\.com\.$ {1}.mycompany.com. answer auto
 
 sidecar:
   image: coredns-netbox-sidecar
   tag: dev
   pullPolicy: IfNotPresent
+  standalone: true
+  service:
+    type: LoadBalancer   # k3d routes 18082/18083 via its loadbalancer (no hostPort needed)
   env:
     - name: GRPC_ADDR
       value: ":8083"
@@ -25,13 +35,14 @@ service:
     enabled: true
     type: LoadBalancer
     annotations: {}
+    # Expose CoreDNS gRPC reload port so TestZoneReloadService can reach it from host
+    exposeGRPCReload: true
 
-# Disable hostPort for DNS port 53 (conflicts with LoadBalancer svclb pods),
-# but enable sidecar hostPort so e2e tests can reach gRPC (8083) and metrics (8082)
-# from the host via k3d's port mappings (18083:8083, 18082:8082).
+# No hostPort needed — sidecar is now a standalone Deployment with its own
+# LoadBalancer Service. k3d routes 18082/18083 through the service, not hostPort.
 hostPort:
   enabled: false
-  sidecar: true
+  sidecar: false
 
 # Concurrency and discovery settings
 maxConcurrency: 3
@@ -41,12 +52,6 @@ zoneDiscovery:
 # Strip DC label: server1-mgmt.dc1.mycompany.com → server1-mgmt.mycompany.com
 stripDCLabel: true
 domainSuffix: mycompany.com
-
-# Rewrite DC-labelled queries to the flat zone so both
-# server1-mgmt.dc1.mycompany.com and server1-mgmt.mycompany.com resolve.
-coredns:
-  extraConfig: |
-    rewrite name regex ^([^.]+)\.([^.]+)\.mycompany\.com\.$ {1}.mycompany.com. answer auto
 
 # DNS metadata
 primaryNS: ns1.mycompany.com.
@@ -80,3 +85,9 @@ secondary:
   # Transfer zones from primary (using static ClusterIP above)
   transferFrom:
     - 10.43.100.53
+
+# Shared RWX zone storage for standalone sidecar mode.
+# The PV/PVC is created by `make dev.zones-pv` (dev/coredns-zones-pv.yaml).
+# Uses hostPath on the single k3d node — works for dev/CI, not for production.
+zoneStorage:
+  existingClaim: coredns-zones

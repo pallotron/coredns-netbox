@@ -1,0 +1,23 @@
+{{- if .Values.sidecar.standalone }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-sidecar
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sidecar
+spec:
+  type: {{ .Values.sidecar.service.type }}
+  selector:
+    {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: sidecar
+  ports:
+    - name: sidecar-health
+      port: 8082
+      targetPort: sidecar-health
+      protocol: TCP
+    - name: sidecar-grpc
+      port: 8083
+      targetPort: grpc
+      protocol: TCP
+{{- end }}

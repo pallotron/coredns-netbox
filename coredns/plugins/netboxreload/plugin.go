@@ -2,6 +2,7 @@ package netboxreload
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ type Plugin struct {
 	PollInterval time.Duration // fallback poll interval; 0 disables polling
 
 	mu         sync.RWMutex
-	zones      map[string]*zone // origin (e.g. "infra.cx.") -> loaded zone
+	zones      map[string]*zone // origin (e.g. "mycompany.com.") -> loaded zone
 	grpcServer *grpc.Server     // stored for graceful shutdown via stopGRPC
 }
 
@@ -133,4 +134,59 @@ func (p *Plugin) reloadZones() error {
 	p.zones = newZones
 	p.mu.Unlock()
 	return nil
+}
+
+// Transfer implements the transfer.Transferer interface so the CoreDNS
+// transfer plugin can serve AXFR/IXFR requests to secondary DNS servers.
+// serial==0 means AXFR (full transfer); serial>0 is IXFR (incremental —
+// we fall back to AXFR unless the client is already up-to-date).
+func (p *Plugin) Transfer(zone string, serial uint32) (<-chan []dns.RR, error) {
+	p.mu.RLock()
+	z, ok := p.zones[dns.Fqdn(zone)]
+	p.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("not authoritative for zone %s", zone)
+	}
+
+	ch := make(chan []dns.RR)
+	go func() {
+		defer close(ch)
+		p.mu.RLock()
+		defer p.mu.RUnlock()
+
+		// Locate the SOA at the zone apex.
+		var soa dns.RR
+		for _, rr := range z.records[z.origin] {
+			if rr.Header().Rrtype == dns.TypeSOA {
+				soa = dns.Copy(rr)
+				break
+			}
+		}
+		if soa == nil {
+			return // zone has no SOA; nothing to transfer
+		}
+
+		// IXFR: if the client already has the current serial, send just SOA.
+		if serial != 0 && soa.(*dns.SOA).Serial == serial {
+			ch <- []dns.RR{soa}
+			return
+		}
+
+		// AXFR: SOA → all non-SOA records → SOA.
+		ch <- []dns.RR{soa}
+		for _, rrset := range z.records {
+			var batch []dns.RR
+			for _, rr := range rrset {
+				if rr.Header().Rrtype == dns.TypeSOA {
+					continue // SOA is sent separately at start and end
+				}
+				batch = append(batch, dns.Copy(rr))
+			}
+			if len(batch) > 0 {
+				ch <- batch
+			}
+		}
+		ch <- []dns.RR{soa}
+	}()
+	return ch, nil
 }

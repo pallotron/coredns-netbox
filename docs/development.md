@@ -65,8 +65,9 @@ nslookup server1-mgmt.mycompany.com 10.43.100.53  # UDP works fine
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
 │   └── zonemanager/              # Multi-zone lifecycle (create/update/remove zone files)
 ├── coredns/
-│   ├── Dockerfile                # CoreDNS image (standard plugins + auto + secondary)
-│   └── plugin.cfg                # Plugin ordering
+│   ├── Dockerfile                # CoreDNS image (standard plugins + netboxreload)
+│   ├── plugin.cfg                # Plugin ordering (netboxreload before auto)
+│   └── plugins/netboxreload/     # Custom plugin: in-memory zone serving + gRPC reload endpoint
 ├── docker/sidecar/Dockerfile     # Sidecar image
 ├── helm/coredns-netbox/          # Helm chart
 ├── scripts/                      # Utility scripts (fetch Netbox data)

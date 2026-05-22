@@ -289,3 +289,28 @@ func TestAXFRTransfer(t *testing.T) {
 		t.Errorf("expected A record for %s in AXFR response", expectedA)
 	}
 }
+
+// TestMultipleReplicasConsistentDNS verifies that with replicaCount>1 all
+// replicas serve correct, consistent answers. The DNS service load-balances
+// across replicas, so running many queries exercises all of them.
+func TestMultipleReplicasConsistentDNS(t *testing.T) {
+	waitForPrimary(t)
+
+	probe := hostFQDN("server1-mgmt", "dc1")
+	wantIP := net.ParseIP("10.1.0.1")
+
+	// 30 queries — statistically hits both pods several times each with 2 replicas.
+	for i := range 30 {
+		r := queryServer(t, probe, dns.TypeA, dnsServer())
+		require.Equalf(t, dns.RcodeSuccess, r.Rcode,
+			"query %d/%d: expected NOERROR from load-balanced DNS service", i+1, 30)
+		var found bool
+		for _, ans := range r.Answer {
+			if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
+				found = true
+			}
+		}
+		require.Truef(t, found,
+			"query %d/%d: expected %s in answer, got %v", i+1, 30, wantIP, r.Answer)
+	}
+}

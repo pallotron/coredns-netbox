@@ -16,13 +16,13 @@ import (
 
 func TestGRPCReload(t *testing.T) {
 	dir := t.TempDir()
-	v1 := `$ORIGIN infra.cx.
+	v1 := `$ORIGIN mycompany.com.
 $TTL 300
-@ IN SOA ns1.infra.cx. admin.infra.cx. (2026052101 3600 900 604800 86400)
-@ IN NS ns1.infra.cx.
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
 host1 IN A 10.0.0.1
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.infra.cx"), []byte(v1), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v1), 0o644))
 	zones, err := loadZoneDir(dir)
 	require.NoError(t, err)
 	p := &Plugin{Dir: dir, zones: zones}
@@ -35,24 +35,24 @@ host1 IN A 10.0.0.1
 
 	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	client := pb.NewZoneReloadServiceClient(conn)
 
 	// overwrite zone with new content before calling Reload
-	v2 := `$ORIGIN infra.cx.
+	v2 := `$ORIGIN mycompany.com.
 $TTL 300
-@ IN SOA ns1.infra.cx. admin.infra.cx. (2026052102 3600 900 604800 86400)
-@ IN NS ns1.infra.cx.
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052102 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
 host2 IN A 10.0.0.2
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.infra.cx"), []byte(v2), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v2), 0o644))
 
 	_, err = client.Reload(context.Background(), &pb.ZoneReloadRequest{})
 	require.NoError(t, err)
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	assert.Contains(t, p.zones["infra.cx."].records, "host2.infra.cx.")
-	assert.NotContains(t, p.zones["infra.cx."].records, "host1.infra.cx.")
+	assert.Contains(t, p.zones["mycompany.com."].records, "host2.mycompany.com.")
+	assert.NotContains(t, p.zones["mycompany.com."].records, "host1.mycompany.com.")
 }

@@ -82,7 +82,7 @@ jobs:
           make dev.cluster
           k3d image import coredns-netbox:dev -c coredns-netbox
           k3d image import coredns-netbox-sidecar:dev -c coredns-netbox
-          make dev.netbox dev.token dev.seed dev.deploy
+          make dev.netbox dev.token dev.seed dev.zones-pv dev.deploy
           make dev.wait
           make test.e2e
 

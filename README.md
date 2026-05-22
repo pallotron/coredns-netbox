@@ -7,7 +7,7 @@
 [![CoreDNS Image](https://img.shields.io/badge/ghcr.io-coredns--netbox-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox)
 [![Sidecar Image](https://img.shields.io/badge/ghcr.io-coredns--netbox--sidecar-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox-sidecar)
 
-A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones from device names, intelligently selects management and BMC IPs using configurable patterns, and writes zone files to a shared volume. CoreDNS serves the zone files using the `auto` plugin and optionally falls through to the [netbox plugin](https://github.com/oz123/coredns-netbox-plugin) for records not yet in the zone files. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
+A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones from device names, intelligently selects management and BMC IPs using configurable patterns, and writes zone files to a shared volume. CoreDNS serves zone files using the custom `netboxreload` plugin and notifies all replicas immediately via gRPC after each zone write. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
 
 **Key Features:**
 - **Smart Interface Categorization**: Automatically identifies BMC, management, loopback, and dataplane interfaces using regex patterns
@@ -15,6 +15,8 @@ A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar period
 - **Multi-IP Support**: Generates both primary management records and BMC records with `-bmc` suffix
 - **Flexible Zone Extraction**: Derives DNS zones from device naming conventions (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
 - **Reverse DNS (PTR) Records**: Automatically generates reverse zones (in-addr.arpa, ip6.arpa) with configurable prefix lengths
+- **Zero-downtime deploys**: Multiple CoreDNS replicas with a standalone sidecar — DNS never goes down during a rollout
+- **Instant zone propagation**: gRPC `Reload()` notifies all CoreDNS replicas immediately after each zone write; a configurable fallback poll (default 60s) covers gRPC delivery failures
 
 ## Architecture
 
@@ -33,13 +35,17 @@ subgraph Diagram[" "]
     Netbox[("Netbox API")]
     Upstream(["Upstream DNS (e.g. 8.8.8.8)"])
 
-    subgraph Primary["Primary Pod"]
-        Init["Init Container (sidecar --run-once)"]
+    subgraph SidecarDeploy["Sidecar Deployment (replicas: 1)"]
+        Init["zone-init (--run-once)"]
         Sidecar["Sidecar"]
-        Zones[("/zones/{zone_files}")]
-        CoreDNS["CoreDNS: cache · auto · netbox · transfer · forward"]
         Init -->|"initial zone files"| Zones
-        Sidecar -->|"writes"| Zones
+        Sidecar -->|"writes zones"| Zones
+    end
+
+    Zones[("/zones/ (RWX PVC)")]
+
+    subgraph Primary["CoreDNS StatefulSet (×N replicas)"]
+        CoreDNS["netboxreload · transfer · forward · cache"]
         CoreDNS -->|"reads"| Zones
     end
 
@@ -47,6 +53,7 @@ subgraph Diagram[" "]
         SecondaryDNS["CoreDNS (AXFR replica)"]
     end
 
+    Sidecar -.->|"gRPC Reload()"| CoreDNS
     Client -->|"UDP/TCP :53"| CoreDNS
     Netbox -->|"Parallel, paginated HTTP poll"| Sidecar
     CoreDNS -->|"cache misses"| Upstream
@@ -71,26 +78,27 @@ class SecondaryDNS replicaStyle
 class Diagram diagramStyle
 ```
 
-The sidecar polls Netbox on a configurable interval, fetches all active IP addresses with DNS names using parallel paginated requests, auto-discovers zones (by FQDN depth, common suffix, or Netbox DNS plugin), and atomically writes zone files. CoreDNS detects changes via SOA serial increments.
+The sidecar runs as a standalone Deployment (one replica, zero-downtime rolling update) separate from the CoreDNS StatefulSet. It polls Netbox on a configurable interval, fetches all active IP addresses using parallel paginated requests, auto-discovers zones, and atomically writes zone files to a shared RWX PVC. After each write it calls `ZoneReloadService.Reload()` on every CoreDNS pod via the headless Service — changes propagate in milliseconds. A fallback poll loop inside each CoreDNS pod (default 60s) ensures zones are refreshed even if gRPC delivery fails.
 
 ### Performance
 
-The sidecar uses parallel paginated HTTP requests to fetch records from Netbox. With 18,000 IP addresses (6,000 hosts across 3 data centers, each with 3 interfaces), the sidecar fetches all records in 4-8 seconds and writes 3 zone files with 6,000 records each.
+With 18,000 IP addresses (6,000 hosts × 3 data centers × 3 interfaces each), the sidecar fetches all records in 4–8 seconds and writes 2 zone files with ~18,000 records each. Zone propagation to all CoreDNS replicas takes under 100ms after the write completes.
+
 ## How It Works
 
-1. **Init container** runs the sidecar with `--run-once` to generate initial zone files before CoreDNS starts
+1. **Init container** (`zone-init`) runs the sidecar with `--run-once` to populate the shared zone PVC before CoreDNS starts
 2. **Sidecar** continuously polls Netbox for all active IP addresses:
    - Fetches device information, interface names, VRFs, and IP addresses
    - Categorizes interfaces using regex patterns (BMC, management, loopback, dataplane)
-   - Groups IPs by device and selects the best management IP (prefers VRF-based over interface name)
+   - Groups IPs by device and selects the best management IP
    - Extracts DNS zones from device names (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
    - Generates DNS records: `{device}.{zone}` for management, `{device}-bmc.{zone}` for BMC
-   - Generates reverse zones (in-addr.arpa, ip6.arpa) with PTR records mapping IPs back to hostnames
-   - Atomically writes zone files only when changes are detected
-3. **CoreDNS** serves DNS using local zone files via the `auto` plugin, with optional fallthrough to the netbox plugin for cache misses
-4. **CoreDNS `auto` plugin** watches the zone directory and auto-loads new or changed zone files (every 10s)
-5. Queries for names outside discovered zones are forwarded to upstream resolvers
-6. If zone transfers are configured, the primary notifies secondaries on zone changes and serves AXFR requests
+   - Generates reverse zones (in-addr.arpa, ip6.arpa) with PTR records
+   - Atomically writes zone files **only when content changes** (SOA serial incremented on write)
+   - After a successful write, calls `ZoneReloadService.Reload()` on each CoreDNS pod in parallel
+3. **CoreDNS** serves DNS from in-memory zones loaded by the `netboxreload` plugin. On `Reload()` the plugin atomically re-reads all zone files from the shared PVC. A fallback poll (configurable, default 60s) covers gRPC delivery failures.
+4. Queries for names outside discovered zones are forwarded to upstream resolvers
+5. If zone transfers are configured, CoreDNS serves AXFR requests to secondary DNS servers
 
 ## Testing locally with k3d
 
@@ -102,7 +110,7 @@ brew install k3d helm kubectl
 
 ### Quick Start
 
-Spin up a full local dev environment (k3d cluster + Netbox + seed data + CoreDNS):
+Spin up a full local dev environment (k3d cluster + Netbox + seed data + CoreDNS with 2 replicas + standalone sidecar):
 
 ```bash
 make dev
@@ -118,45 +126,41 @@ dig @127.0.0.1 -p 15353 +tcp google.com A  # forwarded
 
 # Reverse lookups (PTR records)
 dig @127.0.0.1 -p 15353 +tcp -x 10.1.0.1
-dig @127.0.0.1 -p 15353 +tcp -x 10.2.8.244
 
-# Secondary
+# Secondary (verifies AXFR completed)
 dig @127.0.0.1 -p 15354 +tcp server1-mgmt.dc1.mycompany.com A
+
+# Zone transfer
+dig @127.0.0.1 -p 15353 +tcp AXFR mycompany.com
 ```
 
-**Note for macOS users:** Docker Desktop on macOS has a known limitation with UDP port forwarding between the host and containers. DNS queries via UDP will timeout when querying from your Mac host to the k3d cluster. Use the `+tcp` flag with dig to force TCP queries, which work correctly. This limitation does not affect:
+**Note for macOS users:** Docker Desktop on macOS has a known limitation with UDP port forwarding between the host and containers. Use the `+tcp` flag with dig to force TCP queries. This limitation does not affect:
 - DNS queries inside the Kubernetes cluster (both TCP and UDP work)
 - Production deployments on real Kubernetes clusters
 - Linux users (Docker on Linux handles UDP correctly)
-
-If you need UDP for testing, run queries from inside a pod:
-```bash
-kubectl run -n coredns-netbox dnstest --rm -it --image=busybox -- /bin/sh
-# Inside the pod:
-nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
-```
 
 ## Project Structure
 
 ```
 ├── cmd/
 │   ├── analyzer/main.go          # CLI tool: analyze Netbox data & preview DNS records
-│   └── sidecar/main.go           # Sidecar: poll Netbox → write zone files
+│   └── sidecar/main.go           # Sidecar: poll Netbox → write zone files → notify CoreDNS
 ├── internal/
 │   ├── config/                   # Env var configuration + categorization patterns
 │   ├── ipcategorizer/            # Interface categorization & device IP selection
 │   ├── netboxclient/             # Raw HTTP client for Netbox IPAM with parallel pagination
+│   ├── reloader/                 # gRPC client: fans out ZoneReloadService.Reload() to all pods
 │   ├── zonediscovery/            # Zone auto-discovery (zone-depth, common-suffix, netbox-dns)
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
 │   └── zonemanager/              # Multi-zone lifecycle (create/update/remove zone files)
 ├── coredns/
-│   ├── Dockerfile                # CoreDNS with netbox plugin
-│   └── plugin.cfg                # Plugin ordering
+│   ├── Dockerfile                # CoreDNS image (standard plugins + netboxreload)
+│   ├── plugin.cfg                # Plugin ordering (netboxreload before auto)
+│   └── plugins/netboxreload/     # Custom CoreDNS plugin: in-memory zone serving + gRPC reload
 ├── docker/sidecar/Dockerfile     # Sidecar image
 ├── helm/coredns-netbox/          # Helm chart
-├── scripts/                      # Utility scripts (fetch Netbox data)
 ├── dev/                          # k3d + Netbox dev config + seed scripts
-└── tests/e2e/                    # DNS resolution tests
+└── tests/e2e/                    # DNS resolution + gRPC tests
 ```
 
 ## More Documentation
@@ -164,8 +168,8 @@ nslookup server1-mgmt.dc1.mycompany.com 10.43.100.53  # UDP works fine
 | Page | Description |
 |---|---|
 | [Configuration](docs/configuration.md) | Interface categorization, reverse DNS, Helm values, env vars, zone discovery modes |
-| [Deployment](docs/deployment.md) | Production install, zone transfers, external secondaries |
-| [gRPC API](docs/grpc-api.md) | Dynamic record injection, force poll/merge, conflict handling, design decisions |
+| [Deployment](docs/deployment.md) | Production install, HA setup, zone transfers, external secondaries |
+| [gRPC API](docs/grpc-api.md) | Dynamic record injection, force poll/merge, zone reload, conflict handling |
 | [Observability](docs/observability.md) | Prometheus metrics reference |
-| [Development](docs/development.md) | Prerequisites, quick start, project structure, Makefile targets, step-by-step setup, seed data |
+| [Development](docs/development.md) | Prerequisites, quick start, project structure, Makefile targets |
 | [Analyzer CLI](cmd/analyzer/README.md) | Analyze Netbox data and preview DNS records before deploying |

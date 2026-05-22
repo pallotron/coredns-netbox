@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,18 +46,18 @@ func newTestPlugin(t *testing.T, zoneContent, zoneName string) *Plugin {
 	return &Plugin{Dir: dir, zones: zones}
 }
 
-const testZone = `$ORIGIN infra.cx.
+const testZone = `$ORIGIN mycompany.com.
 $TTL 300
-@ IN SOA ns1.infra.cx. admin.infra.cx. (2026052101 3600 900 604800 86400)
-@ IN NS ns1.infra.cx.
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
 server1 IN A 10.0.0.1
 server2 IN AAAA 2001:db8::2
 `
 
 func TestServeDNS_A(t *testing.T) {
-	p := newTestPlugin(t, testZone, "infra.cx")
+	p := newTestPlugin(t, testZone, "mycompany.com")
 	req := new(dns.Msg)
-	req.SetQuestion("server1.infra.cx.", dns.TypeA)
+	req.SetQuestion("server1.mycompany.com.", dns.TypeA)
 	rw := &responseRecorder{}
 	code, err := p.ServeDNS(context.Background(), rw, req)
 	require.NoError(t, err)
@@ -67,9 +68,9 @@ func TestServeDNS_A(t *testing.T) {
 }
 
 func TestServeDNS_AAAA(t *testing.T) {
-	p := newTestPlugin(t, testZone, "infra.cx")
+	p := newTestPlugin(t, testZone, "mycompany.com")
 	req := new(dns.Msg)
-	req.SetQuestion("server2.infra.cx.", dns.TypeAAAA)
+	req.SetQuestion("server2.mycompany.com.", dns.TypeAAAA)
 	rw := &responseRecorder{}
 	code, err := p.ServeDNS(context.Background(), rw, req)
 	require.NoError(t, err)
@@ -78,9 +79,9 @@ func TestServeDNS_AAAA(t *testing.T) {
 }
 
 func TestServeDNS_NXDOMAIN(t *testing.T) {
-	p := newTestPlugin(t, testZone, "infra.cx")
+	p := newTestPlugin(t, testZone, "mycompany.com")
 	req := new(dns.Msg)
-	req.SetQuestion("notexist.infra.cx.", dns.TypeA)
+	req.SetQuestion("notexist.mycompany.com.", dns.TypeA)
 	rw := &responseRecorder{}
 	code, err := p.ServeDNS(context.Background(), rw, req)
 	require.NoError(t, err)
@@ -91,10 +92,10 @@ func TestServeDNS_NXDOMAIN(t *testing.T) {
 }
 
 func TestServeDNS_NoZonePassesThrough(t *testing.T) {
-	p := newTestPlugin(t, testZone, "infra.cx")
+	p := newTestPlugin(t, testZone, "mycompany.com")
 	// query for a name outside any loaded zone
 	req := new(dns.Msg)
-	req.SetQuestion("example.com.", dns.TypeA)
+	req.SetQuestion("notexample.org.", dns.TypeA)
 	rw := &responseRecorder{}
 	// Next is nil → NextOrFailure returns SERVFAIL
 	code, _ := p.ServeDNS(context.Background(), rw, req)
@@ -102,9 +103,9 @@ func TestServeDNS_NoZonePassesThrough(t *testing.T) {
 }
 
 func TestServeDNS_NODATA(t *testing.T) {
-	p := newTestPlugin(t, testZone, "infra.cx")
+	p := newTestPlugin(t, testZone, "mycompany.com")
 	req := new(dns.Msg)
-	req.SetQuestion("server1.infra.cx.", dns.TypeAAAA) // server1 only has A
+	req.SetQuestion("server1.mycompany.com.", dns.TypeAAAA) // server1 only has A
 	rw := &responseRecorder{}
 	code, err := p.ServeDNS(context.Background(), rw, req)
 	require.NoError(t, err)
@@ -117,12 +118,12 @@ func TestServeDNS_NODATA(t *testing.T) {
 
 func TestPollLoop_Cancellation(t *testing.T) {
 	dir := t.TempDir()
-	content := `$ORIGIN infra.cx.
+	content := `$ORIGIN mycompany.com.
 $TTL 300
-@ IN SOA ns1.infra.cx. admin.infra.cx. (2026052101 3600 900 604800 86400)
-@ IN NS ns1.infra.cx.
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.infra.cx"), []byte(content), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(content), 0o644))
 	zones, err := loadZoneDir(dir)
 	require.NoError(t, err)
 	p := &Plugin{Dir: dir, zones: zones, PollInterval: 10 * time.Millisecond}
@@ -141,31 +142,90 @@ $TTL 300
 	}
 }
 
+func TestTransfer_AXFR(t *testing.T) {
+	p := newTestPlugin(t, testZone, "mycompany.com")
+
+	ch, err := p.Transfer("mycompany.com.", 0)
+	require.NoError(t, err)
+
+	var all []dns.RR
+	for batch := range ch {
+		all = append(all, batch...)
+	}
+
+	// Must start and end with SOA
+	require.NotEmpty(t, all)
+	assert.Equal(t, dns.TypeSOA, all[0].Header().Rrtype, "first record must be SOA")
+	assert.Equal(t, dns.TypeSOA, all[len(all)-1].Header().Rrtype, "last record must be SOA")
+
+	// Must contain A record for server1
+	var found bool
+	for _, rr := range all {
+		if rr.Header().Rrtype == dns.TypeA && strings.EqualFold(rr.Header().Name, "server1.mycompany.com.") {
+			found = true
+		}
+	}
+	assert.True(t, found, "AXFR should include A record for server1")
+}
+
+func TestTransfer_NotAuthoritative(t *testing.T) {
+	p := newTestPlugin(t, testZone, "mycompany.com")
+	_, err := p.Transfer("other.org.", 0)
+	assert.Error(t, err)
+}
+
+func TestTransfer_IXFR_UpToDate(t *testing.T) {
+	p := newTestPlugin(t, testZone, "mycompany.com")
+
+	// Get current serial from a full transfer first
+	ch, err := p.Transfer("mycompany.com.", 0)
+	require.NoError(t, err)
+	var soa *dns.SOA
+	for batch := range ch {
+		for _, rr := range batch {
+			if s, ok := rr.(*dns.SOA); ok && soa == nil {
+				soa = s
+			}
+		}
+	}
+	require.NotNil(t, soa)
+
+	// IXFR with current serial — should return just SOA (no-op)
+	ch2, err := p.Transfer("mycompany.com.", soa.Serial)
+	require.NoError(t, err)
+	var rrs []dns.RR
+	for batch := range ch2 {
+		rrs = append(rrs, batch...)
+	}
+	require.Len(t, rrs, 1)
+	assert.Equal(t, dns.TypeSOA, rrs[0].Header().Rrtype)
+}
+
 func TestReloadZones(t *testing.T) {
 	dir := t.TempDir()
-	v1 := `$ORIGIN infra.cx.
+	v1 := `$ORIGIN mycompany.com.
 $TTL 300
-@ IN SOA ns1.infra.cx. admin.infra.cx. (2026052101 3600 900 604800 86400)
-@ IN NS ns1.infra.cx.
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
 old IN A 10.0.0.1
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.infra.cx"), []byte(v1), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v1), 0o644))
 	zones, err := loadZoneDir(dir)
 	require.NoError(t, err)
 	p := &Plugin{Dir: dir, zones: zones}
 
 	// overwrite zone with new record
-	v2 := `$ORIGIN infra.cx.
+	v2 := `$ORIGIN mycompany.com.
 $TTL 300
-@ IN SOA ns1.infra.cx. admin.infra.cx. (2026052102 3600 900 604800 86400)
-@ IN NS ns1.infra.cx.
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052102 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
 new IN A 10.0.0.2
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.infra.cx"), []byte(v2), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v2), 0o644))
 	require.NoError(t, p.reloadZones())
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	assert.NotContains(t, p.zones["infra.cx."].records, "old.infra.cx.")
-	assert.Contains(t, p.zones["infra.cx."].records, "new.infra.cx.")
+	assert.NotContains(t, p.zones["mycompany.com."].records, "old.mycompany.com.")
+	assert.Contains(t, p.zones["mycompany.com."].records, "new.mycompany.com.")
 }

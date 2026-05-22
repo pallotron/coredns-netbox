@@ -15,13 +15,15 @@ import (
 
 // Write merges Netbox zones with dynamic store records, generates PTR entries
 // for dynamic records (when reverseDisc is non-nil), and writes zone files via mgr.
+// Returns (changed, error): changed is true when at least one zone file was created,
+// updated, or deleted — callers use this to decide whether to notify CoreDNS to reload.
 func Write(
 	netboxZones zonediscovery.ZoneMap,
 	store dynamicstore.DynamicStore,
 	mgr *zonemanager.Manager,
 	m *metrics.Sidecar,
 	reverseDisc zonediscovery.Discoverer,
-) error {
+) (bool, error) {
 	pollStart := time.Now()
 
 	// Merge dynamic records into a copy of netboxZones.
@@ -89,7 +91,7 @@ func Write(
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
 		m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
-		return fmt.Errorf("update zones: %w", err)
+		return false, fmt.Errorf("update zones: %w", err)
 	}
 
 	m.ZonesActive.Set(float64(len(mgr.Zones())))
@@ -97,6 +99,7 @@ func Write(
 	m.PollTotal.WithLabelValues("success").Inc()
 	m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())
 
+	changed := stats.Created+stats.Updated+stats.Deleted > 0
 	slog.Info("zone update complete", "active_zones", mgr.Zones())
-	return nil
+	return changed, nil
 }

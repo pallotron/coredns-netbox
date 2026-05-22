@@ -12,6 +12,7 @@ on:
 env:
   REGISTRY: ghcr.io
   OWNER: ${{ github.repository_owner }}
+  NETBOX_CHART_VERSION: "8.2.15"
 
 jobs:
   build:
@@ -36,13 +37,16 @@ jobs:
       - name: Boot Netbox
         run: make dev.cluster dev.netbox
 
-      - name: Detect PostgreSQL image
+      - name: Detect PostgreSQL base image
         id: pg-image
         run: |
-          PG_IMAGE=$(kubectl get pod -n netbox netbox-postgresql-0 \
-            -o jsonpath='{.spec.containers[0].image}')
+          # Use bitnami/postgresql:latest as the base — it is multi-arch (amd64+arm64)
+          # so the resulting fixture will be too. The SQL dump carries the schema;
+          # the base image version only needs to be compatible (same major as Netbox requires).
+          # We do NOT use the running pod's image (our amd64-only fixture).
+          PG_IMAGE="registry-1.docker.io/bitnami/postgresql:latest"
           echo "image=$PG_IMAGE" >> $GITHUB_OUTPUT
-          echo "Detected PostgreSQL image: $PG_IMAGE"
+          echo "Using PostgreSQL base image: $PG_IMAGE"
 
       - name: Dump schema and migration records
         run: |
@@ -93,7 +97,7 @@ jobs:
         with:
           context: /tmp/fixture-build
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/${{ env.OWNER }}/netbox-pg-fixture:4.6.0
             ghcr.io/${{ env.OWNER }}/netbox-pg-fixture:latest

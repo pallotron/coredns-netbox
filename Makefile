@@ -1,5 +1,5 @@
-.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.helm proto \
-       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy dev.wait dev.teardown \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.helm proto \
+       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.zones-pv dev.deploy dev.wait dev.teardown \
        dev.shell dev.shell.sidecar \
        lint clean
 
@@ -16,6 +16,12 @@ HELM_RELEASE := coredns-netbox
 HELM_NAMESPACE := coredns-netbox
 K3D_CLUSTER := coredns-netbox
 NETBOX_NAMESPACE := netbox
+
+# Prevent accidental deploys to company clusters. All dev kubectl/helm commands
+# use this context explicitly — they will fail if the cluster does not exist.
+DEV_CONTEXT := k3d-$(K3D_CLUSTER)
+KUBECTL := kubectl --context $(DEV_CONTEXT)
+HELM    := helm --kube-context $(DEV_CONTEXT)
 
 # Netbox chart and app version — must match the fixture image tag
 NETBOX_CHART_VERSION := 8.2.15
@@ -39,8 +45,15 @@ build.analyzer:
 test.unit:
 	go test ./internal/... -v -count=1 -race
 
+# test.e2e: raw test runner — used by CI (which sets up the environment separately)
 test.e2e:
-	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken go test ./tests/e2e/... -v -count=1 -tags=e2e
+	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken \
+	COREDNS_RELOAD_ADDR=127.0.0.1:18054 \
+	go test ./tests/e2e/... -v -count=1 -tags=e2e
+
+# test.e2e.local: full local loop — rebuilds images, redeploys, waits, then runs e2e
+# Requires: make dev.cluster dev.netbox dev.token dev.seed (one-time setup)
+test.e2e.local: dev.images dev.deploy dev.wait test.e2e
 
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative \
@@ -143,9 +156,9 @@ dev.cluster:
 dev.netbox:
 	helm repo add netbox-community https://netbox-community.github.io/netbox-chart/ || true
 	helm repo update
-	kubectl create namespace $(NETBOX_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -f dev/netbox-extra-configmap.yaml
-	helm upgrade --install netbox netbox-community/netbox \
+	$(KUBECTL) create namespace $(NETBOX_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) apply -f dev/netbox-extra-configmap.yaml
+	$(HELM) upgrade --install netbox netbox-community/netbox \
 		-n $(NETBOX_NAMESPACE) \
 		--version $(NETBOX_CHART_VERSION) \
 		-f dev/netbox-values.yaml \
@@ -158,32 +171,39 @@ dev.netbox:
 dev.token:
 	@echo "Creating Netbox API token..."
 	@SCRIPT=$$(cat dev/create-token.py) && \
-	NETBOX_TOKEN=$$(kubectl exec -n $(NETBOX_NAMESPACE) deploy/netbox -c netbox -- \
+	NETBOX_TOKEN=$$($(KUBECTL) exec -n $(NETBOX_NAMESPACE) deploy/netbox -c netbox -- \
 		python /opt/netbox/netbox/manage.py shell --no-startup --no-imports \
 		-c "$$SCRIPT" \
 		2>/dev/null | grep '^nbt_') && \
 	echo "Token: $$NETBOX_TOKEN" && \
-	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f - && \
-	kubectl create secret generic $(NETBOX_TOKEN_SECRET) \
+	$(KUBECTL) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f - && \
+	$(KUBECTL) create secret generic $(NETBOX_TOKEN_SECRET) \
 		-n $(NETBOX_NAMESPACE) \
 		--from-literal=token="$$NETBOX_TOKEN" \
-		--dry-run=client -o yaml | kubectl apply -f - && \
-	kubectl create secret generic $(NETBOX_TOKEN_SECRET) \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f - && \
+	$(KUBECTL) create secret generic $(NETBOX_TOKEN_SECRET) \
 		-n $(HELM_NAMESPACE) \
 		--from-literal=token="$$NETBOX_TOKEN" \
-		--dry-run=client -o yaml | kubectl apply -f - && \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f - && \
 	echo "Token stored in secret '$(NETBOX_TOKEN_SECRET)' in namespaces: $(NETBOX_NAMESPACE), $(HELM_NAMESPACE)"
 
 dev.seed:
 	@echo "Seeding Netbox with 18,000 IP addresses via Django ORM..."
 	@SCRIPT=$$(cat dev/seed-ips.py) && \
-	kubectl exec -n $(NETBOX_NAMESPACE) deploy/netbox -c netbox -- \
+	$(KUBECTL) exec -n $(NETBOX_NAMESPACE) deploy/netbox -c netbox -- \
 		python /opt/netbox/netbox/manage.py shell --no-startup --no-imports \
 		-c "$$SCRIPT"
 
-dev.deploy:
-	kubectl create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install $(HELM_RELEASE) ./helm/coredns-netbox \
+dev.zones-pv:
+	$(KUBECTL) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	# Pre-create the hostPath directory on the k3d node with world-writable permissions
+	# so UID 1000 pods (zone-init, sidecar) can write zone files to it.
+	docker exec k3d-$(K3D_CLUSTER)-server-0 sh -c "mkdir -p /tmp/coredns-zones && chmod 777 /tmp/coredns-zones"
+	$(KUBECTL) apply -f dev/coredns-zones-pv.yaml
+
+dev.deploy: dev.zones-pv
+	$(KUBECTL) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(HELM) upgrade --install $(HELM_RELEASE) ./helm/coredns-netbox \
 		-n $(HELM_NAMESPACE) \
 		-f dev/coredns-netbox-values.yaml \
 		--set netbox.existingSecret=$(NETBOX_TOKEN_SECRET) \
@@ -205,17 +225,17 @@ dev.wait:
 		echo "  attempt $$i/30 — retrying in 5s..."; sleep 5; \
 	done
 
-dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
+dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.zones-pv dev.deploy
 	@echo "Full dev environment is ready!"
 	@echo "DNS:  dig @127.0.0.1 -p 15353 server1-mgmt.mycompany.com A"
 	@echo "gRPC: grpcurl -plaintext -H 'authorization: bearer devtoken' 127.0.0.1:18083 coredns_netbox.v1.ControlService/GetStatus"
 
 dev.shell:
-	kubectl debug -it -n $(HELM_NAMESPACE) coredns-netbox-0 \
+	$(KUBECTL) debug -it -n $(HELM_NAMESPACE) coredns-netbox-0 \
 		--image=busybox --target=coredns --profile=general -- sh
 
 dev.shell.sidecar:
-	kubectl debug -it -n $(HELM_NAMESPACE) coredns-netbox-0 \
+	$(KUBECTL) debug -it -n $(HELM_NAMESPACE) coredns-netbox-0 \
 		--image=busybox --target=sidecar --profile=general -- sh
 
 dev.teardown:

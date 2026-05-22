@@ -9,7 +9,7 @@ The merge model works as follows:
 1. On each Netbox poll (or when `ForceNetboxPoll` is called), the sidecar fetches zones and records from Netbox.
 2. Dynamic records held in the `DynamicStore` are merged on top of the Netbox data.
 3. The merged result is written atomically to zone files on disk — this is the step triggered by `ForceMergeWrite`.
-4. CoreDNS reloads the zone file automatically via the `file` plugin's `reload` interval.
+4. The sidecar calls `ZoneReloadService.Reload()` on each CoreDNS pod via gRPC — CoreDNS re-reads the zone files immediately. A fallback poll loop inside CoreDNS (default 60s) covers gRPC delivery failures.
 
 Dynamic records survive Netbox polls: the store is never cleared by a poll cycle; only explicit `DeleteRecord` / `BatchDelete` / `DeleteZone` calls remove dynamic data.
 
