@@ -238,7 +238,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 		return zm, nil
 	}
 
-	doMergeAndWrite := func(netboxZones zonediscovery.ZoneMap) error {
+	doMergeAndWrite := func(netboxZones zonediscovery.ZoneMap) (bool, error) {
 		return merge.Write(netboxZones, store, mgr, m, reverseDisc)
 	}
 
@@ -259,10 +259,10 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 		netboxCache.Update(netboxZones)
 		statusTracker.SetNetboxPoll(time.Now())
 	}
-	if mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
+	if changed, mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
 		slog.Warn("initial merge failed", "err", mergeErr)
 	} else {
-		if !cfg.RunOnce {
+		if changed && !cfg.RunOnce {
 			rl.Reload(ctx)
 		}
 		lastSuccessTime = time.Now()
@@ -299,8 +299,10 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				netboxCache.Update(zones)
 				statusTracker.SetNetboxPoll(time.Now())
 			}
-			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
-				rl.Reload(ctx)
+			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				if changed {
+					rl.Reload(ctx)
+				}
 				lastSuccessTime = time.Now()
 				m.ZoneStalenessSeconds.Set(0)
 				statusTracker.SetMergeWrite(time.Now())
@@ -318,14 +320,18 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				netboxCache.Update(zones)
 				statusTracker.SetNetboxPoll(time.Now())
 			}
-			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
-				rl.Reload(ctx)
+			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				if changed {
+					rl.Reload(ctx)
+				}
 				statusTracker.SetMergeWrite(time.Now())
 			}
 
 		case <-mergeSignal:
-			if mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
-				rl.Reload(ctx)
+			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+				if changed {
+					rl.Reload(ctx)
+				}
 				statusTracker.SetMergeWrite(time.Now())
 			}
 		}

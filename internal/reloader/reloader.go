@@ -49,7 +49,7 @@ func (r *Reloader) reloadOne(ctx context.Context, addr string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

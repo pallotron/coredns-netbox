@@ -31,6 +31,52 @@ stringData:
 
 **External secret management:** The `existingSecret` value works with any tool that syncs secrets into Kubernetes — [External Secrets Operator](https://external-secrets.io/) (GCP Secret Manager, HashiCorp Vault, AWS Secrets Manager), [sealed-secrets](https://github.com/bitnami-labs/sealed-secrets), SOPS, etc. Just ensure the synced Secret has a `token` key.
 
+## High Availability (Multiple Replicas)
+
+For zero-downtime deploys and node-failure resilience, run multiple CoreDNS replicas with a standalone sidecar sharing a `ReadWriteMany` (RWX) PVC.
+
+```bash
+# 1. Pre-create a RWX PVC (e.g. GCP Filestore, AWS EFS, Azure Files)
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: coredns-zones
+  namespace: coredns-netbox
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: filestore-rwx   # your RWX StorageClass
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+# 2. Deploy with standalone sidecar and multiple replicas
+helm upgrade --install coredns-netbox ./helm/coredns-netbox \
+  -n coredns-netbox \
+  --set netbox.existingSecret=my-netbox-token \
+  --set replicaCount=2 \
+  --set sidecar.standalone=true \
+  --set zoneStorage.existingClaim=coredns-zones
+```
+
+**How it works:**
+
+- One sidecar Deployment polls Netbox and writes zones to the shared PVC
+- All N CoreDNS pods read zones from the same PVC
+- After each zone write the sidecar calls `ZoneReloadService.Reload()` on every CoreDNS pod via the headless Service — propagation is near-instant
+- A fallback poll inside each CoreDNS pod (default 60s) covers gRPC failures
+- The sidecar uses `maxSurge: 1 / maxUnavailable: 0` — a new sidecar pod becomes Ready before the old one stops, so the gRPC control plane never has a gap
+
+**RWX storage options by platform:**
+
+| Platform | StorageClass | Notes |
+|---|---|---|
+| GCP | `filestore` (Filestore CSI) | Requires Filestore instance pre-provisioned |
+| AWS | `efs-sc` (EFS CSI) | Dynamic provisioning via EFS access points |
+| Azure | `azurefile` | Built-in, no extra setup |
+| Bare-metal | NFS or Longhorn (RWX mode) | |
+
 ## Persistent Zone Storage
 
 By default zone files are written to an `emptyDir` volume that is discarded when the pod restarts. This means that if Netbox is unreachable when a pod starts, the init container will fail and Kubernetes will retry with exponential backoff until Netbox recovers — honest behaviour, but it delays restart.

@@ -23,6 +23,9 @@ ports:
   - port: 18083:8083/tcp
     nodeFilters:
       - loadbalancer
+  - port: 18054:8054/tcp
+    nodeFilters:
+      - loadbalancer
 options:
   k3d:
     wait: true

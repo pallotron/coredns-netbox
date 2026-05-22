@@ -1,0 +1,118 @@
+{{- if .Values.sidecar.standalone }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-sidecar
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sidecar
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "coredns-netbox.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sidecar
+  template:
+    metadata:
+      labels:
+        {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: sidecar
+    spec:
+      serviceAccountName: {{ include "coredns-netbox.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: sidecar
+          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.sidecar | nindent 12 }}
+          env:
+            - name: NETBOX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "coredns-netbox.tokenSecretName" . }}
+                  key: token
+            - name: NETBOX_URL
+              value: {{ .Values.netbox.url | quote }}
+            - name: DISCOVERY_MODE
+              value: {{ .Values.zoneDiscovery.mode | quote }}
+            - name: ZONE_DEPTH
+              value: {{ .Values.zoneDiscovery.depth | quote }}
+            - name: ZONE_DIR
+              value: {{ .Values.zoneDir | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.pollInterval | quote }}
+            - name: TTL
+              value: {{ .Values.ttl | quote }}
+            - name: PRIMARY_NS
+              value: {{ .Values.primaryNS | quote }}
+            - name: ADMIN_EMAIL
+              value: {{ .Values.adminEmail | quote }}
+            - name: NETBOX_PAGE_SIZE
+              value: {{ .Values.pageSize | quote }}
+            - name: NETBOX_MAX_CONCURRENCY
+              value: {{ .Values.maxConcurrency | quote }}
+            - name: ENABLE_REVERSE_ZONES
+              value: {{ .Values.reverseZones.enabled | quote }}
+            - name: REVERSE_ZONES_IPV4
+              value: {{ join "," .Values.reverseZones.ipv4 | quote }}
+            - name: REVERSE_ZONES_IPV6
+              value: {{ join "," .Values.reverseZones.ipv6 | quote }}
+            - name: DOMAIN_SUFFIX
+              value: {{ .Values.domainSuffix | quote }}
+            - name: STRIP_DC_LABEL
+              value: {{ .Values.stripDCLabel | quote }}
+            - name: COREDNS_RELOAD_ADDRS
+              value: {{ include "coredns-netbox.reloadAddrs" . | quote }}
+            - name: COREDNS_RELOAD_TOKEN
+              value: ""
+            {{- with .Values.sidecar.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: sidecar-health
+              containerPort: 8082
+              protocol: TCP
+            - name: grpc
+              containerPort: 8083
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: sidecar-health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: sidecar-health
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: zones
+              mountPath: {{ .Values.zoneDir }}
+          resources:
+            {{- toYaml .Values.resources.sidecar | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: zones
+          persistentVolumeClaim:
+            claimName: {{ .Values.zoneStorage.existingClaim }}
+{{- end }}

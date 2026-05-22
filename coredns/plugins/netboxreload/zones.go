@@ -15,16 +15,16 @@ import (
 //
 // zone holds all DNS records for a single zone, keyed by lowercased owner name.
 type zone struct {
-	origin  string              // e.g. "infra.cx."
+	origin  string              // e.g. "mycompany.com."
 	records map[string][]dns.RR // lowercased FQDN -> RRs
 }
 
 // loadZoneFile parses a zone file at path. The zone origin is derived from the
-// filename: "db.infra.cx" → origin "infra.cx.".
+// filename: "db.mycompany.com" → origin "mycompany.com.".
 func loadZoneFile(path string) (*zone, error) {
 	base := filepath.Base(path)
 	if !strings.HasPrefix(base, "db.") {
-		return nil, fmt.Errorf("unexpected zone filename %q: must start with db.", base)
+		return nil, fmt.Errorf("unexpected zone filename %q: must start with db.*", base)
 	}
 	origin := dns.Fqdn(strings.TrimPrefix(base, "db."))
 
@@ -32,7 +32,7 @@ func loadZoneFile(path string) (*zone, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	z := &zone{
 		origin:  origin,
@@ -51,7 +51,7 @@ func loadZoneFile(path string) (*zone, error) {
 }
 
 // loadZoneDir scans dir for files named db.* and loads each as a zone.
-// Returns a map from zone origin (e.g. "infra.cx.") to *zone.
+// Returns a map from zone origin (e.g. "mycompany.com.") to *zone.
 func loadZoneDir(dir string) (map[string]*zone, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

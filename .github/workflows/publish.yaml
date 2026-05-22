@@ -24,17 +24,13 @@ jobs:
     if: github.event_name == 'push' || !inputs.skip_e2e
     uses: ./.github/workflows/e2e.yaml
 
-  publish-images:
+  extract-version:
     needs: [e2e-tests]
-    # Run if E2E passed OR was skipped (but not if cancelled/failed)
     if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Extract version
         id: version
         run: |
@@ -44,40 +40,24 @@ jobs:
             echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push CoreDNS image
-        uses: docker/build-push-action@v6
-        with:
-          context: coredns/
-          file: coredns/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ env.OWNER }}/coredns-netbox:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ env.OWNER }}/coredns-netbox:latest
-
-      - name: Build and push sidecar image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/sidecar/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ env.OWNER }}/coredns-netbox-sidecar:${{ steps.version.outputs.VERSION }}
-            ghcr.io/${{ env.OWNER }}/coredns-netbox-sidecar:latest
+  publish-images:
+    needs: [extract-version]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_build-images.yaml
+    secrets: inherit
+    with:
+      coredns-tags: |
+        ghcr.io/${{ github.repository_owner }}/coredns-netbox:${{ needs.extract-version.outputs.version }}
+        ghcr.io/${{ github.repository_owner }}/coredns-netbox:latest
+      sidecar-tags: |
+        ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:${{ needs.extract-version.outputs.version }}
+        ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:latest
+      platforms: linux/amd64,linux/arm64
 
   publish-chart:
-    needs: [e2e-tests, publish-images]
+    needs: [e2e-tests, extract-version, publish-images]
     # Run if E2E passed OR was skipped, and images published successfully
     if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped') && needs.publish-images.result == 'success'
     runs-on: ubuntu-latest
@@ -86,15 +66,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
-
-      - name: Extract version
-        id: version
-        run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
-          fi
 
       - name: Install Helm
         uses: azure/setup-helm@v4
@@ -107,11 +78,11 @@ jobs:
 
       - name: Stamp chart version
         run: |
-          sed -i "s/^version:.*/version: ${{ steps.version.outputs.VERSION }}/" helm/coredns-netbox/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.VERSION }}\"/" helm/coredns-netbox/Chart.yaml
+          sed -i "s/^version:.*/version: ${{ needs.extract-version.outputs.version }}/" helm/coredns-netbox/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.extract-version.outputs.version }}\"/" helm/coredns-netbox/Chart.yaml
 
       - name: Package and push Helm chart
         run: |
           helm package helm/coredns-netbox
-          helm push coredns-netbox-${{ steps.version.outputs.VERSION }}.tgz \
+          helm push coredns-netbox-${{ needs.extract-version.outputs.version }}.tgz \
             oci://ghcr.io/${{ env.OWNER }}/charts

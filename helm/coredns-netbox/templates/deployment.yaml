@@ -140,6 +140,7 @@ spec:
               readOnly: true
           resources:
             {{- toYaml .Values.resources.coredns | nindent 12 }}
+        {{- if not .Values.sidecar.standalone }}
         - name: sidecar
           image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
@@ -212,6 +213,7 @@ spec:
               mountPath: {{ .Values.zoneDir }}
           resources:
             {{- toYaml .Values.resources.sidecar | nindent 12 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -230,12 +232,16 @@ spec:
         - name: config
           configMap:
             name: {{ include "coredns-netbox.fullname" . }}
-        {{- if not .Values.zoneStorage.persistent }}
+        {{- if .Values.zoneStorage.existingClaim }}
+        - name: zones
+          persistentVolumeClaim:
+            claimName: {{ .Values.zoneStorage.existingClaim }}
+        {{- else if not .Values.zoneStorage.persistent }}
         - name: zones
           emptyDir:
             sizeLimit: {{ .Values.zoneStorage.sizeLimit }}
         {{- end }}
-  {{- if .Values.zoneStorage.persistent }}
+  {{- if and .Values.zoneStorage.persistent (not .Values.zoneStorage.existingClaim) }}
   volumeClaimTemplates:
     - metadata:
         name: zones

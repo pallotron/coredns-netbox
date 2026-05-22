@@ -38,6 +38,10 @@ spec:
       port: 8083
       targetPort: grpc
       protocol: TCP
+    - name: grpc-reload
+      port: {{ .Values.coredns.reloadGRPCPort | default ":8054" | trimPrefix ":" | int }}
+      targetPort: grpc-reload
+      protocol: TCP
   selector:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: primary
@@ -64,6 +68,12 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: dns-tcp
       protocol: TCP
+    {{- if .Values.service.external.exposeGRPCReload }}
+    - name: grpc-reload
+      port: {{ .Values.coredns.reloadGRPCPort | default ":8054" | trimPrefix ":" | int }}
+      targetPort: grpc-reload
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: primary

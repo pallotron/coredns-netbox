@@ -36,7 +36,8 @@ func TestWrite_DynamicRecordGetsPTR(t *testing.T) {
 	reverseDisc := zonediscovery.NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
 	netboxZones := zonediscovery.ZoneMap{"example.org": nil}
 
-	require.NoError(t, merge.Write(netboxZones, store, mgr, m, reverseDisc))
+	_, err := merge.Write(netboxZones, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
 
 	content, err := os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
 	require.NoError(t, err, "reverse zone file should be created for dynamic record")
@@ -62,7 +63,8 @@ func TestWrite_DynamicPTRShadowsNetboxPTR(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, merge.Write(netboxZones, store, mgr, m, reverseDisc))
+	_, err := merge.Write(netboxZones, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
 
 	content, err := os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
 	require.NoError(t, err)
@@ -79,9 +81,10 @@ func TestWrite_NilReverseDiscProducesNoPTR(t *testing.T) {
 
 	netboxZones := zonediscovery.ZoneMap{"example.org": nil}
 
-	require.NoError(t, merge.Write(netboxZones, store, mgr, m, nil))
+	_, err := merge.Write(netboxZones, store, mgr, m, nil)
+	require.NoError(t, err)
 
-	_, err := os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
+	_, err = os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
 	assert.True(t, os.IsNotExist(err), "no reverse zone file when reverseDisc is nil")
 }
 
@@ -96,9 +99,10 @@ func TestWrite_DynamicRecordOutsideReverseZoneIsSkipped(t *testing.T) {
 	reverseDisc := zonediscovery.NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
 	netboxZones := zonediscovery.ZoneMap{"example.org": nil}
 
-	require.NoError(t, merge.Write(netboxZones, store, mgr, m, reverseDisc))
+	_, err := merge.Write(netboxZones, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
 
-	_, err := os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
+	_, err = os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
 	assert.True(t, os.IsNotExist(err), "no reverse zone for IP outside configured zones")
 }
 
@@ -118,7 +122,8 @@ func TestWrite_NetboxPTRsPreservedWhenNoDynamicConflict(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, merge.Write(netboxZones, store, mgr, m, reverseDisc))
+	_, err := merge.Write(netboxZones, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
 
 	content, err := os.ReadFile(filepath.Join(dir, "db.10.in-addr.arpa"))
 	require.NoError(t, err)

@@ -11,56 +11,16 @@ env:
 
 jobs:
   build-images:
-    name: build-images (${{ matrix.name }})
     # Only build when PR is open (not closed)
     if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - name: sidecar
-            image: coredns-netbox-sidecar
-            context: .
-            file: docker/sidecar/Dockerfile
-          - name: coredns
-            image: coredns-netbox
-            context: coredns/
-            file: coredns/Dockerfile
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}
-          tags: |
-            type=raw,value=pr-${{ github.event.pull_request.number }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+    uses: ./.github/workflows/_build-images.yaml
+    secrets: inherit
+    with:
+      coredns-tags: ghcr.io/${{ github.repository_owner }}/coredns-netbox:pr-${{ github.event.pull_request.number }}
+      sidecar-tags: ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:pr-${{ github.event.pull_request.number }}
 
   comment-pr:
     needs: [build-images]
