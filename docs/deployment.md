@@ -33,49 +33,36 @@ stringData:
 
 ## High Availability (Multiple Replicas)
 
-For zero-downtime deploys and node-failure resilience, run multiple CoreDNS replicas with a standalone sidecar sharing a `ReadWriteMany` (RWX) PVC.
+For zero-downtime deploys and node-failure resilience, run multiple CoreDNS replicas with a standalone sidecar. **No shared or RWX storage is required** — the sidecar serves zone files over HTTP from its own RWO PVC.
 
 ```bash
-# 1. Pre-create a RWX PVC (e.g. GCP Filestore, AWS EFS, Azure Files)
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: coredns-zones
-  namespace: coredns-netbox
-spec:
-  accessModes: [ReadWriteMany]
-  storageClassName: filestore-rwx   # your RWX StorageClass
-  resources:
-    requests:
-      storage: 1Gi
-EOF
-
-# 2. Deploy with standalone sidecar and multiple replicas
 helm upgrade --install coredns-netbox ./helm/coredns-netbox \
   -n coredns-netbox \
   --set netbox.existingSecret=my-netbox-token \
   --set replicaCount=2 \
   --set sidecar.standalone=true \
-  --set zoneStorage.existingClaim=coredns-zones
+  --set sidecar.storage.storageClass=standard-rwo  # your RWO StorageClass
 ```
+
+The chart automatically creates a `ReadWriteOnce` PVC for the sidecar and configures all CoreDNS pods to fetch zones from the sidecar's HTTP endpoint.
 
 **How it works:**
 
-- One sidecar Deployment polls Netbox and writes zones to the shared PVC
-- All N CoreDNS pods read zones from the same PVC
-- After each zone write the sidecar calls `ZoneReloadService.Reload()` on every CoreDNS pod via the headless Service — propagation is near-instant
+- One sidecar Deployment (strategy: `Recreate`) polls Netbox, writes zone files to its own RWO PVC, and serves them at `GET /zones/` on port 8082
+- CoreDNS pods fetch zone files from the sidecar HTTP endpoint on startup (`zone-init`) and on every `Reload()` call
+- After each zone write, the sidecar calls `ZoneReloadService.Reload()` on every CoreDNS pod — propagation is near-instant
 - A fallback poll inside each CoreDNS pod (default 60s) covers gRPC failures
-- The sidecar uses `maxSurge: 1 / maxUnavailable: 0` — a new sidecar pod becomes Ready before the old one stops, so the gRPC control plane never has a gap
+- The `Recreate` strategy means the sidecar's RWO PVC is released before the new pod starts — `dynamic.json` and zone files persist across updates via the PVC
 
-**RWX storage options by platform:**
+**Storage class by platform:**
 
-| Platform | StorageClass | Notes |
-|---|---|---|
-| GCP | `filestore` (Filestore CSI) | Requires Filestore instance pre-provisioned |
-| AWS | `efs-sc` (EFS CSI) | Dynamic provisioning via EFS access points |
-| Azure | `azurefile` | Built-in, no extra setup |
-| Bare-metal | NFS or Longhorn (RWX mode) | |
+| Platform | StorageClass |
+|---|---|
+| GCP GKE | `standard-rwo` (pd-balanced) |
+| AWS EKS | `gp2` or `gp3` |
+| Azure AKS | `managed-csi` |
+| k3d / k3s | `local-path` (default) |
+| Bare-metal | any RWO provisioner |
 
 ## Persistent Zone Storage
 

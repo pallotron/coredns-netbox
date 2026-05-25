@@ -1,0 +1,16 @@
+{{- if .Values.sidecar.standalone }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-sidecar-data
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.sidecar.storage.storageClass }}
+  storageClassName: {{ .Values.sidecar.storage.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.sidecar.storage.size }}
+{{- end }}

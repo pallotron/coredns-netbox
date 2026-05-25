@@ -28,6 +28,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/reloader"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
+	"github.com/pallotron/coredns-netbox/internal/zonefetch"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	"github.com/pallotron/coredns-netbox/internal/zoneserver"
 	"github.com/prometheus/client_golang/prometheus"
@@ -54,7 +55,28 @@ func main() {
 	})))
 
 	runOnce := flag.Bool("run-once", false, "Run once and exit (for init container mode)")
+	fetchFrom := flag.String("fetch-from", "", "Fetch initial zone files from this sidecar HTTP base URL and exit (e.g. http://coredns-netbox-sidecar:8082)")
 	flag.Parse()
+
+	// --fetch-from mode: fetch zone files from sidecar HTTP endpoint and exit.
+	// Must run before config.Load() because this mode does not require NETBOX_TOKEN.
+	if *fetchFrom != "" {
+		zoneDir := os.Getenv("ZONE_DIR")
+		if zoneDir == "" {
+			zoneDir = "/zones"
+		}
+		slog.Info("fetch-from mode: waiting for sidecar", "url", *fetchFrom)
+		if err := zonefetch.WaitForSidecar(*fetchFrom, 5*time.Minute, 5*time.Second); err != nil {
+			slog.Error("sidecar not ready", "err", err)
+			os.Exit(1)
+		}
+		if err := zonefetch.FetchZones(*fetchFrom, zoneDir); err != nil {
+			slog.Error("failed to fetch zone files", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("fetch-from mode: zone files fetched successfully")
+		os.Exit(0)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {

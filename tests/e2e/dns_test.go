@@ -314,3 +314,42 @@ func TestMultipleReplicasConsistentDNS(t *testing.T) {
 			"query %d/%d: expected %s in answer, got %v", i+1, 30, wantIP, r.Answer)
 	}
 }
+
+// TestEachReplicaServesCorrectly queries pod-0 and pod-1 individually via
+// their dedicated NodePort services. Skips if DNS_POD0 / DNS_POD1 are not set.
+// Requires the cluster to expose per-pod ports (see dev/coredns-per-pod-services.yaml
+// and the corresponding k3d port forwards in dev/k3d-config.yaml).
+func TestEachReplicaServesCorrectly(t *testing.T) {
+    pod0 := os.Getenv("DNS_POD0")
+    pod1 := os.Getenv("DNS_POD1")
+    if pod0 == "" || pod1 == "" {
+        t.Skip("DNS_POD0 or DNS_POD1 not set — skipping per-replica test")
+    }
+
+    waitForPrimary(t)
+
+    probe := hostFQDN("server1-mgmt", "dc1")
+    wantIP := net.ParseIP("10.1.0.1")
+
+    for _, tc := range []struct {
+        name string
+        addr string
+    }{
+        {"pod-0", pod0},
+        {"pod-1", pod1},
+    } {
+        t.Run(tc.name, func(t *testing.T) {
+            r := queryServer(t, probe, dns.TypeA, tc.addr)
+            require.Equalf(t, dns.RcodeSuccess, r.Rcode,
+                "%s: expected NOERROR", tc.name)
+            var found bool
+            for _, ans := range r.Answer {
+                if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
+                    found = true
+                }
+            }
+            require.Truef(t, found,
+                "%s: expected %s in answer, got %v", tc.name, wantIP, r.Answer)
+        })
+    }
+}

@@ -21,7 +21,7 @@ func Register(mux *http.ServeMux, dir string) {
 				http.Error(w, "cannot read zone dir", http.StatusInternalServerError)
 				return
 			}
-			var files []string
+			files := []string{}
 			for _, e := range entries {
 				if !e.IsDir() && strings.HasPrefix(e.Name(), "db.") {
 					files = append(files, e.Name())
@@ -39,6 +39,11 @@ func Register(mux *http.ServeMux, dir string) {
 		}
 
 		path := filepath.Join(dir, filepath.Base(name))
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.ServeFile(w, r, path)
 	})
 }

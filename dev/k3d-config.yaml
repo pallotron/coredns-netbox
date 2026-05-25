@@ -26,6 +26,13 @@ ports:
   - port: 18054:8054/tcp
     nodeFilters:
       - loadbalancer
+  # Per-pod DNS ports for explicit per-replica e2e testing
+  - port: 15360:30060/tcp
+    nodeFilters:
+      - loadbalancer
+  - port: 15361:30061/tcp
+    nodeFilters:
+      - loadbalancer
 options:
   k3d:
     wait: true

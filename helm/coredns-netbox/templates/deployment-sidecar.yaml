@@ -9,10 +9,7 @@ metadata:
 spec:
   replicas: 1
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    type: Recreate
   selector:
     matchLabels:
       {{- include "coredns-netbox.selectorLabels" . | nindent 6 }}
@@ -114,5 +111,5 @@ spec:
       volumes:
         - name: zones
           persistentVolumeClaim:
-            claimName: {{ .Values.zoneStorage.existingClaim }}
+            claimName: {{ include "coredns-netbox.fullname" . }}-sidecar-data
 {{- end }}

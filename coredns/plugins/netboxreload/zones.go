@@ -1,6 +1,7 @@
 package netboxreload
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,35 +20,34 @@ type zone struct {
 	records map[string][]dns.RR // lowercased FQDN -> RRs
 }
 
-// loadZoneFile parses a zone file at path. The zone origin is derived from the
-// filename: "db.mycompany.com" → origin "mycompany.com.".
-func loadZoneFile(path string) (*zone, error) {
-	base := filepath.Base(path)
-	if !strings.HasPrefix(base, "db.") {
-		return nil, fmt.Errorf("unexpected zone filename %q: must start with db.*", base)
+// parseZoneContent parses zone content from raw bytes. filename must start
+// with "db." so the origin can be derived (e.g. "db.mycompany.com" → "mycompany.com.").
+func parseZoneContent(filename string, data []byte) (*zone, error) {
+	if !strings.HasPrefix(filename, "db.") {
+		return nil, fmt.Errorf("unexpected zone filename %q: must start with db.*", filename)
 	}
-	origin := dns.Fqdn(strings.TrimPrefix(base, "db."))
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-
-	z := &zone{
-		origin:  origin,
-		records: make(map[string][]dns.RR),
-	}
-
-	zp := dns.NewZoneParser(f, origin, path)
+	origin := dns.Fqdn(strings.TrimPrefix(filename, "db."))
+	z := &zone{origin: origin, records: make(map[string][]dns.RR)}
+	zp := dns.NewZoneParser(bytes.NewReader(data), origin, filename)
 	for rr, ok := zp.Next(); ok; rr, ok = zp.Next() {
 		name := strings.ToLower(rr.Header().Name)
 		z.records[name] = append(z.records[name], rr)
 	}
 	if err := zp.Err(); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", filename, err)
 	}
 	return z, nil
+}
+
+// loadZoneFile parses a zone file at path. The zone origin is derived from the
+// filename: "db.mycompany.com" → origin "mycompany.com.".
+func loadZoneFile(path string) (*zone, error) {
+	base := filepath.Base(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseZoneContent(base, data)
 }
 
 // loadZoneDir scans dir for files named db.* and loads each as a zone.

@@ -8,7 +8,11 @@ data:
   Corefile: |
     . {
         netboxreload {
+            {{- if .Values.sidecar.standalone }}
+            source_url {{ include "coredns-netbox.sidecarHTTPURL" . }}
+            {{- else }}
             directory {{ .Values.zoneDir }}
+            {{- end }}
             grpc_port {{ .Values.coredns.reloadGRPCPort | default ":8054" }}
             reload    {{ .Values.coredns.reloadPollInterval | default "60s" }}
         }

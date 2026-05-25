@@ -37,6 +37,22 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       initContainers:
+        {{- if .Values.sidecar.standalone }}
+        - name: zone-init
+          image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext.zoneInit | nindent 12 }}
+          args: ["--fetch-from", {{ include "coredns-netbox.sidecarHTTPURL" . | quote }}]
+          env:
+            - name: ZONE_DIR
+              value: {{ .Values.zoneDir | quote }}
+          volumeMounts:
+            - name: zones
+              mountPath: {{ .Values.zoneDir }}
+          resources:
+            {{- toYaml .Values.resources.zoneInit | nindent 12 }}
+        {{- else }}
         - name: zone-init
           image: "{{ .Values.sidecar.image }}:{{ .Values.sidecar.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.sidecar.pullPolicy }}
@@ -85,6 +101,7 @@ spec:
               mountPath: {{ .Values.zoneDir }}
           resources:
             {{- toYaml .Values.resources.zoneInit | nindent 12 }}
+        {{- end }}
       containers:
         - name: coredns
           image: "{{ .Values.coredns.image }}:{{ .Values.coredns.tag | default .Chart.AppVersion }}"
