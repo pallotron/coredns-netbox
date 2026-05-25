@@ -19,6 +19,9 @@ spec:
       labels:
         {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: sidecar
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "coredns-netbox.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
