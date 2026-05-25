@@ -41,6 +41,12 @@ server1 IN AAAA 2001:db8::1
 	assert.True(t, types[dns.TypeNS])
 }
 
+func TestParseZoneContent_BadFilename(t *testing.T) {
+	_, err := parseZoneContent("notazone.txt", []byte("$ORIGIN mycompany.com.\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must start with db.*")
+}
+
 func TestLoadZoneDir(t *testing.T) {
 	dir := t.TempDir()
 	zone1 := `$ORIGIN a.mycompany.com.

@@ -23,6 +23,7 @@ type Plugin struct {
 	Dir          string
 	Port         string        // gRPC listen port, e.g. ":8054"
 	PollInterval time.Duration // fallback poll interval; 0 disables polling
+	SourceURL    string        // HTTP base URL for zone source; overrides Dir when set
 
 	mu         sync.RWMutex
 	zones      map[string]*zone // origin (e.g. "mycompany.com.") -> loaded zone
@@ -121,12 +122,19 @@ func (p *Plugin) pollLoop(ctx context.Context) {
 	}
 }
 
-// reloadZones re-reads Dir and atomically swaps the in-memory zone map.
-// File I/O happens before the lock is taken; the lock only guards the swap.
-// loadZoneDir is fail-fast: if any zone file fails to parse, the in-memory
-// map is left unchanged (safe partial-write behaviour).
+// reloadZones re-reads zones and atomically swaps the in-memory zone map.
+// When SourceURL is set, zones are fetched over HTTP; otherwise they are
+// read from Dir. I/O happens before the lock is taken; the lock only guards
+// the swap. Both sources are fail-fast: if any zone fails to load, the
+// in-memory map is left unchanged (safe partial-write behaviour).
 func (p *Plugin) reloadZones() error {
-	newZones, err := loadZoneDir(p.Dir)
+	var newZones map[string]*zone
+	var err error
+	if p.SourceURL != "" {
+		newZones, err = fetchZonesFromURL(p.SourceURL)
+	} else {
+		newZones, err = loadZoneDir(p.Dir)
+	}
 	if err != nil {
 		return err
 	}

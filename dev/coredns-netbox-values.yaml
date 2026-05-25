@@ -21,6 +21,9 @@ sidecar:
   standalone: true
   service:
     type: LoadBalancer   # k3d routes 18082/18083 via its loadbalancer (no hostPort needed)
+  storage:
+    storageClass: local-path   # k3d default; use standard-rwo on GKE
+    size: 1Gi
   env:
     - name: GRPC_ADDR
       value: ":8083"
@@ -85,9 +88,3 @@ secondary:
   # Transfer zones from primary (using static ClusterIP above)
   transferFrom:
     - 10.43.100.53
-
-# Shared RWX zone storage for standalone sidecar mode.
-# The PV/PVC is created by `make dev.zones-pv` (dev/coredns-zones-pv.yaml).
-# Uses hostPath on the single k3d node — works for dev/CI, not for production.
-zoneStorage:
-  existingClaim: coredns-zones

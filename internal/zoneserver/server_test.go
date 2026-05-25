@@ -62,6 +62,22 @@ func TestZoneServer_GetFile_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
+func TestZoneServer_GetFile_TraversalWithinPrefix(t *testing.T) {
+	dir := t.TempDir()
+	mux := http.NewServeMux()
+	zoneserver.Register(mux, dir)
+
+	// This stays under /zones/ but tries to escape via the filename — exercises
+	// the application-level guard (strings.Contains check) not just mux cleaning.
+	// We set RawPath so the mux receives an already-decoded path without triggering
+	// the redirect that fires when ".." path segments appear in the URL string.
+	req := httptest.NewRequest(http.MethodGet, "/zones/db..%2F..%2F..%2Fetc%2Fpasswd", nil)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+}
+
 func TestZoneServer_GetFile_TraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 	mux := http.NewServeMux()

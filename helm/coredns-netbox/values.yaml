@@ -29,8 +29,7 @@ zoneStorage:
   # PVC size per pod. Zone files are small (tens of KB even for large Netbox
   # installs); 1Gi is the minimum for most provisioners and more than enough.
   size: 1Gi
-  # Pre-created PVC name for shared RWX storage (required when sidecar.standalone: true)
-  # Create this PVC before deploying — see dev/coredns-zones-pv.yaml for dev/CI setup.
+  # legacy: pre-created RWX PVC; leave empty when sidecar.standalone: true
   existingClaim: ""
 
 imagePullSecrets: []
@@ -97,8 +96,11 @@ sidecar:
   image: ghcr.io/pallotron/coredns-netbox-sidecar
   tag: ""  # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
-  standalone: false   # Set true to run sidecar as a separate Deployment (requires RWX storage)
+  standalone: false   # Set true to run sidecar as a separate Deployment with dedicated RWO PVC
   reloadToken: ""   # Bearer token for CoreDNS gRPC reload endpoint; empty disables auth
+  storage:
+    storageClass: ""   # leave empty for cluster default; set e.g. "standard-rwo" on GKE
+    size: 1Gi
   service:
     type: ClusterIP
     # In dev/CI, set type: LoadBalancer so k3d can route 18082/18083 via its loadbalancer
@@ -215,6 +217,9 @@ service:
     # Enable in dev/CI so e2e tests can reach the reload endpoint from the host.
     # Leave false in production.
     exposeGRPCReload: false
+
+networkPolicy:
+  enabled: false   # Set true to restrict sidecar traffic to coredns-netbox pods only (requires CNI support)
 
 hostPort:
   enabled: false

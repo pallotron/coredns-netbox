@@ -55,15 +55,17 @@ nslookup server1-mgmt.mycompany.com 10.43.100.53  # UDP works fine
 ```
 ├── cmd/
 │   ├── analyzer/main.go          # CLI tool: analyze Netbox data & preview DNS records
-│   └── sidecar/main.go           # Sidecar: poll Netbox → write zone files
+│   └── sidecar/main.go           # Sidecar: poll Netbox → write zones → serve HTTP → notify CoreDNS
 ├── internal/
 │   ├── config/                   # Env var configuration + categorization patterns
 │   ├── ipcategorizer/            # Interface categorization & device IP selection
 │   ├── metrics/                  # Prometheus metrics definitions for the sidecar
 │   ├── netboxclient/             # Raw HTTP client for Netbox IPAM with parallel pagination
 │   ├── zonediscovery/            # Zone auto-discovery (zone-depth, common-suffix, netbox-dns)
+│   ├── zonefetch/                # HTTP client: fetch zone files from sidecar /zones/ endpoint
 │   ├── zonegen/                  # Zone file generator (atomic writes, SOA serial)
-│   └── zonemanager/              # Multi-zone lifecycle (create/update/remove zone files)
+│   ├── zonemanager/              # Multi-zone lifecycle (create/update/remove zone files)
+│   └── zoneserver/               # HTTP handler: serve zone files from sidecar on /zones/
 ├── coredns/
 │   ├── Dockerfile                # CoreDNS image (standard plugins + netboxreload)
 │   ├── plugin.cfg                # Plugin ordering (netboxreload before auto)

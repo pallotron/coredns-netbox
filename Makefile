@@ -1,5 +1,5 @@
 .PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.helm proto \
-       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.zones-pv dev.deploy dev.wait dev.teardown \
+       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.pod-services dev.deploy dev.wait dev.teardown \
        dev.shell dev.shell.sidecar \
        lint clean
 
@@ -49,6 +49,8 @@ test.unit:
 test.e2e:
 	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken \
 	COREDNS_RELOAD_ADDR=127.0.0.1:18054 \
+	DNS_POD0=127.0.0.1:15360 \
+	DNS_POD1=127.0.0.1:15361 \
 	go test ./tests/e2e/... -v -count=1 -tags=e2e
 
 # test.e2e.local: full local loop — rebuilds images, redeploys, waits, then runs e2e
@@ -127,6 +129,32 @@ test.helm:
 		--set sidecar.standalone=true --set replicaCount=2 2>&1 | grep -A1 "COREDNS_RELOAD_ADDRS" | grep -q "svc.cluster.local" && \
 		echo "PASS: standalone mode generates per-pod reload addrs" || \
 		(echo "FAIL: standalone mode reload addrs wrong" && exit 1)
+	# standalone mode: source_url in Corefile, fetch-from in zone-init, PVC created
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set sidecar.standalone=true 2>&1 | grep -q "source_url" && \
+		echo "PASS: source_url in Corefile when standalone" || \
+		(echo "FAIL: source_url missing from Corefile" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set sidecar.standalone=true 2>&1 | grep -q "fetch-from" && \
+		echo "PASS: --fetch-from in zone-init when standalone" || \
+		(echo "FAIL: --fetch-from missing from zone-init" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set sidecar.standalone=true 2>&1 | grep "zone-init" -A 20 | grep -qv "NETBOX_TOKEN" && \
+		echo "PASS: NETBOX_TOKEN absent from standalone zone-init env" || \
+		(echo "FAIL: NETBOX_TOKEN present in standalone zone-init env" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set sidecar.standalone=true 2>&1 | grep -q "sidecar-data" && \
+		echo "PASS: sidecar PVC rendered when standalone" || \
+		(echo "FAIL: sidecar PVC missing" && exit 1)
+	# non-standalone mode: directory in Corefile, run-once in zone-init, no sidecar PVC
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -q "directory /zones" && \
+		echo "PASS: directory in Corefile when non-standalone" || \
+		(echo "FAIL: directory missing from Corefile" && exit 1)
+	# NetworkPolicy renders when networkPolicy.enabled and standalone
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set networkPolicy.enabled=true --set sidecar.standalone=true 2>&1 | grep -q "kind: NetworkPolicy" && \
+		echo "PASS: NetworkPolicy rendered when enabled+standalone" || \
+		(echo "FAIL: NetworkPolicy not rendered" && exit 1)
 	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------
@@ -194,14 +222,11 @@ dev.seed:
 		python /opt/netbox/netbox/manage.py shell --no-startup --no-imports \
 		-c "$$SCRIPT"
 
-dev.zones-pv:
+dev.pod-services:
 	$(KUBECTL) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	# Pre-create the hostPath directory on the k3d node with world-writable permissions
-	# so UID 1000 pods (zone-init, sidecar) can write zone files to it.
-	docker exec k3d-$(K3D_CLUSTER)-server-0 sh -c "mkdir -p /tmp/coredns-zones && chmod 777 /tmp/coredns-zones"
-	$(KUBECTL) apply -f dev/coredns-zones-pv.yaml
+	$(KUBECTL) apply -f dev/coredns-per-pod-services.yaml
 
-dev.deploy: dev.zones-pv
+dev.deploy: dev.pod-services
 	$(KUBECTL) create namespace $(HELM_NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(HELM) upgrade --install $(HELM_RELEASE) ./helm/coredns-netbox \
 		-n $(HELM_NAMESPACE) \
@@ -225,7 +250,7 @@ dev.wait:
 		echo "  attempt $$i/30 — retrying in 5s..."; sleep 5; \
 	done
 
-dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.zones-pv dev.deploy
+dev: dev.cluster dev.netbox dev.token dev.seed dev.images dev.deploy
 	@echo "Full dev environment is ready!"
 	@echo "DNS:  dig @127.0.0.1 -p 15353 server1-mgmt.mycompany.com A"
 	@echo "gRPC: grpcurl -plaintext -H 'authorization: bearer devtoken' 127.0.0.1:18083 coredns_netbox.v1.ControlService/GetStatus"

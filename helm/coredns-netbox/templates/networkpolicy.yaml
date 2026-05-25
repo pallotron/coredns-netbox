@@ -1,0 +1,50 @@
+{{- if and .Values.networkPolicy.enabled .Values.sidecar.standalone }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-sidecar
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "coredns-netbox.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sidecar
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow CoreDNS primary pods → sidecar HTTP (zone fetch :8082) and gRPC (DynamicZoneService :8083)
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "coredns-netbox.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: primary
+      ports:
+        - port: 8082
+          protocol: TCP
+        - port: 8083
+          protocol: TCP
+  egress:
+    # Allow sidecar → Netbox (HTTP/HTTPS)
+    - ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+    # Allow sidecar → CoreDNS pods (gRPC Reload :8054)
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "coredns-netbox.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: primary
+      ports:
+        - port: 8054
+          protocol: TCP
+    # Allow DNS resolution (kube-dns)
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

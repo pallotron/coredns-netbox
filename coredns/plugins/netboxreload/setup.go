@@ -71,6 +71,11 @@ func parseConfig(c *caddy.Controller) (*Plugin, error) {
 					return nil, c.Errf("invalid reload duration %q: %v", c.Val(), err)
 				}
 				p.PollInterval = d
+			case "source_url":
+				if !c.NextArg() {
+					return nil, c.ArgErr()
+				}
+				p.SourceURL = c.Val()
 			default:
 				return nil, c.Errf("unknown option %q", c.Val())
 			}

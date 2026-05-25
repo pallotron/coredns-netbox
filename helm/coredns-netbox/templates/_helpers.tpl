@@ -84,6 +84,14 @@ Comma-separated CoreDNS pod addresses for the sidecar's COREDNS_RELOAD_ADDRS.
 When sidecar is a sidecar container (same pod), localhost suffices.
 When sidecar.standalone is true, enumerate StatefulSet pod DNS names.
 */}}
+{{/*
+HTTP base URL of the standalone sidecar service.
+Used by zone-init (--fetch-from) and netboxreload source_url.
+*/}}
+{{- define "coredns-netbox.sidecarHTTPURL" -}}
+http://{{ include "coredns-netbox.fullname" . }}-sidecar:8082
+{{- end -}}
+
 {{- define "coredns-netbox.reloadAddrs" -}}
 {{- $port := .Values.coredns.reloadGRPCPort | default ":8054" | trimPrefix ":" -}}
 {{- if .Values.sidecar.standalone -}}
