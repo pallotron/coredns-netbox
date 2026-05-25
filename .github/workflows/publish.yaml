@@ -19,10 +19,26 @@ env:
   OWNER: ${{ github.repository_owner }}
 
 jobs:
-  e2e-tests:
+  build-images-for-e2e:
     # Run on tag pushes, or on manual trigger when skip_e2e is false
     if: github.event_name == 'push' || !inputs.skip_e2e
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_build-images.yaml
+    secrets: inherit
+    with:
+      coredns-tags: ghcr.io/${{ github.repository_owner }}/coredns-netbox:ci-${{ github.run_id }}
+      sidecar-tags: ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:ci-${{ github.run_id }}
+
+  e2e-tests:
+    needs: [build-images-for-e2e]
+    if: always() && needs.build-images-for-e2e.result == 'success'
+    permissions:
+      packages: read
     uses: ./.github/workflows/e2e.yaml
+    with:
+      image_tag: ci-${{ github.run_id }}
 
   extract-version:
     needs: [e2e-tests]
