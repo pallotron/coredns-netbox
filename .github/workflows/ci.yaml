@@ -50,8 +50,6 @@ jobs:
         run: make test.helm
 
   build-images:
-    # Only on PRs: build and push to GHCR so e2e can pull instead of rebuilding
-    if: github.event_name == 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -63,10 +61,8 @@ jobs:
 
   e2e:
     needs: [build-images]
-    # Run if build-images succeeded (PR) or was skipped (push to main)
-    if: always() && (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
     permissions:
       packages: read
     uses: ./.github/workflows/e2e.yaml
     with:
-      image_tag: ${{ needs.build-images.result == 'success' && format('ci-{0}', github.run_id) || '' }}
+      image_tag: ci-${{ github.run_id }}
