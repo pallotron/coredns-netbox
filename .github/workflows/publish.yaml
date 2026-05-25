@@ -40,6 +40,29 @@ jobs:
     with:
       image_tag: ci-${{ github.run_id }}
 
+  cleanup-e2e-images:
+    needs: [build-images-for-e2e, e2e-tests]
+    if: always() && needs.build-images-for-e2e.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Delete E2E images
+        run: |
+          TAG="ci-${{ github.run_id }}"
+          for pkg in coredns-netbox coredns-netbox-sidecar; do
+            gh api "/user/packages/container/${pkg}/versions" \
+              --jq --arg tag "$TAG" \
+              '.[] | select(.metadata.container.tags | map(select(. == $tag)) | length > 0) | .id' \
+              | while read -r id; do
+                gh api --method DELETE "/user/packages/container/${pkg}/versions/${id}" \
+                  && echo "Deleted ${pkg}:${TAG} (version ${id})" \
+                  || true
+              done
+          done
+
   extract-version:
     needs: [e2e-tests]
     if: always() && (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')

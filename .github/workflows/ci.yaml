@@ -66,3 +66,26 @@ jobs:
     uses: ./.github/workflows/e2e.yaml
     with:
       image_tag: ci-${{ github.run_id }}
+
+  cleanup-ci-images:
+    needs: [build-images, e2e]
+    if: always() && needs.build-images.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Delete CI images
+        run: |
+          TAG="ci-${{ github.run_id }}"
+          for pkg in coredns-netbox coredns-netbox-sidecar; do
+            gh api "/user/packages/container/${pkg}/versions" \
+              --jq --arg tag "$TAG" \
+              '.[] | select(.metadata.container.tags | map(select(. == $tag)) | length > 0) | .id' \
+              | while read -r id; do
+                gh api --method DELETE "/user/packages/container/${pkg}/versions/${id}" \
+                  && echo "Deleted ${pkg}:${TAG} (version ${id})" \
+                  || true
+              done
+          done
