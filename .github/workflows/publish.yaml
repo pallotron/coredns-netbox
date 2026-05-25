@@ -19,10 +19,49 @@ env:
   OWNER: ${{ github.repository_owner }}
 
 jobs:
-  e2e-tests:
+  build-images-for-e2e:
     # Run on tag pushes, or on manual trigger when skip_e2e is false
     if: github.event_name == 'push' || !inputs.skip_e2e
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_build-images.yaml
+    secrets: inherit
+    with:
+      coredns-tags: ghcr.io/${{ github.repository_owner }}/coredns-netbox:ci-${{ github.run_id }}
+      sidecar-tags: ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:ci-${{ github.run_id }}
+
+  e2e-tests:
+    needs: [build-images-for-e2e]
+    if: always() && needs.build-images-for-e2e.result == 'success'
+    permissions:
+      packages: read
     uses: ./.github/workflows/e2e.yaml
+    with:
+      image_tag: ci-${{ github.run_id }}
+
+  cleanup-e2e-images:
+    needs: [build-images-for-e2e, e2e-tests]
+    if: always() && needs.build-images-for-e2e.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Delete E2E images
+        run: |
+          TAG="ci-${{ github.run_id }}"
+          for pkg in coredns-netbox coredns-netbox-sidecar; do
+            gh api "/user/packages/container/${pkg}/versions" \
+              --jq --arg tag "$TAG" \
+              '.[] | select(.metadata.container.tags | map(select(. == $tag)) | length > 0) | .id' \
+              | while read -r id; do
+                gh api --method DELETE "/user/packages/container/${pkg}/versions/${id}" \
+                  && echo "Deleted ${pkg}:${TAG} (version ${id})" \
+                  || true
+              done
+          done
 
   extract-version:
     needs: [e2e-tests]

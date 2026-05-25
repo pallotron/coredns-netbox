@@ -102,16 +102,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Delete PR images
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-
-          echo "Deleting images for PR #${PR_NUMBER}..."
-
-          # Note: This requires the gh CLI and proper permissions
-          # Images are typically cleaned up automatically by GHCR retention policies
-          # This is a best-effort cleanup
-
-          echo "✓ PR closed - images will be cleaned up by GHCR retention policies"
-          echo "  (or manually via: gh api --method DELETE /orgs/${OWNER}/packages/container/coredns-netbox-sidecar/versions/<version-id>)"
+          TAG="pr-${{ github.event.pull_request.number }}"
+          for pkg in coredns-netbox coredns-netbox-sidecar; do
+            gh api "/user/packages/container/${pkg}/versions" \
+              --jq --arg tag "$TAG" \
+              '.[] | select(.metadata.container.tags | map(select(. == $tag)) | length > 0) | .id' \
+              | while read -r id; do
+                gh api --method DELETE "/user/packages/container/${pkg}/versions/${id}" \
+                  && echo "Deleted ${pkg}:${TAG} (version ${id})" \
+                  || true
+              done
+          done

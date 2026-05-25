@@ -1,0 +1,41 @@
+name: GHCR Retention Policy
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly, Sunday at 2am UTC
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Delete old untagged and temporary images
+        run: |
+          # Images with no release tags (v* / latest) older than 7 days are deleted.
+          # This catches ci-* and pr-* images that slipped past event-driven cleanup,
+          # plus any orphaned untagged manifest layers.
+          CUTOFF=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')
+          echo "Cutoff: ${CUTOFF}"
+
+          for pkg in coredns-netbox coredns-netbox-sidecar; do
+            echo "=== ${pkg} ==="
+            gh api "/user/packages/container/${pkg}/versions" --paginate \
+              --jq --arg cutoff "$CUTOFF" '
+                .[] |
+                select(.updated_at < $cutoff) |
+                select(
+                  .metadata.container.tags |
+                  map(select(startswith("v") or . == "latest")) |
+                  length == 0
+                ) |
+                .id
+              ' | while read -r id; do
+                gh api --method DELETE "/user/packages/container/${pkg}/versions/${id}" \
+                  && echo "  Deleted version ${id}" \
+                  || echo "  Failed to delete version ${id} (may already be gone)"
+              done
+          done
