@@ -29,6 +29,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/reloader"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
+	"github.com/pallotron/coredns-netbox/internal/zoneserver"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -161,6 +162,7 @@ func main() {
 			}
 		})
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		zoneserver.Register(mux, cfg.ZoneDir)
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
