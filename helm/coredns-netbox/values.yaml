@@ -179,11 +179,11 @@ interfacePatterns:
     - "(?i)oob"
   management:
     - "(?i)mgmt"
-    - "(?i)Management"
+    - "Management"
     - "fxp0"
     - "eth[01]"
     - "mgt"
-    - "(?i)NET"
+    - "NET"
     - "^ens[0-9]"
     - "^eno[0-9]"
     - "^nic[0-9]"
