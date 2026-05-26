@@ -57,9 +57,9 @@ func main() {
 
 	// Parse the Netbox API response format
 	var apiRecords []struct {
-		Address        string `json:"address"`
-		DNSName        string `json:"dns_name"`
-		VRF            *struct {
+		Address string `json:"address"`
+		DNSName string `json:"dns_name"`
+		VRF     *struct {
 			Name string `json:"name"`
 		} `json:"vrf"`
 		AssignedObject *struct {
@@ -67,6 +67,9 @@ func main() {
 			Device *struct {
 				Name string `json:"name"`
 			} `json:"device"`
+			VirtualMachine *struct {
+				Name string `json:"name"`
+			} `json:"virtual_machine"`
 		} `json:"assigned_object"`
 		Status struct {
 			Value string `json:"value"`
@@ -93,6 +96,8 @@ func main() {
 			interfaceName = apiRec.AssignedObject.Name
 			if apiRec.AssignedObject.Device != nil {
 				deviceName = apiRec.AssignedObject.Device.Name
+			} else if apiRec.AssignedObject.VirtualMachine != nil {
+				deviceName = apiRec.AssignedObject.VirtualMachine.Name
 			}
 		}
 
