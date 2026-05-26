@@ -1,26 +1,33 @@
 name: Build and Push Images (reusable)
 # Single source of truth for Docker image builds.
-# Callers pass tags; build context and Dockerfile paths are defined here.
+# - multi-platform: false (default) — single amd64 job, fast, used for e2e
+# - multi-platform: true — native amd64 + arm64 runners, used for releases
 
 on:
   workflow_call:
     inputs:
       coredns-tags:
-        description: Newline-separated tags for the CoreDNS image
+        description: Newline-separated image:tag pairs for the CoreDNS image
         required: true
         type: string
       sidecar-tags:
-        description: Newline-separated tags for the sidecar image
+        description: Newline-separated image:tag pairs for the sidecar image
         required: true
         type: string
-      platforms:
-        description: Target platforms (e.g. linux/amd64 or linux/amd64,linux/arm64)
+      multi-platform:
+        description: Build for linux/amd64 and linux/arm64 using native runners
         required: false
-        type: string
-        default: linux/amd64
+        type: boolean
+        default: false
+
+env:
+  COREDNS_IMAGE: ghcr.io/${{ github.repository_owner }}/coredns-netbox
+  SIDECAR_IMAGE: ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar
 
 jobs:
-  build:
+  # ── Single-platform (amd64 only) — used for e2e builds ──────────────────────
+  build-single:
+    if: ${{ !inputs.multi-platform }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,10 +51,10 @@ jobs:
           context: .
           file: coredns/Dockerfile
           push: true
-          platforms: ${{ inputs.platforms }}
+          platforms: linux/amd64
           tags: ${{ inputs.coredns-tags }}
-          cache-from: type=gha,scope=coredns
-          cache-to: type=gha,mode=max,scope=coredns
+          cache-from: type=gha,scope=coredns-amd64
+          cache-to: type=gha,mode=max,scope=coredns-amd64
 
       - name: Build and push sidecar image
         uses: docker/build-push-action@v6
@@ -55,7 +62,128 @@ jobs:
           context: .
           file: docker/sidecar/Dockerfile
           push: true
-          platforms: ${{ inputs.platforms }}
+          platforms: linux/amd64
           tags: ${{ inputs.sidecar-tags }}
-          cache-from: type=gha,scope=sidecar
-          cache-to: type=gha,mode=max,scope=sidecar
+          cache-from: type=gha,scope=sidecar-amd64
+          cache-to: type=gha,mode=max,scope=sidecar-amd64
+
+  # ── Multi-platform: one native job per platform ───────────────────────────────
+  build-multi:
+    if: ${{ inputs.multi-platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute platform slug
+        id: vars
+        run: echo "slug=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push CoreDNS by digest
+        id: coredns
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: coredns/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.COREDNS_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=coredns-${{ steps.vars.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=coredns-${{ steps.vars.outputs.slug }}
+
+      - name: Build and push sidecar by digest
+        id: sidecar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sidecar/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.SIDECAR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=sidecar-${{ steps.vars.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=sidecar-${{ steps.vars.outputs.slug }}
+
+      - name: Export digests
+        run: |
+          mkdir -p /tmp/digests/coredns /tmp/digests/sidecar
+          touch "/tmp/digests/coredns/${{ steps.coredns.outputs.digest }}"
+          touch "/tmp/digests/sidecar/${{ steps.sidecar.outputs.digest }}"
+
+      - name: Upload CoreDNS digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: coredns-digest-${{ steps.vars.outputs.slug }}
+          path: /tmp/digests/coredns/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload sidecar digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-digest-${{ steps.vars.outputs.slug }}
+          path: /tmp/digests/sidecar/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Merge per-platform digests into multi-arch manifests ─────────────────────
+  merge:
+    if: ${{ inputs.multi-platform }}
+    needs: build-multi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Download CoreDNS digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests/coredns
+          pattern: coredns-digest-*
+          merge-multiple: true
+
+      - name: Download sidecar digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests/sidecar
+          pattern: sidecar-digest-*
+          merge-multiple: true
+
+      - name: Create and push CoreDNS manifest
+        run: |
+          TAGS=$(echo "${{ inputs.coredns-tags }}" | sed '/^$/d' | awk '{print "--tag "$1}' | tr '\n' ' ')
+          DIGESTS=$(ls /tmp/digests/coredns | awk -v img="${{ env.COREDNS_IMAGE }}" '{print img"@"$1}' | tr '\n' ' ')
+          docker buildx imagetools create $TAGS $DIGESTS
+
+      - name: Create and push sidecar manifest
+        run: |
+          TAGS=$(echo "${{ inputs.sidecar-tags }}" | sed '/^$/d' | awk '{print "--tag "$1}' | tr '\n' ' ')
+          DIGESTS=$(ls /tmp/digests/sidecar | awk -v img="${{ env.SIDECAR_IMAGE }}" '{print img"@"$1}' | tr '\n' ' ')
+          docker buildx imagetools create $TAGS $DIGESTS

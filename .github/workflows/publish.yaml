@@ -93,7 +93,7 @@ jobs:
       sidecar-tags: |
         ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:${{ needs.extract-version.outputs.version }}
         ghcr.io/${{ github.repository_owner }}/coredns-netbox-sidecar:latest
-      platforms: linux/amd64,linux/arm64
+      multi-platform: true
 
   publish-chart:
     needs: [e2e-tests, extract-version, publish-images]
