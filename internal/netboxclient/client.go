@@ -66,8 +66,9 @@ type vrfInfo struct {
 }
 
 type assignedObject struct {
-	Name   string      `json:"name"`
-	Device *deviceInfo `json:"device"`
+	Name           string      `json:"name"`
+	Device         *deviceInfo `json:"device"`
+	VirtualMachine *deviceInfo `json:"virtual_machine"`
 }
 
 type deviceInfo struct {
@@ -197,6 +198,8 @@ func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 					interfaceName = ip.AssignedObject.Name
 					if ip.AssignedObject.Device != nil {
 						deviceName = ip.AssignedObject.Device.Name
+					} else if ip.AssignedObject.VirtualMachine != nil {
+						deviceName = ip.AssignedObject.VirtualMachine.Name
 					}
 				}
 

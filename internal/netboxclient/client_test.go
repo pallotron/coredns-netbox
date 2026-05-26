@@ -268,6 +268,42 @@ func TestFetchIPAddresses_RetryOnTransientError(t *testing.T) {
 	}
 }
 
+func TestFetchIPAddresses_VMInterface(t *testing.T) {
+	// Regression test: VM interfaces use assigned_object.virtual_machine, not .device.
+	// DeviceName must be populated from virtual_machine.name when device is absent.
+	payload := `{
+		"count": 1,
+		"results": [{
+			"address": "10.0.0.1/24",
+			"dns_name": "",
+			"vrf": null,
+			"assigned_object_type": "virtualization.vminterface",
+			"assigned_object": {
+				"name": "eth0",
+				"virtual_machine": {
+					"name": "vm01.example.org"
+				}
+			}
+		}]
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "token", 100, 1, 0, 0, 0)
+	require.NoError(t, err)
+
+	records, err := c.FetchIPAddresses(context.Background())
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, "vm01.example.org", records[0].DeviceName)
+	require.Equal(t, "eth0", records[0].InterfaceName)
+	require.Equal(t, "10.0.0.1", records[0].Address)
+}
+
 func TestFetchIPAddresses_RetryExhausted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
