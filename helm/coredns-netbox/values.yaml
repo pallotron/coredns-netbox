@@ -158,6 +158,36 @@ stripDCLabel: false
 pageSize: 1000
 maxConcurrency: 10
 
+# Interface categorization patterns (regex fragments joined with |).
+# Each list entry is ORed together to form the final regex passed to the sidecar.
+interfacePatterns:
+  bmc:
+    - "(?i)bmc"
+    - "(?i)ipmi"
+    - "(?i)ilo"
+    - "(?i)idrac"
+  loopback:
+    - "^lo$"
+    - "^lo0"
+    - "^Loopback"
+  dataplane:
+    - "(?i)storage"
+    - "(?i)vtep"
+    - "(?i)vsan"
+  mgmtVRF:
+    - "(?i)mgmt"
+    - "(?i)oob"
+  management:
+    - "(?i)mgmt"
+    - "(?i)Management"
+    - "fxp0"
+    - "eth[01]"
+    - "mgt"
+    - "(?i)NET"
+    - "^ens[0-9]"
+    - "^eno[0-9]"
+    - "^nic[0-9]"
+
 forwardServers:
   - 1.1.1.1
   - 8.8.8.8

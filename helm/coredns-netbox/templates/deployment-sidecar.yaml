@@ -72,6 +72,16 @@ spec:
               value: {{ .Values.domainSuffix | quote }}
             - name: STRIP_DC_LABEL
               value: {{ .Values.stripDCLabel | quote }}
+            - name: BMC_INTERFACE_PATTERN
+              value: {{ join "|" .Values.interfacePatterns.bmc | quote }}
+            - name: LOOPBACK_PATTERN
+              value: {{ join "|" .Values.interfacePatterns.loopback | quote }}
+            - name: DATAPLANE_PATTERN
+              value: {{ join "|" .Values.interfacePatterns.dataplane | quote }}
+            - name: MGMT_VRF_PATTERN
+              value: {{ join "|" .Values.interfacePatterns.mgmtVRF | quote }}
+            - name: MGMT_INTERFACE_PATTERN
+              value: {{ join "|" .Values.interfacePatterns.management | quote }}
             - name: COREDNS_RELOAD_ADDRS
               value: {{ include "coredns-netbox.reloadAddrs" . | quote }}
             - name: COREDNS_RELOAD_TOKEN
