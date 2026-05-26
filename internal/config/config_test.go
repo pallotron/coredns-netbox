@@ -87,7 +87,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "^lo$|^lo0|^Loopback", cfg.LoopbackInterfacePattern)
 	assert.Equal(t, "(?i)storage|vtep|vsan", cfg.DataplaneInterfacePattern)
 	assert.Equal(t, "(?i)mgmt|oob", cfg.MgmtVRFPattern)
-	assert.Equal(t, "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET", cfg.MgmtInterfacePattern)
+	assert.Equal(t, "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET|^ens[0-9]|^eno[0-9]|^nic[0-9]", cfg.MgmtInterfacePattern)
 
 	// Reverse zones
 	assert.True(t, cfg.EnableReverseZones)
