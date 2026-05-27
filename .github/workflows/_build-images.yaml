@@ -124,8 +124,11 @@ jobs:
       - name: Export digests
         run: |
           mkdir -p /tmp/digests/coredns /tmp/digests/sidecar
-          touch "/tmp/digests/coredns/${{ steps.coredns.outputs.digest }}"
-          touch "/tmp/digests/sidecar/${{ steps.sidecar.outputs.digest }}"
+          touch "/tmp/digests/coredns/${COREDNS_DIGEST#sha256:}"
+          touch "/tmp/digests/sidecar/${SIDECAR_DIGEST#sha256:}"
+        env:
+          COREDNS_DIGEST: ${{ steps.coredns.outputs.digest }}
+          SIDECAR_DIGEST: ${{ steps.sidecar.outputs.digest }}
 
       - name: Upload CoreDNS digest
         uses: actions/upload-artifact@v4
@@ -179,11 +182,11 @@ jobs:
       - name: Create and push CoreDNS manifest
         run: |
           TAGS=$(echo "${{ inputs.coredns-tags }}" | sed '/^$/d' | awk '{print "--tag "$1}' | tr '\n' ' ')
-          DIGESTS=$(ls /tmp/digests/coredns | awk -v img="${{ env.COREDNS_IMAGE }}" '{print img"@"$1}' | tr '\n' ' ')
+          DIGESTS=$(ls /tmp/digests/coredns | awk -v img="${{ env.COREDNS_IMAGE }}" '{print img"@sha256:"$1}' | tr '\n' ' ')
           docker buildx imagetools create $TAGS $DIGESTS
 
       - name: Create and push sidecar manifest
         run: |
           TAGS=$(echo "${{ inputs.sidecar-tags }}" | sed '/^$/d' | awk '{print "--tag "$1}' | tr '\n' ' ')
-          DIGESTS=$(ls /tmp/digests/sidecar | awk -v img="${{ env.SIDECAR_IMAGE }}" '{print img"@"$1}' | tr '\n' ' ')
+          DIGESTS=$(ls /tmp/digests/sidecar | awk -v img="${{ env.SIDECAR_IMAGE }}" '{print img"@sha256:"$1}' | tr '\n' ' ')
           docker buildx imagetools create $TAGS $DIGESTS
