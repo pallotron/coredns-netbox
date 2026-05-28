@@ -22,6 +22,7 @@ func main() {
 	filePath := flag.String("file", "", "Path to all_ips.json file")
 	showAll := flag.Bool("all", false, "Show all IPs for each device")
 	showStats := flag.Bool("stats", false, "Show statistics about the data")
+	showDNSNames := flag.Bool("show-dns-names", false, "Show records sourced from dns_name field (service VIPs, UFM cluster IPs, etc.)")
 	filterDevice := flag.String("device", "", "Filter to a specific device name (substring match)")
 	outputFormat := flag.String("format", "summary", "Output format: summary, detailed, csv")
 
@@ -161,8 +162,33 @@ func main() {
 		return
 	}
 
+	// Split records: those with dns_name set vs those needing device-based generation
+	var withDNSName []netboxclient.IPRecord
+	var withoutDNSName []netboxclient.IPRecord
+	for _, r := range records {
+		if r.DNSName != "" {
+			withDNSName = append(withDNSName, r)
+		} else {
+			withoutDNSName = append(withoutDNSName, r)
+		}
+	}
+
+	// Show dns_name records if requested
+	if *showDNSNames {
+		fmt.Printf("Records sourced from dns_name field (%d total):\n\n", len(withDNSName))
+		dnsSorted := make([]netboxclient.IPRecord, len(withDNSName))
+		copy(dnsSorted, withDNSName)
+		sort.Slice(dnsSorted, func(i, j int) bool { return dnsSorted[i].DNSName < dnsSorted[j].DNSName })
+		for _, r := range dnsSorted {
+			if *filterDevice == "" || strings.Contains(r.DNSName, *filterDevice) {
+				fmt.Printf("  %-60s %s\n", r.DNSName, r.Address)
+			}
+		}
+		return
+	}
+
 	// Select device IPs (creates FQDNs from device names)
-	deviceDNS := cat.SelectDeviceIPs(records)
+	deviceDNS := cat.SelectDeviceIPs(withoutDNSName)
 
 	// Filter if requested (before discovering reverse zones)
 	if *filterDevice != "" {
@@ -179,7 +205,7 @@ func main() {
 	// This ensures PTR records match the forward A/AAAA records we're creating
 	var reverseZones zonediscovery.ZoneMap
 	if *enableReverseZones {
-		enrichedRecords := deviceDNSToRecords(deviceDNS)
+		enrichedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS)
 		ipv4ZoneList := parseZoneList(*ipv4Zones)
 		ipv6ZoneList := parseZoneList(*ipv6Zones)
 		disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
@@ -216,41 +242,6 @@ func parseZoneList(s string) []string {
 	return zones
 }
 
-// deviceDNSToRecords converts selected device DNS records back to IPRecord format
-// so we can discover reverse zones from the actual IPs we're creating forward records for
-func deviceDNSToRecords(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) []netboxclient.IPRecord {
-	var records []netboxclient.IPRecord
-
-	for deviceName, dns := range deviceDNS {
-		// Primary management IP
-		if dns.PrimaryIP != nil {
-			fqdn := deviceName + "." + dns.Zone
-			records = append(records, netboxclient.IPRecord{
-				DNSName:       fqdn,
-				Address:       dns.PrimaryIP.Address,
-				Family:        dns.PrimaryIP.Family,
-				DeviceName:    deviceName,
-				InterfaceName: dns.PrimaryIP.InterfaceName,
-				VRF:           dns.PrimaryIP.VRF,
-			})
-		}
-
-		// BMC IP
-		if dns.BMCIP != nil {
-			fqdn := deviceName + "-bmc." + dns.Zone
-			records = append(records, netboxclient.IPRecord{
-				DNSName:       fqdn,
-				Address:       dns.BMCIP.Address,
-				Family:        dns.BMCIP.Family,
-				DeviceName:    deviceName,
-				InterfaceName: dns.BMCIP.InterfaceName,
-				VRF:           dns.BMCIP.VRF,
-			})
-		}
-	}
-
-	return records
-}
 
 
 func showStatistics(records []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, reverseZones zonediscovery.ZoneMap) {

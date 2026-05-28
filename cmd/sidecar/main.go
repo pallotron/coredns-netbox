@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"sync/atomic"
 	"syscall"
@@ -423,7 +422,7 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *
 
 	// Generate device-based DNS records for those without dns_name
 	deviceDNS := categorizer.SelectDeviceIPs(withoutDNSName)
-	generatedRecords := deviceDNSToRecords(deviceDNS)
+	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS)
 
 	slog.Info("generated device-based records", "devices", len(deviceDNS), "records", len(generatedRecords))
 
@@ -435,45 +434,3 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *
 	return result
 }
 
-// deviceDNSToRecords converts device DNS records to IPRecord format
-func deviceDNSToRecords(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords) []netboxclient.IPRecord {
-	var records []netboxclient.IPRecord
-
-	// Sort device names for deterministic output
-	deviceNames := make([]string, 0, len(deviceDNS))
-	for deviceName := range deviceDNS {
-		deviceNames = append(deviceNames, deviceName)
-	}
-	sort.Strings(deviceNames)
-
-	for _, deviceName := range deviceNames {
-		dns := deviceDNS[deviceName]
-		// Primary management IP: devicename.zone
-		if dns.PrimaryIP != nil {
-			fqdn := deviceName + "." + dns.Zone
-			records = append(records, netboxclient.IPRecord{
-				DNSName:       fqdn,
-				Address:       dns.PrimaryIP.Address,
-				Family:        dns.PrimaryIP.Family,
-				DeviceName:    deviceName,
-				InterfaceName: dns.PrimaryIP.InterfaceName,
-				VRF:           dns.PrimaryIP.VRF,
-			})
-		}
-
-		// BMC IP: devicename-bmc.zone
-		if dns.BMCIP != nil {
-			fqdn := deviceName + "-bmc." + dns.Zone
-			records = append(records, netboxclient.IPRecord{
-				DNSName:       fqdn,
-				Address:       dns.BMCIP.Address,
-				Family:        dns.BMCIP.Family,
-				DeviceName:    deviceName,
-				InterfaceName: dns.BMCIP.InterfaceName,
-				VRF:           dns.BMCIP.VRF,
-			})
-		}
-	}
-
-	return records
-}

@@ -36,6 +36,12 @@ go build -o analyzer ./cmd/analyzer/main.go
 
 # Output as CSV
 ./analyzer -file all_ips.json -format csv > dns_records.csv
+
+# Show records sourced from dns_name field (service VIPs, UFM cluster IPs, etc.)
+./analyzer -file all_ips.json -show-dns-names
+
+# Filter dns_name records by substring
+./analyzer -file all_ips.json -show-dns-names -device "ufm"
 ```
 
 ## Command Line Flags
@@ -47,6 +53,7 @@ go build -o analyzer ./cmd/analyzer/main.go
 - `-all` - Show all IPs for each device (use with `-format detailed`)
 - `-device <substring>` - Filter to devices matching the substring
 - `-format <format>` - Output format: `summary` (default), `detailed`, or `csv`
+- `-show-dns-names` - Show records sourced from the `dns_name` field in Netbox (service VIPs, UFM cluster IPs, etc.) rather than device-based records. Bare hostnames without a domain suffix are automatically qualified with `-domain`.
 
 ### Reverse DNS Options
 - `-enable-reverse-zones` - Enable PTR record preview (default: `true`)
@@ -70,7 +77,13 @@ You can customize the interface categorization patterns:
 
 ## How It Works
 
-The analyzer:
+The analyzer mirrors the sidecar's record generation logic using two paths:
+
+**Path 1 — `dns_name` records** (service VIPs, UFM cluster IPs, etc.):
+IPs that have `dns_name` set in Netbox are used as-is. Bare hostnames without a domain suffix are automatically qualified with the configured `-domain` suffix. Use `-show-dns-names` to inspect these records.
+
+**Path 2 — Device-based records** (default output):
+IPs without `dns_name` go through interface categorization:
 
 1. Reads the Netbox IP address JSON data
 2. Filters to only active IP addresses
