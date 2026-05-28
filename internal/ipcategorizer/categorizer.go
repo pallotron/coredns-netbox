@@ -190,6 +190,47 @@ func (c *Categorizer) SelectDeviceIPs(records []netboxclient.IPRecord) map[strin
 	return result
 }
 
+// DeviceDNSToRecords converts the output of SelectDeviceIPs into a flat slice
+// of IPRecords with fully-qualified DNS names, suitable for zone generation.
+// Results are sorted by device name for deterministic output.
+func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords) []netboxclient.IPRecord {
+	var records []netboxclient.IPRecord
+
+	deviceNames := make([]string, 0, len(deviceDNS))
+	for deviceName := range deviceDNS {
+		deviceNames = append(deviceNames, deviceName)
+	}
+	sort.Strings(deviceNames)
+
+	for _, deviceName := range deviceNames {
+		dns := deviceDNS[deviceName]
+		if dns.PrimaryIP != nil {
+			fqdn := deviceName + "." + dns.Zone
+			records = append(records, netboxclient.IPRecord{
+				DNSName:       fqdn,
+				Address:       dns.PrimaryIP.Address,
+				Family:        dns.PrimaryIP.Family,
+				DeviceName:    deviceName,
+				InterfaceName: dns.PrimaryIP.InterfaceName,
+				VRF:           dns.PrimaryIP.VRF,
+			})
+		}
+		if dns.BMCIP != nil {
+			fqdn := deviceName + "-bmc." + dns.Zone
+			records = append(records, netboxclient.IPRecord{
+				DNSName:       fqdn,
+				Address:       dns.BMCIP.Address,
+				Family:        dns.BMCIP.Family,
+				DeviceName:    deviceName,
+				InterfaceName: dns.BMCIP.InterfaceName,
+				VRF:           dns.BMCIP.VRF,
+			})
+		}
+	}
+
+	return records
+}
+
 // extractZone extracts the DNS zone from a device name
 // Examples: dc1-site13a-r101-prod-hv-01 -> dc1-site.example.com
 //           dc2-m21-r101-prod-hv-01 -> dc2-m.example.com
