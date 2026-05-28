@@ -129,6 +129,14 @@ func main() {
 		})
 	}
 
+	// Qualify dns_name records — same logic as the sidecar's enrichRecordsWithDeviceNames.
+	// Records with a dns_name that lacks the domain suffix get it appended automatically.
+	for i, r := range records {
+		if r.DNSName != "" {
+			records[i].DNSName = zonediscovery.QualifyDNSName(r.DNSName, *domainSuffix)
+		}
+	}
+
 	// Create categorizer
 	cat, err := ipcategorizer.NewCategorizer(*bmcPattern, *loopbackPattern, *dataplanePattern, *mgmtVRFPattern, *mgmtIfacePattern, *domainSuffix)
 	if err != nil {
