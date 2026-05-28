@@ -252,7 +252,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	firstSuccess := false
 
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
-		zm, err := fetchNetbox(ctx, client, categorizer, forwardDisc, reverseDisc, m)
+		zm, err := fetchNetbox(ctx, client, categorizer, forwardDisc, reverseDisc, m, cfg.DomainSuffix)
 		if err != nil || !cfg.StripDCLabel {
 			return zm, err
 		}
@@ -364,7 +364,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer,
-	m *metrics.Sidecar,
+	m *metrics.Sidecar, domainSuffix string,
 ) (zonediscovery.ZoneMap, error) {
 	slog.Info("fetching IP addresses from netbox")
 	fetchStart := time.Now()
@@ -381,7 +381,7 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		m.NetboxEmptyResponseTotal.Inc()
 	}
 
-	enriched := enrichRecordsWithDeviceNames(records, categorizer)
+	enriched := enrichRecordsWithDeviceNames(records, categorizer, domainSuffix)
 
 	forwardZones, err := forwardDisc.Discover(enriched)
 	if err != nil {
@@ -403,15 +403,16 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 
 
 // enrichRecordsWithDeviceNames implements a hybrid approach:
-// - Keep records that already have dns_name populated
+// - Keep records that already have dns_name populated (qualifying bare names with domainSuffix)
 // - Generate DNS names from device names for records without dns_name
-func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *ipcategorizer.Categorizer) []netboxclient.IPRecord {
+func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *ipcategorizer.Categorizer, domainSuffix string) []netboxclient.IPRecord {
 	var withDNSName []netboxclient.IPRecord
 	var withoutDNSName []netboxclient.IPRecord
 
 	// Split records based on whether dns_name is populated
 	for _, rec := range records {
 		if rec.DNSName != "" {
+			rec.DNSName = zonediscovery.QualifyDNSName(rec.DNSName, domainSuffix)
 			withDNSName = append(withDNSName, rec)
 		} else {
 			withoutDNSName = append(withoutDNSName, rec)
