@@ -380,7 +380,7 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		return nil, fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
-	slog.Info("fetched records from netbox", "count", len(records))
+	slog.Info("fetched IP addresses from netbox", "count", len(records))
 	m.NetboxRecordsFetched.Set(float64(len(records)))
 	if len(records) == 0 {
 		m.NetboxEmptyResponseTotal.Inc()
