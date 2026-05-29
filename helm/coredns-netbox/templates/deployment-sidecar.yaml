@@ -16,6 +16,10 @@ spec:
       app.kubernetes.io/component: sidecar
   template:
     metadata:
+      {{- with .Values.sidecar.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- include "coredns-netbox.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: sidecar

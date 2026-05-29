@@ -110,6 +110,7 @@ sidecar:
   #   - name: LOG_LEVEL
   #     value: "DEBUG"  # DEBUG, INFO (default), WARN, ERROR
   env: []
+  podAnnotations: {}
 
 zoneDiscovery:
   mode: zone-depth
