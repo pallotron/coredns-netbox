@@ -22,6 +22,27 @@ const (
 	ZoneTypeReverse ZoneType = "reverse"
 )
 
+// SOATimers holds the SOA refresh/retry/expire/minimum values in seconds.
+// Refresh and retry control how often secondaries poll the primary for
+// updates; expire is how long a secondary keeps serving a zone after the
+// primary becomes unreachable.
+type SOATimers struct {
+	Refresh uint32
+	Retry   uint32
+	Expire  uint32
+	Minimum uint32
+}
+
+// DefaultSOATimers returns the SOA timers used when none are configured.
+func DefaultSOATimers() SOATimers {
+	return SOATimers{
+		Refresh: 3600,
+		Retry:   900,
+		Expire:  604800,
+		Minimum: 86400,
+	}
+}
+
 // ZoneConfig holds parameters for zone file generation.
 type ZoneConfig struct {
 	Origin     string   // e.g., "example.org." or "1.10.in-addr.arpa"
@@ -29,6 +50,7 @@ type ZoneConfig struct {
 	AdminEmail string   // e.g., "admin.example.org."
 	TTL        uint32
 	Type       ZoneType // forward or reverse
+	SOA        SOATimers
 }
 
 // Generator produces DNS zone files from Netbox records.
@@ -42,6 +64,9 @@ type Generator struct {
 // If zonePath is provided and exists, it reads the current SOA serial
 // from the file to ensure serial continuity across restarts.
 func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
+	if cfg.SOA == (SOATimers{}) {
+		cfg.SOA = DefaultSOATimers()
+	}
 	g := &Generator{config: cfg}
 
 	// Try to read existing serial from zone file for continuity
@@ -81,10 +106,10 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 	fmt.Fprintf(&b, "$TTL %d\n", g.config.TTL)
 	fmt.Fprintf(&b, "@ IN SOA %s %s (\n", g.config.PrimaryNS, g.config.AdminEmail)
 	fmt.Fprintf(&b, "    %d   ; serial\n", g.serial)
-	fmt.Fprintf(&b, "    3600      ; refresh\n")
-	fmt.Fprintf(&b, "    900       ; retry\n")
-	fmt.Fprintf(&b, "    604800    ; expire\n")
-	fmt.Fprintf(&b, "    86400     ; minimum\n")
+	fmt.Fprintf(&b, "    %-9d ; refresh\n", g.config.SOA.Refresh)
+	fmt.Fprintf(&b, "    %-9d ; retry\n", g.config.SOA.Retry)
+	fmt.Fprintf(&b, "    %-9d ; expire\n", g.config.SOA.Expire)
+	fmt.Fprintf(&b, "    %-9d ; minimum\n", g.config.SOA.Minimum)
 	fmt.Fprintf(&b, ")\n\n")
 
 	// NS record

@@ -10,6 +10,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
+	"github.com/pallotron/coredns-netbox/internal/zonegen"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
@@ -21,7 +22,7 @@ func newComponents(t *testing.T) (string, dynamicstore.DynamicStore, *zonemanage
 	dir := t.TempDir()
 	store, err := dynamicstore.NewFileStore(filepath.Join(dir, "dynamic.json"))
 	require.NoError(t, err)
-	mgr := zonemanager.New(dir, "ns1.example.org.", "admin.example.org.", 300)
+	mgr := zonemanager.New(dir, "ns1.example.org.", "admin.example.org.", 300, zonegen.SOATimers{})
 	m := metrics.NewSidecar(prometheus.NewRegistry())
 	return dir, store, mgr, m
 }

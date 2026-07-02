@@ -96,14 +96,23 @@ test.helm:
 		--set metrics.enabled=true 2>&1 | grep -q "name: metrics" && \
 		echo "PASS: metrics ports rendered" || \
 		(echo "FAIL: metrics ports not rendered" && exit 1)
-	# transfer.notify renders notify line in transfer block
+	# transfer.to renders the transfer block; no notify directive is ever
+	# emitted (the CoreDNS transfer plugin rejects it at startup)
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \
-		--set 'transfer.to[0]=*' \
-		--set 'transfer.notify[0]=10.0.1.5' \
-		--set 'transfer.notify[1]=10.0.1.6' 2>&1 | grep -q "notify 10.0.1.5 10.0.1.6" && \
-		echo "PASS: transfer.notify rendered" || \
-		(echo "FAIL: transfer.notify not rendered" && exit 1)
-	# transfer block absent when neither to nor notify is set
+		--set 'transfer.to[0]=10.0.1.5' 2>&1 | grep -q "to 10.0.1.5" && \
+		echo "PASS: transfer.to rendered" || \
+		(echo "FAIL: transfer.to not rendered" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set 'transfer.to[0]=10.0.1.5' \
+		--set 'transfer.notify[0]=10.0.1.6' 2>&1 | grep -q "notify" && \
+		(echo "FAIL: notify directive rendered in transfer block" && exit 1) || \
+		echo "PASS: no notify directive in transfer block"
+	# soa values render as sidecar env vars
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set soa.refresh=300 2>&1 | grep -A1 "SOA_REFRESH" | grep -q '"300"' && \
+		echo "PASS: soa.refresh rendered as SOA_REFRESH env" || \
+		(echo "FAIL: SOA_REFRESH env not rendered" && exit 1)
+	# transfer block absent when to is not set
 	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -qv "transfer {" && \
 		echo "PASS: transfer block absent when empty" || \
 		(echo "FAIL: transfer block present when it should be absent" && exit 1)

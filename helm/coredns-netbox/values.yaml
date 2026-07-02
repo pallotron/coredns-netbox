@@ -144,6 +144,16 @@ ttl: 300
 primaryNS: ns1.example.org.
 adminEmail: admin.example.org.
 
+# SOA timers (seconds) for generated zones. refresh/retry control how often
+# secondaries poll the primary for updates (no NOTIFY is sent, so refresh is
+# the worst-case propagation delay to secondaries); expire is how long a
+# secondary keeps serving the zone after the primary becomes unreachable.
+soa:
+  refresh: 3600
+  retry: 900
+  expire: 604800
+  minimum: 86400
+
 # DNS domain suffix for device-based record generation.
 # Used to extract zones from device names (e.g., "dc1-site13a-r101-hv-01" → "dc1-site.{domainSuffix}").
 # IMPORTANT: Set this to your actual domain (e.g., "infra.example.com") in production.
@@ -195,13 +205,12 @@ forwardServers:
 # Maximum TTL (seconds) for cached DNS responses (both positive and negative).
 cacheTTL: 30
 
-# Primary: who can pull zones via AXFR, and who to notify on zone changes
+# Primary: who can pull zones via AXFR. Secondaries poll for updates on the
+# SOA refresh interval; DNS NOTIFY is not sent on zone changes.
 transfer:
   to: []
   # Production: ["10.0.1.5", "10.0.1.6"]
   # Dev: ["*"]
-  notify: []
-  # Production: ["10.0.1.5", "10.0.1.6"]
 
 # Secondary
 secondary:
@@ -236,7 +245,7 @@ pdb:
 service:
   port: 53
   annotations: {}
-  # External service — exposes TCP/53 only for DC secondaries (AXFR/NOTIFY).
+  # External service — exposes TCP/53 only for DC secondaries (AXFR).
   # Kept separate from the ClusterIP service so internal ports (gRPC, metrics,
   # health) are never exposed outside the cluster.
   external:
