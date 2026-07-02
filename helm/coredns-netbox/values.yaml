@@ -144,6 +144,16 @@ ttl: 300
 primaryNS: ns1.example.org.
 adminEmail: admin.example.org.
 
+# SOA timers (seconds) for generated zones. refresh/retry control how often
+# secondaries poll the primary for updates (no NOTIFY is sent, so refresh is
+# the worst-case propagation delay to secondaries); expire is how long a
+# secondary keeps serving the zone after the primary becomes unreachable.
+soa:
+  refresh: 3600
+  retry: 900
+  expire: 604800
+  minimum: 86400
+
 # DNS domain suffix for device-based record generation.
 # Used to extract zones from device names (e.g., "dc1-site13a-r101-hv-01" → "dc1-site.{domainSuffix}").
 # IMPORTANT: Set this to your actual domain (e.g., "infra.example.com") in production.

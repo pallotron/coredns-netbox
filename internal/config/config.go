@@ -34,6 +34,14 @@ type Config struct {
 	MgmtVRFPattern            string
 	MgmtInterfacePattern      string
 
+	// SOA timers (seconds) for generated zones. Refresh/retry control how
+	// often secondaries poll for updates; expire is how long they keep
+	// serving after the primary becomes unreachable.
+	SOARefresh uint32
+	SOARetry   uint32
+	SOAExpire  uint32
+	SOAMinimum uint32
+
 	// DNS domain configuration
 	DomainSuffix  string
 	StripDCLabel  bool
@@ -68,6 +76,10 @@ func Load() (*Config, error) {
 		HealthAddr:          envOrDefault("HEALTH_ADDR", ":8082"),
 		PrimaryNS:      envOrDefault("PRIMARY_NS", "ns1.example.org."),
 		AdminEmail:     envOrDefault("ADMIN_EMAIL", "admin.example.org."),
+		SOARefresh:     3600,
+		SOARetry:       900,
+		SOAExpire:      604800,
+		SOAMinimum:     86400,
 
 		// Interface categorization patterns
 		BMCInterfacePattern:       envOrDefault("BMC_INTERFACE_PATTERN", "(?i)bmc|ipmi|ilo|idrac"),
@@ -111,6 +123,22 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid TTL: %w", err)
 		}
 		c.TTL = uint32(ttl)
+	}
+
+	soaTimers := map[string]*uint32{
+		"SOA_REFRESH": &c.SOARefresh,
+		"SOA_RETRY":   &c.SOARetry,
+		"SOA_EXPIRE":  &c.SOAExpire,
+		"SOA_MINIMUM": &c.SOAMinimum,
+	}
+	for name, dst := range soaTimers {
+		if v := os.Getenv(name); v != "" {
+			n, err := strconv.ParseUint(v, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid %s: %w", name, err)
+			}
+			*dst = uint32(n)
+		}
 	}
 
 	if v := os.Getenv("POLL_INTERVAL"); v != "" {

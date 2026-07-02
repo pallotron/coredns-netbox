@@ -26,6 +26,10 @@ var allEnvKeys = []string{
 	"HEALTH_ADDR",
 	"PRIMARY_NS",
 	"ADMIN_EMAIL",
+	"SOA_REFRESH",
+	"SOA_RETRY",
+	"SOA_EXPIRE",
+	"SOA_MINIMUM",
 	"BMC_INTERFACE_PATTERN",
 	"LOOPBACK_PATTERN",
 	"DATAPLANE_PATTERN",
@@ -81,6 +85,10 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, ":8082", cfg.HealthAddr)
 	assert.Equal(t, "ns1.example.org.", cfg.PrimaryNS)
 	assert.Equal(t, "admin.example.org.", cfg.AdminEmail)
+	assert.Equal(t, uint32(3600), cfg.SOARefresh)
+	assert.Equal(t, uint32(900), cfg.SOARetry)
+	assert.Equal(t, uint32(604800), cfg.SOAExpire)
+	assert.Equal(t, uint32(86400), cfg.SOAMinimum)
 
 	// Interface patterns
 	assert.Equal(t, "(?i)bmc|ipmi|ilo|idrac", cfg.BMCInterfacePattern)
@@ -106,6 +114,10 @@ func TestLoad_NumericAndDurationOverrides(t *testing.T) {
 	t.Setenv("NETBOX_RETRY_COUNT", "5")
 	t.Setenv("NETBOX_RETRY_BASE_DELAY", "2s")
 	t.Setenv("NETBOX_RETRY_MAX_DELAY", "1m")
+	t.Setenv("SOA_REFRESH", "300")
+	t.Setenv("SOA_RETRY", "60")
+	t.Setenv("SOA_EXPIRE", "1209600")
+	t.Setenv("SOA_MINIMUM", "3600")
 
 	cfg, err := Load()
 	require.NoError(t, err)
@@ -118,6 +130,10 @@ func TestLoad_NumericAndDurationOverrides(t *testing.T) {
 	assert.Equal(t, 5, cfg.NetboxRetryCount)
 	assert.Equal(t, 2*time.Second, cfg.NetboxRetryBaseDelay)
 	assert.Equal(t, 1*time.Minute, cfg.NetboxRetryMaxDelay)
+	assert.Equal(t, uint32(300), cfg.SOARefresh)
+	assert.Equal(t, uint32(60), cfg.SOARetry)
+	assert.Equal(t, uint32(1209600), cfg.SOAExpire)
+	assert.Equal(t, uint32(3600), cfg.SOAMinimum)
 }
 
 func TestLoad_InvalidValues(t *testing.T) {
@@ -136,6 +152,8 @@ func TestLoad_InvalidValues(t *testing.T) {
 		{"bad NETBOX_RETRY_COUNT", "NETBOX_RETRY_COUNT", "no", "invalid NETBOX_RETRY_COUNT"},
 		{"bad NETBOX_RETRY_BASE_DELAY", "NETBOX_RETRY_BASE_DELAY", "bad", "invalid NETBOX_RETRY_BASE_DELAY"},
 		{"bad NETBOX_RETRY_MAX_DELAY", "NETBOX_RETRY_MAX_DELAY", "bad", "invalid NETBOX_RETRY_MAX_DELAY"},
+		{"bad SOA_REFRESH", "SOA_REFRESH", "-1", "invalid SOA_REFRESH"},
+		{"bad SOA_EXPIRE", "SOA_EXPIRE", "abc", "invalid SOA_EXPIRE"},
 	}
 
 	for _, tt := range tests {
