@@ -108,6 +108,10 @@ helm upgrade coredns-netbox ./helm/coredns-netbox \
 
 The primary CoreDNS can serve zone transfers to secondary DNS servers (CoreDNS, BIND, NSD, etc.) in remote data centers.
 
+The primary does not send DNS NOTIFY on zone changes; secondaries pick up
+updates by polling the SOA serial on the zone's refresh interval (see the
+`soa` values to tune it).
+
 ### Primary: Allow AXFR
 
 Set `transfer.to` to the list of secondary IPs allowed to pull zones:
@@ -153,6 +157,5 @@ BIND secondary:
 zone "dc1.mycompany.com" {
     type slave;
     masters { <primary-ip>; };
-    allow-notify { <primary-ip>; };
 };
 ```
