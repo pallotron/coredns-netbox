@@ -107,6 +107,11 @@ test.helm:
 		--set 'transfer.notify[0]=10.0.1.6' 2>&1 | grep -q "notify" && \
 		(echo "FAIL: notify directive rendered in transfer block" && exit 1) || \
 		echo "PASS: no notify directive in transfer block"
+	# soa values render as sidecar env vars
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set soa.refresh=300 2>&1 | grep -A1 "SOA_REFRESH" | grep -q '"300"' && \
+		echo "PASS: soa.refresh rendered as SOA_REFRESH env" || \
+		(echo "FAIL: SOA_REFRESH env not rendered" && exit 1)
 	# transfer block absent when to is not set
 	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | grep -qv "transfer {" && \
 		echo "PASS: transfer block absent when empty" || \

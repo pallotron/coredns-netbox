@@ -28,6 +28,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/reloader"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/pallotron/coredns-netbox/internal/zonefetch"
+	"github.com/pallotron/coredns-netbox/internal/zonegen"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	"github.com/pallotron/coredns-netbox/internal/zoneserver"
 	"github.com/prometheus/client_golang/prometheus"
@@ -127,7 +128,12 @@ func main() {
 		slog.Info("reverse zones enabled", "ipv4_zones", cfg.ReverseZonesIPv4, "ipv6_zones", cfg.ReverseZonesIPv6)
 	}
 
-	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.AdminEmail, cfg.TTL)
+	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.AdminEmail, cfg.TTL, zonegen.SOATimers{
+		Refresh: cfg.SOARefresh,
+		Retry:   cfg.SOARetry,
+		Expire:  cfg.SOAExpire,
+		Minimum: cfg.SOAMinimum,
+	})
 
 	// Dynamic store
 	store, err := dynamicstore.NewFileStore(filepath.Join(cfg.ZoneDir, "dynamic.json"))

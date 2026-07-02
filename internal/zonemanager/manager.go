@@ -20,6 +20,7 @@ type Manager struct {
 	primaryNS  string
 	adminEmail string
 	ttl        uint32
+	soa        zonegen.SOATimers
 
 	generators map[string]*zonegen.Generator
 }
@@ -32,13 +33,15 @@ type UpdateStats struct {
 	WriteErrors int
 }
 
-// New creates a new zone Manager.
-func New(zoneDir, primaryNS, adminEmail string, ttl uint32) *Manager {
+// New creates a new zone Manager. Zero-value soa timers fall back to
+// zonegen.DefaultSOATimers.
+func New(zoneDir, primaryNS, adminEmail string, ttl uint32, soa zonegen.SOATimers) *Manager {
 	return &Manager{
 		zoneDir:    zoneDir,
 		primaryNS:  primaryNS,
 		adminEmail: adminEmail,
 		ttl:        ttl,
+		soa:        soa,
 		generators: make(map[string]*zonegen.Generator),
 	}
 }
@@ -77,6 +80,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 				AdminEmail: m.adminEmail,
 				TTL:        m.ttl,
 				Type:       zoneType,
+				SOA:        m.soa,
 			}, zonePath)
 			m.generators[zone] = gen
 		}

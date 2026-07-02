@@ -79,6 +79,14 @@ spec:
               value: {{ .Values.primaryNS | quote }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}
+            - name: SOA_REFRESH
+              value: {{ .Values.soa.refresh | quote }}
+            - name: SOA_RETRY
+              value: {{ .Values.soa.retry | quote }}
+            - name: SOA_EXPIRE
+              value: {{ .Values.soa.expire | quote }}
+            - name: SOA_MINIMUM
+              value: {{ .Values.soa.minimum | quote }}
             - name: NETBOX_PAGE_SIZE
               value: {{ .Values.pageSize | quote }}
             - name: NETBOX_MAX_CONCURRENCY
@@ -195,6 +203,14 @@ spec:
               value: {{ .Values.primaryNS | quote }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}
+            - name: SOA_REFRESH
+              value: {{ .Values.soa.refresh | quote }}
+            - name: SOA_RETRY
+              value: {{ .Values.soa.retry | quote }}
+            - name: SOA_EXPIRE
+              value: {{ .Values.soa.expire | quote }}
+            - name: SOA_MINIMUM
+              value: {{ .Values.soa.minimum | quote }}
             - name: NETBOX_PAGE_SIZE
               value: {{ .Values.pageSize | quote }}
             - name: NETBOX_MAX_CONCURRENCY

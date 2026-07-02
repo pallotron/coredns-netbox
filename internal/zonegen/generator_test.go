@@ -93,6 +93,47 @@ func TestAtomicWrite(t *testing.T) {
 	}
 }
 
+func TestGenerateSOATimers(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+	}
+
+	t.Run("defaults when unset", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:     "example.org",
+			PrimaryNS:  "ns1.example.org.",
+			AdminEmail: "admin.example.org.",
+			TTL:        300,
+		}, "")
+
+		content, _, err := gen.Generate(records)
+		require.NoError(t, err, "Generate() error")
+
+		assert.Contains(t, content, "3600      ; refresh")
+		assert.Contains(t, content, "900       ; retry")
+		assert.Contains(t, content, "604800    ; expire")
+		assert.Contains(t, content, "86400     ; minimum")
+	})
+
+	t.Run("custom timers", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:     "example.org",
+			PrimaryNS:  "ns1.example.org.",
+			AdminEmail: "admin.example.org.",
+			TTL:        300,
+			SOA:        SOATimers{Refresh: 300, Retry: 60, Expire: 1209600, Minimum: 3600},
+		}, "")
+
+		content, _, err := gen.Generate(records)
+		require.NoError(t, err, "Generate() error")
+
+		assert.Contains(t, content, "300       ; refresh")
+		assert.Contains(t, content, "60        ; retry")
+		assert.Contains(t, content, "1209600   ; expire")
+		assert.Contains(t, content, "3600      ; minimum")
+	})
+}
+
 func TestShortName(t *testing.T) {
 	tests := []struct {
 		fqdn, origin, want string
