@@ -137,17 +137,24 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 			fmt.Fprintf(&b, "%s IN PTR %s\n", ptrName, target)
 		}
 	} else {
-		// A and AAAA records for forward zones
+		// A, AAAA and CNAME records for forward zones
 		for _, r := range sorted {
 			name := shortName(r.DNSName, origin)
-			rrType := "A"
-			if r.Family == 6 {
-				rrType = "AAAA"
+			var rrType, value string
+			if r.Type == netboxclient.RecordTypeCNAME {
+				rrType = "CNAME"
+				value = ensureTrailingDot(r.CNAMETarget)
+			} else {
+				rrType = "A"
+				if r.Family == 6 {
+					rrType = "AAAA"
+				}
+				value = r.Address
 			}
 			if r.TTL > 0 {
-				fmt.Fprintf(&b, "%s %d IN %s %s\n", name, r.TTL, rrType, r.Address)
+				fmt.Fprintf(&b, "%s %d IN %s %s\n", name, r.TTL, rrType, value)
 			} else {
-				fmt.Fprintf(&b, "%s IN %s %s\n", name, rrType, r.Address)
+				fmt.Fprintf(&b, "%s IN %s %s\n", name, rrType, value)
 			}
 		}
 	}
