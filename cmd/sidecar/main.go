@@ -24,6 +24,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/logging"
 	"github.com/pallotron/coredns-netbox/internal/merge"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
+	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/reloader"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
@@ -104,6 +105,23 @@ func main() {
 	if err != nil {
 		slog.Error("failed to create IP categorizer", "err", err)
 		os.Exit(1)
+	}
+
+	// Device-name parsing + templating (issue #60). nil when unconfigured.
+	formatter, err := nameformat.New(
+		cfg.DeviceNameParsers,
+		cfg.NameFormatCanonical,
+		cfg.NameFormatAliases,
+		cfg.NameFormatZone,
+		cfg.DomainSuffix,
+	)
+	if err != nil {
+		slog.Error("invalid name format configuration", "err", err)
+		os.Exit(1)
+	}
+	if formatter != nil {
+		slog.Info("device name templates enabled",
+			"parsers", len(cfg.DeviceNameParsers), "aliases", len(cfg.NameFormatAliases))
 	}
 
 	// Create forward zone discoverer
@@ -221,7 +239,7 @@ func main() {
 	rl := reloader.New(cfg.CoreDNSReloadAddrs, cfg.CoreDNSReloadToken)
 
 	// Run the poll loop
-	if err := run(ctx, cfg, client, categorizer, forwardDisc, reverseDisc, mgr, m, markReady,
+	if err := run(ctx, cfg, client, categorizer, formatter, forwardDisc, reverseDisc, mgr, m, markReady,
 		store, netboxCache, statusTracker, mergeSignal, netboxSignal, rl); err != nil {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
@@ -246,7 +264,8 @@ func runOnceResult(pollErr error, hasCachedZones bool) error {
 }
 
 func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
-	categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer,
+	categorizer *ipcategorizer.Categorizer, formatter *nameformat.Formatter,
+	forwardDisc, reverseDisc zonediscovery.Discoverer,
 	mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func(),
 	store dynamicstore.DynamicStore, netboxCache *grpcserver.NetboxCache,
 	statusTracker *grpcserver.StatusTracker,
@@ -257,7 +276,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	firstSuccess := false
 
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
-		zm, err := fetchNetbox(ctx, client, categorizer, forwardDisc, reverseDisc, m, cfg.DomainSuffix)
+		zm, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc, m, cfg.DomainSuffix)
 		if err != nil || !cfg.StripDCLabel {
 			return zm, err
 		}
@@ -368,7 +387,8 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 }
 
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
-	categorizer *ipcategorizer.Categorizer, forwardDisc, reverseDisc zonediscovery.Discoverer,
+	categorizer *ipcategorizer.Categorizer, formatter *nameformat.Formatter,
+	forwardDisc, reverseDisc zonediscovery.Discoverer,
 	m *metrics.Sidecar, domainSuffix string,
 ) (zonediscovery.ZoneMap, error) {
 	slog.Info("fetching IP addresses from netbox")
@@ -386,7 +406,7 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		m.NetboxEmptyResponseTotal.Inc()
 	}
 
-	enriched := enrichRecordsWithDeviceNames(records, categorizer, domainSuffix)
+	enriched := enrichRecordsWithDeviceNames(records, categorizer, domainSuffix, formatter)
 
 	forwardZones, err := forwardDisc.Discover(enriched)
 	if err != nil {
@@ -414,7 +434,8 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 // enrichRecordsWithDeviceNames implements a hybrid approach:
 // - Keep records that already have dns_name populated (qualifying bare names with domainSuffix)
 // - Generate DNS names from device names for records without dns_name
-func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *ipcategorizer.Categorizer, domainSuffix string) []netboxclient.IPRecord {
+// - When a formatter is configured, matching devices get template-rendered canonical names plus CNAME aliases
+func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *ipcategorizer.Categorizer, domainSuffix string, formatter *nameformat.Formatter) []netboxclient.IPRecord {
 	var withDNSName []netboxclient.IPRecord
 	var withoutDNSName []netboxclient.IPRecord
 
@@ -432,7 +453,7 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *
 
 	// Generate device-based DNS records for those without dns_name
 	deviceDNS := categorizer.SelectDeviceIPs(withoutDNSName)
-	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, nil)
+	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
 
 	slog.Info("generated device-based records", "devices", len(deviceDNS), "records", len(generatedRecords))
 
