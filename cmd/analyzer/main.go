@@ -205,7 +205,7 @@ func main() {
 	// This ensures PTR records match the forward A/AAAA records we're creating
 	var reverseZones zonediscovery.ZoneMap
 	if *enableReverseZones {
-		enrichedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS)
+		enrichedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, nil)
 		ipv4ZoneList := parseZoneList(*ipv4Zones)
 		ipv6ZoneList := parseZoneList(*ipv6Zones)
 		disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)

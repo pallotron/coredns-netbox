@@ -432,7 +432,7 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *
 
 	// Generate device-based DNS records for those without dns_name
 	deviceDNS := categorizer.SelectDeviceIPs(withoutDNSName)
-	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS)
+	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, nil)
 
 	slog.Info("generated device-based records", "devices", len(deviceDNS), "records", len(generatedRecords))
 

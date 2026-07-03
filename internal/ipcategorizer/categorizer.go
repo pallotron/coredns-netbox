@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 )
 
@@ -193,7 +194,14 @@ func (c *Categorizer) SelectDeviceIPs(records []netboxclient.IPRecord) map[strin
 // DeviceDNSToRecords converts the output of SelectDeviceIPs into a flat slice
 // of IPRecords with fully-qualified DNS names, suitable for zone generation.
 // Results are sorted by device name for deterministic output.
-func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords) []netboxclient.IPRecord {
+//
+// When formatter is non-nil and one of its parsers matches the device name,
+// the canonical FQDN comes from the canonical template (replacing the legacy
+// <device>.<zone> form), the BMC record uses the canonical with "-bmc"
+// inserted before the first dot, and each alias template contributes a CNAME
+// pointing at the canonical (and, when a BMC IP exists, a BMC alias pointing
+// at the BMC canonical). Devices that do not match keep the legacy behavior.
+func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter *nameformat.Formatter) []netboxclient.IPRecord {
 	var records []netboxclient.IPRecord
 
 	deviceNames := make([]string, 0, len(deviceDNS))
@@ -204,10 +212,17 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords) []netboxclient.I
 
 	for _, deviceName := range deviceNames {
 		dns := deviceDNS[deviceName]
+
+		canonical := deviceName + "." + dns.Zone
+		var aliases []string
+		if names, ok := formatter.Format(deviceName); ok {
+			canonical = names.Canonical
+			aliases = names.Aliases
+		}
+
 		if dns.PrimaryIP != nil {
-			fqdn := deviceName + "." + dns.Zone
 			records = append(records, netboxclient.IPRecord{
-				DNSName:       fqdn,
+				DNSName:       canonical,
 				Address:       dns.PrimaryIP.Address,
 				Family:        dns.PrimaryIP.Family,
 				DeviceName:    deviceName,
@@ -216,15 +231,32 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords) []netboxclient.I
 			})
 		}
 		if dns.BMCIP != nil {
-			fqdn := deviceName + "-bmc." + dns.Zone
 			records = append(records, netboxclient.IPRecord{
-				DNSName:       fqdn,
+				DNSName:       nameformat.BMCName(canonical),
 				Address:       dns.BMCIP.Address,
 				Family:        dns.BMCIP.Family,
 				DeviceName:    deviceName,
 				InterfaceName: dns.BMCIP.InterfaceName,
 				VRF:           dns.BMCIP.VRF,
 			})
+		}
+		for _, alias := range aliases {
+			if dns.PrimaryIP != nil {
+				records = append(records, netboxclient.IPRecord{
+					DNSName:     alias,
+					Type:        netboxclient.RecordTypeCNAME,
+					CNAMETarget: canonical,
+					DeviceName:  deviceName,
+				})
+			}
+			if dns.BMCIP != nil {
+				records = append(records, netboxclient.IPRecord{
+					DNSName:     nameformat.BMCName(alias),
+					Type:        netboxclient.RecordTypeCNAME,
+					CNAMETarget: nameformat.BMCName(canonical),
+					DeviceName:  deviceName,
+				})
+			}
 		}
 	}
 
