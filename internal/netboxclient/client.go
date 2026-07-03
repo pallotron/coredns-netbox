@@ -21,6 +21,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// RecordTypeCNAME marks an IPRecord as a CNAME alias rather than an
+// address record. The zero value of Type means A/AAAA (from Family).
+const RecordTypeCNAME = "CNAME"
+
 // IPRecord is a simplified representation of a Netbox IP address with DNS info.
 type IPRecord struct {
 	DNSName       string `json:"dns_name"`
@@ -30,6 +34,11 @@ type IPRecord struct {
 	InterfaceName string `json:"interface_name,omitempty"` // Interface name from assigned_object.name
 	VRF           string `json:"vrf,omitempty"` // VRF name
 	TTL           uint32 `json:"ttl,omitempty"`
+	// Type is "" for address records (A/AAAA per Family) or RecordTypeCNAME
+	// for aliases. CNAME records leave Address/Family empty and carry the
+	// canonical FQDN in CNAMETarget.
+	Type        string `json:"type,omitempty"`
+	CNAMETarget string `json:"cname_target,omitempty"`
 }
 
 // Client queries the Netbox IPAM API with parallel paginated fetching.
