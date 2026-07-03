@@ -38,6 +38,47 @@ Results in zones like:
 - `dc1-site13a-r101-prod-srv-01` → `dc1-site13a-r101-prod-srv-01.dc1-site.example.com`
 - `dc1-r101-srv-01` → `dc1-r101-srv-01.dc1.example.com`
 
+## Device Name Templates and CNAME Aliases
+
+Device-generated record names can be customized with an ordered list of parser regexes and Go `text/template` FQDN formats. The canonical template produces the A/AAAA records; each alias template produces a CNAME pointing at the canonical, so every host has exactly one canonical name (PTR records always target it) reachable under any number of alias conventions. Aliases resolve with a `CNAME + A` answer on both the primary and secondaries.
+
+| Env var | Helm value | Meaning |
+|---|---|---|
+| `DEVICE_NAME_PARSERS` | `deviceNameParsers` (list) | Newline-separated RE2 regexes with named capture groups; ordered, first match wins. Non-matching devices keep the legacy `<device>.<zone>` naming. |
+| `NAME_FORMAT_CANONICAL` | `nameFormats.canonical` | Template rendering the complete canonical FQDN. |
+| `NAME_FORMAT_ALIASES` | `nameFormats.aliases` (list) | Newline-separated alias FQDN templates (one CNAME each). |
+| `NAME_FORMAT_ZONE` | `nameFormats.zone` | Optional sub-template reusable as `{{template "zone" .}}`. |
+
+Template variables: the regex capture groups, plus `{{.name}}` (full device name, lowercased) and `{{.domain}}` (`DOMAIN_SUFFIX`). Functions: `alphaPrefix` (leading letters of a string), `upper`, `lower`. BMC records derive from the rendered FQDN with `-bmc` inserted before the first dot.
+
+**Example (Helm values):**
+
+```yaml
+deviceNameParsers:
+  # dc1-hall2a-r101-prod-hv-01
+  - '^(?P<dc>[a-z0-9]+)-(?P<hall>[a-z]+[0-9][a-z0-9]*)-r(?P<rack>[0-9]+)-(?P<env>prod|mgmt|staging)-(?P<role>[a-z][a-z0-9-]*?)-(?P<idx>[0-9]+)$'
+nameFormats:
+  zone: '{{.dc}}-{{alphaPrefix .hall}}.{{.domain}}'
+  canonical: '{{.name}}.{{template "zone" .}}'
+  aliases:
+    - '{{.role}}{{.idx}}-{{.dc}}-{{.hall}}-r{{.rack}}.{{template "zone" .}}'
+# dc1-hall2a-r101-prod-hv-01.dc1-hall.example.org      A     10.0.0.1  (canonical)
+# dc1-hall2a-r101-prod-hv-01-bmc.dc1-hall.example.org  A     10.0.8.1
+# hv01-dc1-hall2a-r101.dc1-hall.example.org            CNAME -> canonical
+# hv01-dc1-hall2a-r101-bmc.dc1-hall.example.org        CNAME -> canonical-bmc
+```
+
+Configure these via a values file. Plain `--set` cannot parse values that start with `{{`; use `--set-json` if you must set them on the CLI.
+
+**RFC 1034 collision handling:** A CNAME colliding with address data is dropped (address data wins); when two devices render the same alias, all claims are dropped (never an arbitrary winner); CNAMEs with empty targets or at a zone apex are dropped; every drop is logged at ERROR. Validate a template set against a Netbox export before deploying:
+
+```
+analyzer -file <netbox-ip-dump.json> -validate-name-formats \
+  -name-parser '...' -name-canonical '...' -name-alias '...'
+```
+
+**Caveats:** An alias template that lands in a zone not enumerated in `secondary.zones` is served by the primary but silently never transferred to statically-configured secondaries (the sidecar logs a warning for zones containing only CNAMEs). Netbox `dns_name` pass-through records are not templated and get no aliases.
+
 ## Interface Categorization
 
 The sidecar uses regex patterns to categorize network interfaces and intelligently select the appropriate IP for each device:
@@ -132,6 +173,10 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `adminEmail` | `admin.example.org.` | SOA admin email (dot notation) |
 | `domainSuffix` | `example.org` | DNS domain suffix for device-based record generation (zone extraction from device names) |
 | `stripDCLabel` | `false` | Strip the DC label (immediately before `domainSuffix`) from all Netbox DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
+| `deviceNameParsers` | `[]` | Ordered list of RE2 regexes with named capture groups for device name parsing. First match wins; non-matching devices use legacy naming. See [Device Name Templates and CNAME Aliases](#device-name-templates-and-cname-aliases). |
+| `nameFormats.canonical` | `""` | Go `text/template` rendering the complete canonical FQDN for matched devices. |
+| `nameFormats.aliases` | `[]` | List of alias FQDN templates; each renders to a CNAME pointing at the canonical. |
+| `nameFormats.zone` | `""` | Optional sub-template reusable as `{{template "zone" .}}` in other format strings. |
 | `pageSize` | `1000` | Records per API page (max 1000) |
 | `maxConcurrency` | `10` | Parallel API request limit |
 | `forwardServers` | `[1.1.1.1, 8.8.8.8]` | Upstream DNS resolvers |
@@ -165,6 +210,10 @@ Customize interface categorization via environment variables:
 | `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|eth[01]\|mgt\|NET` | Regex for management interfaces |
 | `DOMAIN_SUFFIX` | `example.org` | DNS domain suffix for zone extraction from device names |
 | `STRIP_DC_LABEL` | `false` | Strip the DC label from DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
+| `DEVICE_NAME_PARSERS` | `""` | Newline-separated RE2 regexes with named capture groups; ordered, first match wins. See [Device Name Templates and CNAME Aliases](#device-name-templates-and-cname-aliases). |
+| `NAME_FORMAT_CANONICAL` | `""` | Go `text/template` rendering the complete canonical FQDN. |
+| `NAME_FORMAT_ALIASES` | `""` | Newline-separated alias FQDN templates (one CNAME each). |
+| `NAME_FORMAT_ZONE` | `""` | Optional sub-template reusable as `{{template "zone" .}}`. |
 
 These can be set in the Helm chart's `sidecar.env` values or directly in the sidecar container.
 
