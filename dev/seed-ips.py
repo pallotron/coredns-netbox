@@ -37,3 +37,34 @@ for i in range(0, len(records), batch_size):
     print(f"Created {min(i + batch_size, len(records))}/{len(records)} records")
 
 print(f"Seed complete: {IPAddress.objects.count()} total IP addresses")
+
+# --- Devices with assigned interfaces (exercise the categorizer/template path) ---
+# Two hypervisors in dc1/hall h1a. Their IPs (10.9.0.x mgmt, 10.9.8.x BMC) are
+# disjoint from the dns_name seed ranges above. Device names match the
+# deviceNameParsers configured in dev/coredns-netbox-values.yaml.
+from dcim.models import Device, DeviceRole, DeviceType, Interface, Manufacturer, Site
+
+site, _ = Site.objects.get_or_create(name="dev", defaults={"slug": "dev"})
+mfr, _ = Manufacturer.objects.get_or_create(name="generic", defaults={"slug": "generic"})
+dtype, _ = DeviceType.objects.get_or_create(manufacturer=mfr, model="server", defaults={"slug": "server"})
+role, _ = DeviceRole.objects.get_or_create(name="server", defaults={"slug": "server"})
+
+for i in (1, 2):
+    dev, _ = Device.objects.get_or_create(
+        name=f"dc1-h1a-r10{i}-prod-hv-0{i}",
+        defaults={"device_type": dtype, "role": role, "site": site},
+    )
+    mgmt, _ = Interface.objects.get_or_create(device=dev, name="mgmt0", defaults={"type": "1000base-t"})
+    bmc, _ = Interface.objects.get_or_create(device=dev, name="bmc0", defaults={"type": "1000base-t"})
+    mgmt_ip = IPAddress.objects.filter(address=f"10.9.0.{i}/24").first()
+    if mgmt_ip is None:
+        mgmt_ip = IPAddress(address=f"10.9.0.{i}/24", status="active")
+        mgmt_ip.assigned_object = mgmt
+        mgmt_ip.save()
+    bmc_ip = IPAddress.objects.filter(address=f"10.9.8.{i}/24").first()
+    if bmc_ip is None:
+        bmc_ip = IPAddress(address=f"10.9.8.{i}/24", status="active")
+        bmc_ip.assigned_object = bmc
+        bmc_ip.save()
+
+print(f"Device seed complete: {Device.objects.count()} devices")
