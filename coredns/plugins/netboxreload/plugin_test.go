@@ -116,6 +116,104 @@ func TestServeDNS_NODATA(t *testing.T) {
 	assert.NotEmpty(t, rw.msg.Ns, "NODATA response must include SOA in authority section")
 }
 
+const cnameZone = `$ORIGIN example.org.
+$TTL 300
+@ IN SOA ns1.example.org. admin.example.org. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.example.org.
+host1    IN A     10.0.0.1
+alias1   IN CNAME host1.example.org.
+alias2   IN CNAME alias1.example.org.
+dangling IN CNAME missing.example.org.
+loopa    IN CNAME loopb.example.org.
+loopb    IN CNAME loopa.example.org.
+external IN CNAME target.other-zone.net.
+`
+
+// answerNames returns "<name> <type>" strings for each answer RR, preserving
+// order, for concise assertions on the CNAME chase chain.
+func answerNames(m *dns.Msg) []string {
+	out := make([]string, 0, len(m.Answer))
+	for _, rr := range m.Answer {
+		out = append(out, rr.Header().Name+" "+dns.TypeToString[rr.Header().Rrtype])
+	}
+	return out
+}
+
+func serve(t *testing.T, p *Plugin, name string, qtype uint16) *dns.Msg {
+	t.Helper()
+	req := new(dns.Msg)
+	req.SetQuestion(name, qtype)
+	rw := &responseRecorder{}
+	code, err := p.ServeDNS(context.Background(), rw, req)
+	require.NoError(t, err)
+	require.Equal(t, dns.RcodeSuccess, code)
+	require.NotNil(t, rw.msg)
+	return rw.msg
+}
+
+func TestServeDNS_CNAMEChase_SingleHop(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "alias1.example.org.", dns.TypeA)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	assert.Equal(t, []string{
+		"alias1.example.org. CNAME",
+		"host1.example.org. A",
+	}, answerNames(m))
+	a, ok := m.Answer[1].(*dns.A)
+	require.True(t, ok)
+	assert.Equal(t, "10.0.0.1", a.A.String())
+}
+
+func TestServeDNS_CNAMEChase_MultiHop(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "alias2.example.org.", dns.TypeA)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	assert.Equal(t, []string{
+		"alias2.example.org. CNAME",
+		"alias1.example.org. CNAME",
+		"host1.example.org. A",
+	}, answerNames(m))
+}
+
+func TestServeDNS_CNAMEQuery_NoChase(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "alias1.example.org.", dns.TypeCNAME)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	assert.Equal(t, []string{"alias1.example.org. CNAME"}, answerNames(m))
+}
+
+func TestServeDNS_ANYQuery_NoChase(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "alias1.example.org.", dns.TypeANY)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	assert.Equal(t, []string{"alias1.example.org. CNAME"}, answerNames(m))
+}
+
+func TestServeDNS_CNAMEChase_Dangling(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "dangling.example.org.", dns.TypeA)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	assert.Equal(t, []string{"dangling.example.org. CNAME"}, answerNames(m))
+}
+
+func TestServeDNS_CNAMEChase_Loop(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "loopa.example.org.", dns.TypeA)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	// Both CNAMEs appear at most once; resolution terminates without hanging.
+	assert.Equal(t, []string{
+		"loopa.example.org. CNAME",
+		"loopb.example.org. CNAME",
+	}, answerNames(m))
+}
+
+func TestServeDNS_CNAMEChase_ExternalTarget(t *testing.T) {
+	p := newTestPlugin(t, cnameZone, "example.org")
+	m := serve(t, p, "external.example.org.", dns.TypeA)
+	assert.Equal(t, dns.RcodeSuccess, m.Rcode)
+	assert.Equal(t, []string{"external.example.org. CNAME"}, answerNames(m))
+}
+
 func TestPollLoop_Cancellation(t *testing.T) {
 	dir := t.TempDir()
 	content := `$ORIGIN mycompany.com.

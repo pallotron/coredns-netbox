@@ -422,20 +422,11 @@ func TestDeviceCanonicalRecords(t *testing.T) {
 // TestCNAMEAliasLookup: aliases must resolve to the canonical on both the
 // primary and the secondary (proving AXFR propagation).
 //
-// The two servers differ in how they surface the CNAME for a type-A query,
-// and both behaviors are accepted:
-//   - The secondary (standard file/secondary plugin) returns the CNAME in the
-//     type-A answer and chases it in-zone, so the A for the canonical rides
-//     along in the same response.
-//   - The primary's custom netboxreload plugin does NOT synthesize the CNAME
-//     into a type-A response (it answers NOERROR with no CNAME/A for the
-//     alias's A query); the CNAME is nonetheless present in the zone, served
-//     for an explicit type-CNAME query and via AXFR (see TestAXFRIncludesCNAME).
-//
-// So: prefer the CNAME from the type-A answer; if absent, fall back to an
-// explicit type-CNAME query. Either way the alias must point at the canonical,
-// and the canonical must resolve to the expected IP. netboxreload does not
-// chase CNAMEs for A queries — coredns/ is intentionally left unmodified.
+// Both servers now chase CNAME chains in-zone for a type-A query: the primary's
+// custom netboxreload plugin and the secondary's standard file/secondary plugin
+// each return, in a single type-A response, the alias's CNAME to the canonical
+// plus the canonical's A record. This test strictly requires both records to be
+// present in that one answer on both servers.
 func TestCNAMEAliasLookup(t *testing.T) {
 	skipUnlessNameTemplates(t)
 	waitForDeviceRecords(t)
@@ -468,33 +459,12 @@ func TestCNAMEAliasLookup(t *testing.T) {
 					}
 				}
 
-				// If the type-A answer didn't surface the CNAME (netboxreload on
-				// the primary), fall back to an explicit type-CNAME query.
-				if cnameTarget == "" {
-					rc := queryServer(t, tc.alias, dns.TypeCNAME, srv.addr)
-					require.Equal(t, dns.RcodeSuccess, rc.Rcode)
-					for _, ans := range rc.Answer {
-						if c, ok := ans.(*dns.CNAME); ok && ans.Header().Name == dns.Fqdn(tc.alias) {
-							cnameTarget = c.Target
-						}
-					}
-				}
+				// The type-A answer must include the CNAME alias→canonical and
+				// the chased-in A for the canonical, on both servers.
 				require.Equal(t, dns.Fqdn(tc.canonical), cnameTarget,
-					"alias must resolve (via CNAME) to the canonical")
-
-				if gotA != nil {
-					require.True(t, gotA.Equal(net.ParseIP(tc.ip)), "chased A must be the canonical's address")
-				} else {
-					rc := queryServer(t, tc.canonical, dns.TypeA, srv.addr)
-					require.Equal(t, dns.RcodeSuccess, rc.Rcode)
-					found := false
-					for _, ans := range rc.Answer {
-						if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP(tc.ip)) {
-							found = true
-						}
-					}
-					require.True(t, found, "canonical must resolve to %s", tc.ip)
-				}
+					"type-A answer must include CNAME %s → %s", tc.alias, tc.canonical)
+				require.NotNil(t, gotA, "type-A answer must include the chased A record for the canonical")
+				require.True(t, gotA.Equal(net.ParseIP(tc.ip)), "chased A must be the canonical's address")
 			})
 		}
 	}

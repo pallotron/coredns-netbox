@@ -56,12 +56,8 @@ func (p *Plugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg)
 	m.RecursionAvailable = false
 
 	p.mu.RLock()
-	recs, nameExists := z.records[name]
-	for _, rr := range recs {
-		if rr.Header().Rrtype == q.Qtype || q.Qtype == dns.TypeANY {
-			m.Answer = append(m.Answer, dns.Copy(rr))
-		}
-	}
+	_, nameExists := z.records[name]
+	m.Answer = append(m.Answer, z.answer(name, q.Qtype)...)
 	// collect SOA while still holding the lock
 	var soaRR dns.RR
 	for _, rr := range z.records[z.origin] {

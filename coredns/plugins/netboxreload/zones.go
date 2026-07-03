@@ -20,6 +20,36 @@ type zone struct {
 	records map[string][]dns.RR // lowercased FQDN -> RRs
 }
 
+// answer returns the RRs answering a qtype query at name, following CNAME
+// chains within the zone (RFC 1034 §4.3.2): when the name owns a CNAME and
+// the query is for another type, the CNAME is included and resolution
+// restarts at its target. Chains ending outside the zone, or at names with
+// no matching data, return the partial chain (the client follows up).
+// A visited set guards against CNAME loops in hand-edited zone files.
+func (z *zone) answer(name string, qtype uint16) []dns.RR {
+	var out []dns.RR
+	visited := make(map[string]bool)
+	for cur := name; !visited[cur]; {
+		visited[cur] = true
+		var cname *dns.CNAME
+		matched := false
+		for _, rr := range z.records[cur] {
+			if rr.Header().Rrtype == qtype || qtype == dns.TypeANY {
+				out = append(out, dns.Copy(rr))
+				matched = true
+			} else if c, ok := rr.(*dns.CNAME); ok {
+				cname = c
+			}
+		}
+		if matched || cname == nil || qtype == dns.TypeCNAME || qtype == dns.TypeANY {
+			break
+		}
+		out = append(out, dns.Copy(cname))
+		cur = strings.ToLower(dns.Fqdn(cname.Target))
+	}
+	return out
+}
+
 // parseZoneContent parses zone content from raw bytes. filename must start
 // with "db." so the origin can be derived (e.g. "db.mycompany.com" → "mycompany.com.").
 func parseZoneContent(filename string, data []byte) (*zone, error) {
