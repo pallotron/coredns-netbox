@@ -16,32 +16,33 @@ func StripDCLabel(records []netboxclient.IPRecord, domainSuffix string) []netbox
 		return records
 	}
 
-	domainLabels := strings.Split(domainSuffix, ".")
-	domainDepth := len(domainLabels)
-
 	result := make([]netboxclient.IPRecord, len(records))
 	for i, r := range records {
-		name := strings.TrimSuffix(r.DNSName, ".")
-		labels := strings.Split(name, ".")
-
-		// Only transform records that are under domainSuffix and have a DC label to strip.
-		// Need at least domainDepth+2 labels: hostname + dc + domain...
-		dcIdx := len(labels) - domainDepth - 1
-		if dcIdx < 1 {
-			result[i] = r
-			continue
+		r.DNSName = stripDCFromName(r.DNSName, domainSuffix)
+		if r.CNAMETarget != "" {
+			r.CNAMETarget = stripDCFromName(r.CNAMETarget, domainSuffix)
 		}
-
-		// Verify the record ends with the expected domain suffix.
-		suffix := strings.Join(labels[len(labels)-domainDepth:], ".")
-		if !strings.EqualFold(suffix, domainSuffix) {
-			result[i] = r
-			continue
-		}
-
-		stripped := append(labels[:dcIdx:dcIdx], labels[dcIdx+1:]...)
-		r.DNSName = strings.Join(stripped, ".")
 		result[i] = r
 	}
 	return result
+}
+
+// stripDCFromName removes the DC label — the label immediately before the
+// base domain suffix — from a single name. Names not under domainSuffix, or
+// already at hostname.domain depth, are returned unchanged.
+func stripDCFromName(name, domainSuffix string) string {
+	trimmed := strings.TrimSuffix(name, ".")
+	labels := strings.Split(trimmed, ".")
+	domainDepth := len(strings.Split(domainSuffix, "."))
+
+	dcIdx := len(labels) - domainDepth - 1
+	if dcIdx < 1 {
+		return name
+	}
+	suffix := strings.Join(labels[len(labels)-domainDepth:], ".")
+	if !strings.EqualFold(suffix, domainSuffix) {
+		return name
+	}
+	stripped := append(labels[:dcIdx:dcIdx], labels[dcIdx+1:]...)
+	return strings.Join(stripped, ".")
 }

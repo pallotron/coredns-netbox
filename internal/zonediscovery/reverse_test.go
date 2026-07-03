@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -208,4 +209,17 @@ func TestReverseIPv4(t *testing.T) {
 
 func hasIP6ArpaSuffix(zone string) bool {
 	return len(zone) > 9 && zone[len(zone)-9:] == ".ip6.arpa"
+}
+
+// CNAME records must never produce PTRs — PTRs target canonical names only.
+func TestReverseDiscoverSkipsCNAMEs(t *testing.T) {
+	d := NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "alias1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org"},
+	}
+	zones, err := d.Discover(records)
+	require.NoError(t, err)
+	require.Len(t, zones["10.in-addr.arpa"], 1, "only the address record produces a PTR")
+	assert.Equal(t, "host1.example.org", zones["10.in-addr.arpa"][0].DNSName)
 }

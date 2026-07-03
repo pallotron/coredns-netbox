@@ -5,6 +5,7 @@ import (
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStripDCLabel_NormalCase(t *testing.T) {
@@ -84,4 +85,19 @@ func TestStripDCLabel_RecordNotUnderDomainSuffix(t *testing.T) {
 	}
 	got := StripDCLabel(records, "example.org")
 	assert.Equal(t, "host.dc.other.com", got[0].DNSName)
+}
+
+// A stripped alias must point at the stripped canonical, not the pre-strip name.
+func TestStripDCLabelRewritesCNAMETarget(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{
+			DNSName:     "alias1.nyc.example.org",
+			Type:        netboxclient.RecordTypeCNAME,
+			CNAMETarget: "host1.nyc.example.org",
+		},
+	}
+	got := StripDCLabel(records, "example.org")
+	require.Len(t, got, 1)
+	assert.Equal(t, "alias1.example.org", got[0].DNSName)
+	assert.Equal(t, "host1.example.org", got[0].CNAMETarget)
 }
