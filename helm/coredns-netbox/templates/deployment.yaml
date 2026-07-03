@@ -101,6 +101,20 @@ spec:
               value: {{ .Values.domainSuffix | quote }}
             - name: STRIP_DC_LABEL
               value: {{ .Values.stripDCLabel | quote }}
+            {{- if .Values.deviceNameParsers }}
+            - name: DEVICE_NAME_PARSERS
+              value: {{ join "\n" .Values.deviceNameParsers | quote }}
+            - name: NAME_FORMAT_CANONICAL
+              value: {{ .Values.nameFormats.canonical | quote }}
+            {{- with .Values.nameFormats.aliases }}
+            - name: NAME_FORMAT_ALIASES
+              value: {{ join "\n" . | quote }}
+            {{- end }}
+            {{- with .Values.nameFormats.zone }}
+            - name: NAME_FORMAT_ZONE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             - name: BMC_INTERFACE_PATTERN
               value: {{ join "|" .Values.interfacePatterns.bmc | quote }}
             - name: LOOPBACK_PATTERN
@@ -225,6 +239,20 @@ spec:
               value: {{ .Values.domainSuffix | quote }}
             - name: STRIP_DC_LABEL
               value: {{ .Values.stripDCLabel | quote }}
+            {{- if .Values.deviceNameParsers }}
+            - name: DEVICE_NAME_PARSERS
+              value: {{ join "\n" .Values.deviceNameParsers | quote }}
+            - name: NAME_FORMAT_CANONICAL
+              value: {{ .Values.nameFormats.canonical | quote }}
+            {{- with .Values.nameFormats.aliases }}
+            - name: NAME_FORMAT_ALIASES
+              value: {{ join "\n" . | quote }}
+            {{- end }}
+            {{- with .Values.nameFormats.zone }}
+            - name: NAME_FORMAT_ZONE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             - name: BMC_INTERFACE_PATTERN
               value: {{ join "|" .Values.interfacePatterns.bmc | quote }}
             - name: LOOPBACK_PATTERN
