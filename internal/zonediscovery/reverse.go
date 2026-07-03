@@ -34,8 +34,9 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 	zones := make(ZoneMap)
 
 	for _, rec := range records {
-		// Skip records without DNS names
-		if rec.DNSName == "" {
+		// Skip records without DNS names, and CNAME aliases — PTRs must
+		// target canonical names only.
+		if rec.DNSName == "" || rec.Type == netboxclient.RecordTypeCNAME {
 			continue
 		}
 
