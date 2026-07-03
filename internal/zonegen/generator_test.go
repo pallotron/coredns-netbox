@@ -385,6 +385,56 @@ func TestHashChangesOnTypeChange(t *testing.T) {
 	assert.NotEqual(t, hashRecords(a), hashRecords(b), "hash must distinguish record types")
 }
 
+func TestGenerateCNAME(t *testing.T) {
+	g := NewGenerator(ZoneConfig{
+		Origin: "example.org", PrimaryNS: "ns1.example.org.",
+		AdminEmail: "admin.example.org.", TTL: 300, Type: ZoneTypeForward,
+	}, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "alias1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org"},
+		{DNSName: "alias2.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org", TTL: 60},
+	}
+
+	content, changed, err := g.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	assert.Contains(t, content, "host1 IN A 10.0.0.1", "address records still emitted")
+	assert.Contains(t, content, "alias1 IN CNAME host1.example.org.", "CNAME emitted with absolute target")
+	assert.Contains(t, content, "alias2 60 IN CNAME host1.example.org.", "CNAME honors per-record TTL")
+}
+
+// A changed CNAME target must produce a new zone (changed=true → serial bump).
+func TestGenerateChangesOnCNAMERepoint(t *testing.T) {
+	g := NewGenerator(ZoneConfig{
+		Origin: "example.org", PrimaryNS: "ns1.example.org.",
+		AdminEmail: "admin.example.org.", TTL: 300, Type: ZoneTypeForward,
+	}, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "host2.example.org", Address: "10.0.0.2", Family: 4},
+		{DNSName: "alias1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org"},
+	}
+	_, changed, err := g.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	// Same input again: no change.
+	_, changed, err = g.Generate(records)
+	require.NoError(t, err)
+	assert.False(t, changed, "identical input must not regenerate")
+
+	// Re-point the alias: must regenerate.
+	records[2].CNAMETarget = "host2.example.org"
+	content, changed, err := g.Generate(records)
+	require.NoError(t, err)
+	assert.True(t, changed, "re-pointed alias must regenerate the zone")
+	assert.Contains(t, content, "alias1 IN CNAME host2.example.org.")
+}
+
 func TestGenerateIdempotency(t *testing.T) {
 	// Test that generating the same records multiple times produces stable hashes
 	// This catches hash oscillation bugs caused by non-deterministic record ordering
