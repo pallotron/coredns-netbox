@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/logging"
+	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 )
@@ -40,6 +42,14 @@ func main() {
 	enableReverseZones := flag.Bool("enable-reverse-zones", true, "Enable PTR record preview")
 	ipv4Zones := flag.String("ipv4-zones", "10.in-addr.arpa,172.16.in-addr.arpa", "Comma-separated list of IPv4 reverse zones")
 	ipv6Zones := flag.String("ipv6-zones", "", "Comma-separated list of IPv6 reverse zones")
+
+	// Name template settings (flags override env vars for dry-run validation)
+	var nameParsers, nameAliases multiFlag
+	flag.Var(&nameParsers, "name-parser", "Device name parser regex with named groups (repeatable; default: DEVICE_NAME_PARSERS env, newline-separated)")
+	flag.Var(&nameAliases, "name-alias", "Alias FQDN template (repeatable; default: NAME_FORMAT_ALIASES env, newline-separated)")
+	nameCanonical := flag.String("name-canonical", "", "Canonical FQDN template (default: NAME_FORMAT_CANONICAL env)")
+	nameZone := flag.String("name-zone", "", "Optional zone sub-template (default: NAME_FORMAT_ZONE env)")
+	validateNameFormats := flag.Bool("validate-name-formats", false, "Report parser match rates, rendered samples, zones and collisions, then exit")
 
 	flag.Parse()
 
@@ -145,6 +155,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Build formatter from flags (falling back to env vars)
+	parsers := []string(nameParsers)
+	if len(parsers) == 0 {
+		parsers = nameformat.SplitLines(os.Getenv("DEVICE_NAME_PARSERS"))
+	}
+	aliases := []string(nameAliases)
+	if len(aliases) == 0 {
+		aliases = nameformat.SplitLines(os.Getenv("NAME_FORMAT_ALIASES"))
+	}
+	canonical := *nameCanonical
+	if canonical == "" {
+		canonical = os.Getenv("NAME_FORMAT_CANONICAL")
+	}
+	zoneTmpl := *nameZone
+	if zoneTmpl == "" {
+		zoneTmpl = os.Getenv("NAME_FORMAT_ZONE")
+	}
+	formatter, err := nameformat.New(parsers, canonical, aliases, zoneTmpl, *domainSuffix)
+	if err != nil {
+		slog.Error("invalid name format configuration", "err", err)
+		os.Exit(1)
+	}
+
 	if *showStats {
 		// For stats mode, discover reverse zones from raw records
 		var reverseZones zonediscovery.ZoneMap
@@ -201,15 +234,30 @@ func main() {
 		deviceDNS = filtered
 	}
 
+	if *validateNameFormats {
+		if formatter == nil {
+			fmt.Println("no name parsers configured — set -name-parser/-name-canonical or the DEVICE_NAME_PARSERS/NAME_FORMAT_CANONICAL env vars")
+			os.Exit(1)
+		}
+		dnsNameSet := make(map[string]bool, len(withDNSName))
+		for _, r := range withDNSName {
+			dnsNameSet[strings.ToLower(strings.TrimSuffix(r.DNSName, "."))] = true
+		}
+		reportNameFormats(deviceDNS, dnsNameSet, formatter, len(parsers))
+		return
+	}
+
+	// Generate enriched records (A/AAAA + CNAME aliases from formatter)
+	genRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
+
 	// Discover reverse zones from selected (and possibly filtered) device IPs
 	// This ensures PTR records match the forward A/AAAA records we're creating
 	var reverseZones zonediscovery.ZoneMap
 	if *enableReverseZones {
-		enrichedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, nil)
 		ipv4ZoneList := parseZoneList(*ipv4Zones)
 		ipv6ZoneList := parseZoneList(*ipv6Zones)
 		disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
-		reverseZones, err = disc.Discover(enrichedRecords)
+		reverseZones, err = disc.Discover(genRecords)
 		if err != nil {
 			slog.Error("failed to discover reverse zones", "err", err)
 			os.Exit(1)
@@ -219,15 +267,24 @@ func main() {
 	// Output results
 	switch *outputFormat {
 	case "csv":
-		outputCSV(deviceDNS, reverseZones)
+		outputCSV(deviceDNS, genRecords, reverseZones)
 	case "detailed":
-		outputDetailed(deviceDNS, records, cat, *showAll, reverseZones)
+		outputDetailed(deviceDNS, records, genRecords, cat, *showAll, reverseZones)
 	default:
 		outputSummary(deviceDNS, reverseZones)
 	}
 }
 
-// parseZoneList parses a comma-separated list of zones
+// multiFlag collects repeated occurrences of a string flag.
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, "\n") }
+func (m *multiFlag) Set(v string) error {
+	*m = append(*m, v)
+	return nil
+}
+
+// parseZoneList parses a comma-separated list of zones.
 func parseZoneList(s string) []string {
 	if s == "" {
 		return nil
@@ -440,13 +497,21 @@ func outputSummary(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, reverse
 	}
 }
 
-func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRecords []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, showAll bool, reverseZones zonediscovery.ZoneMap) {
+func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRecords, genRecords []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, showAll bool, reverseZones zonediscovery.ZoneMap) {
 	// Sort device names
 	var devices []string
 	for name := range deviceDNS {
 		devices = append(devices, name)
 	}
 	sort.Strings(devices)
+
+	// Build alias index for fast per-device lookup
+	aliasesByDevice := map[string][]netboxclient.IPRecord{}
+	for _, r := range genRecords {
+		if r.Type == netboxclient.RecordTypeCNAME {
+			aliasesByDevice[r.DeviceName] = append(aliasesByDevice[r.DeviceName], r)
+		}
+	}
 
 	for _, name := range devices {
 		dns := deviceDNS[name]
@@ -460,6 +525,9 @@ func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRec
 		if dns.BMCIP != nil {
 			fmt.Printf("  BMC:     %s-bmc.%s. → %s (interface: %s, vrf: %s)\n",
 				name, dns.Zone, dns.BMCIP.Address, dns.BMCIP.InterfaceName, dns.BMCIP.VRF)
+		}
+		for _, a := range aliasesByDevice[name] {
+			fmt.Printf("  Alias:   %s. → CNAME %s.\n", a.DNSName, a.CNAMETarget)
 		}
 
 		if showAll {
@@ -484,7 +552,7 @@ func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRec
 	}
 }
 
-func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, reverseZones zonediscovery.ZoneMap) {
+func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, genRecords []netboxclient.IPRecord, reverseZones zonediscovery.ZoneMap) {
 	fmt.Println("record_type,zone,name,value,device,interface,vrf")
 
 	// Forward DNS records
@@ -505,6 +573,14 @@ func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, reverseZone
 			fmt.Printf("A,%s,%s-bmc,%s,%s,%s,%s\n",
 				dns.Zone, name, dns.BMCIP.Address, name,
 				dns.BMCIP.InterfaceName, dns.BMCIP.VRF)
+		}
+	}
+
+	// CNAME alias records (name templates). Zone is printed as "-" because
+	// aliases may land in template-defined zones the analyzer cannot know.
+	for _, r := range genRecords {
+		if r.Type == netboxclient.RecordTypeCNAME {
+			fmt.Printf("CNAME,-,%s,%s,%s,,\n", r.DNSName, r.CNAMETarget, r.DeviceName)
 		}
 	}
 
@@ -531,5 +607,130 @@ func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, reverseZone
 					rec.InterfaceName, rec.VRF)
 			}
 		}
+	}
+}
+
+// renderedDevice holds the formatter output for one device after pass 1.
+type renderedDevice struct {
+	name  string
+	names nameformat.Names
+}
+
+// reportNameFormats dry-run validates a parser/template set: per-parser match
+// counts, top unmatched name shapes, sample renders, resulting zones, and
+// collision detection (alias-vs-alias, alias-vs-canonical, alias-vs-dns_name).
+func reportNameFormats(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, dnsNameSet map[string]bool, formatter *nameformat.Formatter, numParsers int) {
+	var devices []string
+	for name := range deviceDNS {
+		devices = append(devices, name)
+	}
+	sort.Strings(devices)
+
+	digits := regexp.MustCompile(`[0-9]+`)
+	perParser := make([]int, numParsers)
+	unmatchedShapes := map[string]int{}
+	canonicalOwner := map[string]string{}
+	aliasOwner := map[string]string{}
+	zones := map[string]int{}
+	var samples []string
+	var collisions []string
+
+	// Pass 1: match index bookkeeping, Format, canonical-collision check,
+	// fill canonicalOwner, zones, samples. Store results for pass 2.
+	var rendered []renderedDevice
+	for _, name := range devices {
+		idx := formatter.MatchIndex(name)
+		if idx < 0 {
+			unmatchedShapes[digits.ReplaceAllString(strings.ToLower(name), "N")]++
+			continue
+		}
+		perParser[idx]++
+
+		names, ok := formatter.Format(name)
+		if !ok {
+			continue
+		}
+		if prev, dup := canonicalOwner[strings.ToLower(names.Canonical)]; dup && prev != name {
+			collisions = append(collisions, fmt.Sprintf("CANONICAL %s from %q and %q", names.Canonical, prev, name))
+		}
+		canonicalOwner[strings.ToLower(names.Canonical)] = name
+		if i := strings.Index(names.Canonical, "."); i >= 0 {
+			zones[names.Canonical[i+1:]]++
+		}
+		if len(samples) < 10 {
+			samples = append(samples, fmt.Sprintf("%-40s -> %s (aliases: %s)", name, names.Canonical, strings.Join(names.Aliases, ", ")))
+		}
+		rendered = append(rendered, renderedDevice{name: name, names: names})
+	}
+
+	// Pass 2: check aliases against each other and against the now-COMPLETE
+	// canonicalOwner map. Checking aliases in the same pass as pass 1 would
+	// miss collisions with later devices' canonicals.
+	for _, rd := range rendered {
+		for _, alias := range rd.names.Aliases {
+			key := strings.ToLower(alias)
+			if prev, dup := aliasOwner[key]; dup && prev != rd.name {
+				collisions = append(collisions, fmt.Sprintf("ALIAS %s from %q and %q", alias, prev, rd.name))
+			}
+			aliasOwner[key] = rd.name
+			if _, hit := canonicalOwner[key]; hit {
+				collisions = append(collisions, fmt.Sprintf("ALIAS-vs-CANONICAL %s (device %q)", alias, rd.name))
+			}
+			if dnsNameSet[key] {
+				collisions = append(collisions, fmt.Sprintf("ALIAS-vs-dns_name %s (device %q)", alias, rd.name))
+			}
+		}
+	}
+
+	matched := 0
+	for i, n := range perParser {
+		fmt.Printf("parser %d matched %d devices\n", i, n)
+		matched += n
+	}
+	fmt.Printf("total: %d/%d devices matched (%.1f%%), %d fall back to legacy naming\n\n",
+		matched, len(devices), 100*float64(matched)/float64(max(len(devices), 1)), len(devices)-matched)
+
+	type shapeCount struct {
+		shape string
+		n     int
+	}
+	var shapes []shapeCount
+	for s, n := range unmatchedShapes {
+		shapes = append(shapes, shapeCount{s, n})
+	}
+	sort.Slice(shapes, func(i, j int) bool { return shapes[i].n > shapes[j].n })
+	fmt.Println("top unmatched name shapes (digits collapsed to N):")
+	for i, s := range shapes {
+		if i >= 15 {
+			break
+		}
+		fmt.Printf("  %6d  %s\n", s.n, s.shape)
+	}
+
+	fmt.Println("\nsample renders:")
+	for _, s := range samples {
+		fmt.Printf("  %s\n", s)
+	}
+
+	fmt.Printf("\nzones produced (%d):\n", len(zones))
+	var zoneNames []string
+	for z := range zones {
+		zoneNames = append(zoneNames, z)
+	}
+	sort.Strings(zoneNames)
+	for _, z := range zoneNames {
+		fmt.Printf("  %6d  %s\n", zones[z], z)
+	}
+
+	fmt.Printf("\ncollisions (%d) — these CNAMEs would be DROPPED by the generator:\n", len(collisions))
+	for i, c := range collisions {
+		if i >= 30 {
+			fmt.Printf("  ... and %d more\n", len(collisions)-30)
+			break
+		}
+		fmt.Printf("  %s\n", c)
+	}
+	if len(collisions) == 0 {
+		fmt.Println("  none")
 	}
 }
