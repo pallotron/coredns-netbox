@@ -393,6 +393,10 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		return nil, fmt.Errorf("discover forward zones: %w", err)
 	}
 	slog.Info("discovered forward zones", "count", len(forwardZones))
+	for _, zone := range zonediscovery.CNAMEOnlyZones(forwardZones) {
+		slog.Warn("zone contains only CNAME records; statically-configured secondaries must enumerate it or it will never transfer",
+			"zone", zone)
+	}
 
 	combined := forwardZones
 	if reverseDisc != nil {

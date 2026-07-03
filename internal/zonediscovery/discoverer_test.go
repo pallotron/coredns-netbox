@@ -289,3 +289,17 @@ func zoneNames(zm ZoneMap) []string {
 	sort.Strings(names)
 	return names
 }
+
+func TestCNAMEOnlyZones(t *testing.T) {
+	zm := ZoneMap{
+		"mixed.example.org": {
+			{DNSName: "h.mixed.example.org", Address: "10.0.0.1", Family: 4},
+			{DNSName: "a.mixed.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "h.mixed.example.org"},
+		},
+		"cnames.example.org": {
+			{DNSName: "a.cnames.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "h.mixed.example.org"},
+		},
+		"empty.example.org": {},
+	}
+	assert.Equal(t, []string{"cnames.example.org"}, CNAMEOnlyZones(zm))
+}
