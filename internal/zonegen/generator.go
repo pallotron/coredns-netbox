@@ -119,26 +119,7 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 	sorted := make([]netboxclient.IPRecord, len(records))
 	copy(sorted, records)
 	sort.Slice(sorted, func(i, j int) bool {
-		// Sort by all fields to ensure stable ordering
-		if sorted[i].DNSName != sorted[j].DNSName {
-			return sorted[i].DNSName < sorted[j].DNSName
-		}
-		if sorted[i].Address != sorted[j].Address {
-			return sorted[i].Address < sorted[j].Address
-		}
-		if sorted[i].Family != sorted[j].Family {
-			return sorted[i].Family < sorted[j].Family
-		}
-		if sorted[i].DeviceName != sorted[j].DeviceName {
-			return sorted[i].DeviceName < sorted[j].DeviceName
-		}
-		if sorted[i].InterfaceName != sorted[j].InterfaceName {
-			return sorted[i].InterfaceName < sorted[j].InterfaceName
-		}
-		if sorted[i].VRF != sorted[j].VRF {
-			return sorted[i].VRF < sorted[j].VRF
-		}
-		return sorted[i].TTL < sorted[j].TTL
+		return recordLess(sorted[i], sorted[j])
 	})
 
 	// Generate records based on zone type
@@ -217,35 +198,46 @@ func ensureTrailingDot(s string) string {
 	return s
 }
 
+// recordLess orders records by every field so both zone emission and hashing
+// see the same deterministic order.
+func recordLess(a, b netboxclient.IPRecord) bool {
+	if a.DNSName != b.DNSName {
+		return a.DNSName < b.DNSName
+	}
+	if a.Address != b.Address {
+		return a.Address < b.Address
+	}
+	if a.Family != b.Family {
+		return a.Family < b.Family
+	}
+	if a.Type != b.Type {
+		return a.Type < b.Type
+	}
+	if a.CNAMETarget != b.CNAMETarget {
+		return a.CNAMETarget < b.CNAMETarget
+	}
+	if a.DeviceName != b.DeviceName {
+		return a.DeviceName < b.DeviceName
+	}
+	if a.InterfaceName != b.InterfaceName {
+		return a.InterfaceName < b.InterfaceName
+	}
+	if a.VRF != b.VRF {
+		return a.VRF < b.VRF
+	}
+	return a.TTL < b.TTL
+}
+
 func hashRecords(records []netboxclient.IPRecord) string {
 	sorted := make([]netboxclient.IPRecord, len(records))
 	copy(sorted, records)
 	sort.Slice(sorted, func(i, j int) bool {
-		// Sort by all fields to ensure stable ordering
-		if sorted[i].DNSName != sorted[j].DNSName {
-			return sorted[i].DNSName < sorted[j].DNSName
-		}
-		if sorted[i].Address != sorted[j].Address {
-			return sorted[i].Address < sorted[j].Address
-		}
-		if sorted[i].Family != sorted[j].Family {
-			return sorted[i].Family < sorted[j].Family
-		}
-		if sorted[i].DeviceName != sorted[j].DeviceName {
-			return sorted[i].DeviceName < sorted[j].DeviceName
-		}
-		if sorted[i].InterfaceName != sorted[j].InterfaceName {
-			return sorted[i].InterfaceName < sorted[j].InterfaceName
-		}
-		if sorted[i].VRF != sorted[j].VRF {
-			return sorted[i].VRF < sorted[j].VRF
-		}
-		return sorted[i].TTL < sorted[j].TTL
+		return recordLess(sorted[i], sorted[j])
 	})
 
 	h := sha256.New()
 	for _, r := range sorted {
-		_, _ = fmt.Fprintf(h, "%s|%s|%d|%d\n", r.DNSName, r.Address, r.Family, r.TTL)
+		_, _ = fmt.Fprintf(h, "%s|%s|%d|%d|%s|%s\n", r.DNSName, r.Address, r.Family, r.TTL, r.Type, r.CNAMETarget)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
