@@ -165,6 +165,31 @@ domainSuffix: example.org
 # Requires domainSuffix to be set correctly.
 stripDCLabel: false
 
+# Device name parsing + templating (issue #60). When configured, device names
+# matching one of the parsers (ordered, first match wins) get their canonical
+# FQDN from nameFormats.canonical; each nameFormats.aliases entry becomes a
+# CNAME pointing at the canonical. Devices matching no parser keep the legacy
+# <device>.<zone> naming. Templates are Go text/template rendering COMPLETE
+# FQDNs; capture groups are template variables, plus builtins {{.name}}
+# (full device name) and {{.domain}} (domainSuffix above) and functions
+# alphaPrefix/upper/lower. Validate a set before deploying with
+# (repeat -name-parser / -name-alias as needed):
+#   analyzer -file <netbox-ip-dump.json> -validate-name-formats \
+#     -name-parser '<regex>' -name-canonical '<tmpl>' -name-alias '<tmpl>'
+# Example:
+#   deviceNameParsers:
+#     - '^(?P<dc>[a-z0-9]+)-(?P<hall>[a-z]+[0-9][a-z0-9]*)-r(?P<rack>[0-9]+)-(?P<env>prod|mgmt|staging)-(?P<role>[a-z][a-z0-9-]*?)-(?P<idx>[0-9]+)$'
+#   nameFormats:
+#     zone: '{{.dc}}-{{alphaPrefix .hall}}.{{.domain}}'
+#     canonical: '{{.name}}.{{template "zone" .}}'
+#     aliases:
+#       - '{{.role}}{{.idx}}-{{.dc}}-{{.hall}}-r{{.rack}}.{{template "zone" .}}'
+deviceNameParsers: []
+nameFormats:
+  canonical: ""
+  aliases: []
+  zone: ""
+
 pageSize: 1000
 maxConcurrency: 10
 

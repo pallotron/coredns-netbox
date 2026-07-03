@@ -164,6 +164,16 @@ test.helm:
 		--set networkPolicy.enabled=true --set sidecar.standalone=true 2>&1 | grep -q "kind: NetworkPolicy" && \
 		echo "PASS: NetworkPolicy rendered when enabled+standalone" || \
 		(echo "FAIL: NetworkPolicy not rendered" && exit 1)
+	# deviceNameParsers render as sidecar env vars (--set-json: the plain --set
+	# parser chokes on values starting with '{')
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set 'deviceNameParsers[0]=^(?P<dc>[a-z0-9]+)-r(?P<rack>[0-9]+)$$' \
+		--set-json 'nameFormats.canonical="{{.name}}.{{.domain}}"' 2>&1 | grep -q "DEVICE_NAME_PARSERS" && \
+		echo "PASS: deviceNameParsers render as DEVICE_NAME_PARSERS env" || \
+		(echo "FAIL: DEVICE_NAME_PARSERS not rendered" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | ( ! grep -q "DEVICE_NAME_PARSERS" ) && \
+		echo "PASS: DEVICE_NAME_PARSERS absent by default" || \
+		(echo "FAIL: DEVICE_NAME_PARSERS rendered without config" && exit 1)
 	@echo "Helm chart tests passed."
 
 # ---------- Lint ----------
