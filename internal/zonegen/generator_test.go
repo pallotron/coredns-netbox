@@ -486,3 +486,20 @@ func TestGenerateIdempotency(t *testing.T) {
 	assert.False(t, changed, "should not detect change when records shuffled")
 	assert.Empty(t, content4, "should return empty content when records just shuffled")
 }
+
+// The generator must never serve a CNAME that collides with address data.
+func TestGenerateDropsCollidingCNAME(t *testing.T) {
+	g := NewGenerator(ZoneConfig{
+		Origin: "example.org", PrimaryNS: "ns1.example.org.",
+		AdminEmail: "admin.example.org.", TTL: 300, Type: ZoneTypeForward,
+	}, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "host1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "other.example.org"},
+	}
+	content, _, err := g.Generate(records)
+	require.NoError(t, err)
+	assert.Contains(t, content, "host1 IN A 10.0.0.1")
+	assert.NotContains(t, content, "CNAME", "colliding CNAME must be dropped")
+}
