@@ -364,6 +364,27 @@ func TestGenerateTTLChangeTriggersUpdate(t *testing.T) {
 	assert.Contains(t, content, "host1 120 IN A 10.0.0.1")
 }
 
+// Re-pointing an alias must change the record hash, otherwise the SOA serial
+// never bumps and secondaries serve the stale alias indefinitely (issue #60).
+func TestHashChangesOnCNAMERepoint(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "alias1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org"},
+	}
+	h1 := hashRecords(records)
+
+	records[1].CNAMETarget = "host2.example.org"
+	h2 := hashRecords(records)
+
+	assert.NotEqual(t, h1, h2, "hash must change when a CNAME target changes")
+}
+
+func TestHashChangesOnTypeChange(t *testing.T) {
+	a := []netboxclient.IPRecord{{DNSName: "x.example.org", Address: "10.0.0.1", Family: 4}}
+	b := []netboxclient.IPRecord{{DNSName: "x.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "10.0.0.1"}}
+	assert.NotEqual(t, hashRecords(a), hashRecords(b), "hash must distinguish record types")
+}
+
 func TestGenerateIdempotency(t *testing.T) {
 	// Test that generating the same records multiple times produces stable hashes
 	// This catches hash oscillation bugs caused by non-deterministic record ordering
