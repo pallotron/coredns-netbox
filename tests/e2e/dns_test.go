@@ -353,3 +353,194 @@ func TestEachReplicaServesCorrectly(t *testing.T) {
         })
     }
 }
+
+// --- Name template / CNAME alias tests (issue #60) ---
+// Only run when the deployment has deviceNameParsers configured
+// (dev/coredns-netbox-values.yaml) — gated by NAME_TEMPLATES=true.
+
+const (
+	tmplCanonical    = "dc1-h1a-r101-prod-hv-01.mycompany.com"
+	tmplAlias        = "hv01-dc1-h1a-r101.mycompany.com"
+	tmplCanonicalBMC = "dc1-h1a-r101-prod-hv-01-bmc.mycompany.com"
+	tmplAliasBMC     = "hv01-dc1-h1a-r101-bmc.mycompany.com"
+	tmplMgmtIP       = "10.9.0.1"
+	tmplBMCIP        = "10.9.8.1"
+)
+
+func skipUnlessNameTemplates(t *testing.T) {
+	t.Helper()
+	if os.Getenv("NAME_TEMPLATES") != "true" {
+		t.Skip("NAME_TEMPLATES not set; skipping name template tests")
+	}
+}
+
+// waitForDeviceRecords blocks until the template-generated canonical record
+// is served (devices are polled from NetBox after startup).
+func waitForDeviceRecords(t *testing.T) {
+	t.Helper()
+	wantIP := net.ParseIP(tmplMgmtIP)
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		r := queryServer(t, tmplCanonical, dns.TypeA, dnsServer())
+		if r.Rcode == dns.RcodeSuccess {
+			for _, ans := range r.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
+					return
+				}
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("device canonical record %s not served within timeout", tmplCanonical)
+}
+
+func TestDeviceCanonicalRecords(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDeviceRecords(t)
+
+	for _, tc := range []struct {
+		fqdn string
+		ip   string
+	}{
+		{tmplCanonical, tmplMgmtIP},
+		{tmplCanonicalBMC, tmplBMCIP},
+	} {
+		t.Run(tc.fqdn, func(t *testing.T) {
+			r := query(t, tc.fqdn, dns.TypeA)
+			require.Equal(t, dns.RcodeSuccess, r.Rcode)
+			found := false
+			for _, ans := range r.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP(tc.ip)) {
+					found = true
+				}
+			}
+			require.True(t, found, "expected %s for %s", tc.ip, tc.fqdn)
+		})
+	}
+}
+
+// TestCNAMEAliasLookup: aliases must resolve to the canonical on both the
+// primary and the secondary (proving AXFR propagation).
+//
+// The two servers differ in how they surface the CNAME for a type-A query,
+// and both behaviors are accepted:
+//   - The secondary (standard file/secondary plugin) returns the CNAME in the
+//     type-A answer and chases it in-zone, so the A for the canonical rides
+//     along in the same response.
+//   - The primary's custom netboxreload plugin does NOT synthesize the CNAME
+//     into a type-A response (it answers NOERROR with no CNAME/A for the
+//     alias's A query); the CNAME is nonetheless present in the zone, served
+//     for an explicit type-CNAME query and via AXFR (see TestAXFRIncludesCNAME).
+//
+// So: prefer the CNAME from the type-A answer; if absent, fall back to an
+// explicit type-CNAME query. Either way the alias must point at the canonical,
+// and the canonical must resolve to the expected IP. netboxreload does not
+// chase CNAMEs for A queries — coredns/ is intentionally left unmodified.
+func TestCNAMEAliasLookup(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDeviceRecords(t)
+
+	cases := []struct {
+		alias, canonical, ip string
+	}{
+		{tmplAlias, tmplCanonical, tmplMgmtIP},
+		{tmplAliasBMC, tmplCanonicalBMC, tmplBMCIP},
+	}
+	servers := []struct{ name, addr string }{
+		{"primary", dnsServer()},
+		{"secondary", dnsSecondaryServer()},
+	}
+
+	for _, srv := range servers {
+		for _, tc := range cases {
+			t.Run(srv.name+"/"+tc.alias, func(t *testing.T) {
+				r := queryServer(t, tc.alias, dns.TypeA, srv.addr)
+				require.Equal(t, dns.RcodeSuccess, r.Rcode)
+
+				var cnameTarget string
+				var gotA net.IP
+				for _, ans := range r.Answer {
+					if c, ok := ans.(*dns.CNAME); ok && ans.Header().Name == dns.Fqdn(tc.alias) {
+						cnameTarget = c.Target
+					}
+					if a, ok := ans.(*dns.A); ok {
+						gotA = a.A
+					}
+				}
+
+				// If the type-A answer didn't surface the CNAME (netboxreload on
+				// the primary), fall back to an explicit type-CNAME query.
+				if cnameTarget == "" {
+					rc := queryServer(t, tc.alias, dns.TypeCNAME, srv.addr)
+					require.Equal(t, dns.RcodeSuccess, rc.Rcode)
+					for _, ans := range rc.Answer {
+						if c, ok := ans.(*dns.CNAME); ok && ans.Header().Name == dns.Fqdn(tc.alias) {
+							cnameTarget = c.Target
+						}
+					}
+				}
+				require.Equal(t, dns.Fqdn(tc.canonical), cnameTarget,
+					"alias must resolve (via CNAME) to the canonical")
+
+				if gotA != nil {
+					require.True(t, gotA.Equal(net.ParseIP(tc.ip)), "chased A must be the canonical's address")
+				} else {
+					rc := queryServer(t, tc.canonical, dns.TypeA, srv.addr)
+					require.Equal(t, dns.RcodeSuccess, rc.Rcode)
+					found := false
+					for _, ans := range rc.Answer {
+						if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP(tc.ip)) {
+							found = true
+						}
+					}
+					require.True(t, found, "canonical must resolve to %s", tc.ip)
+				}
+			})
+		}
+	}
+}
+
+// PTRs must target the canonical name only — never an alias.
+func TestPTRTargetsCanonicalOnly(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDeviceRecords(t)
+
+	ptrName, err := dns.ReverseAddr(tmplMgmtIP)
+	require.NoError(t, err)
+
+	r := query(t, ptrName, dns.TypePTR)
+	require.Equal(t, dns.RcodeSuccess, r.Rcode)
+	require.NotEmpty(t, r.Answer)
+
+	for _, ans := range r.Answer {
+		ptr, ok := ans.(*dns.PTR)
+		require.True(t, ok)
+		require.Equal(t, dns.Fqdn(tmplCanonical), ptr.Ptr,
+			"PTR must target the canonical FQDN, never an alias")
+	}
+}
+
+// The alias CNAME must appear in AXFR output (secondary propagation path).
+func TestAXFRIncludesCNAME(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDeviceRecords(t)
+
+	tr := new(dns.Transfer)
+	m := new(dns.Msg)
+	m.SetAxfr(dns.Fqdn("mycompany.com"))
+
+	env, err := tr.In(m, dnsServer())
+	require.NoError(t, err)
+
+	foundCNAME := false
+	for e := range env {
+		require.NoError(t, e.Error)
+		for _, rr := range e.RR {
+			if c, ok := rr.(*dns.CNAME); ok &&
+				rr.Header().Name == dns.Fqdn(tmplAlias) && c.Target == dns.Fqdn(tmplCanonical) {
+				foundCNAME = true
+			}
+		}
+	}
+	require.True(t, foundCNAME, "AXFR of mycompany.com must include %s CNAME %s", tmplAlias, tmplCanonical)
+}

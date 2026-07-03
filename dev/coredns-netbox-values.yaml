@@ -56,6 +56,16 @@ zoneDiscovery:
 stripDCLabel: true
 domainSuffix: mycompany.com
 
+# Device name templates (issue #60): the seeded devices dc1-h1a-r10N-prod-hv-0N
+# get canonical names under mycompany.com plus a hvNN-... CNAME alias.
+deviceNameParsers:
+  - '^(?P<dc>[a-z0-9]+)-(?P<hall>[a-z]+[0-9][a-z0-9]*)-r(?P<rack>[0-9]+)-(?P<env>prod|mgmt|staging)-(?P<role>[a-z][a-z0-9-]*?)-(?P<idx>[0-9]+)$'
+nameFormats:
+  zone: '{{.domain}}'
+  canonical: '{{.name}}.{{template "zone" .}}'
+  aliases:
+    - '{{.role}}{{.idx}}-{{.dc}}-{{.hall}}-r{{.rack}}.{{template "zone" .}}'
+
 # DNS metadata
 primaryNS: ns1.mycompany.com.
 adminEmail: admin.mycompany.com.

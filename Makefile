@@ -48,6 +48,7 @@ test.unit:
 # test.e2e: raw test runner — used by CI (which sets up the environment separately)
 test.e2e:
 	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken \
+	NAME_TEMPLATES=true \
 	COREDNS_RELOAD_ADDR=127.0.0.1:18054 \
 	DNS_POD0=127.0.0.1:15360 \
 	DNS_POD1=127.0.0.1:15361 \
