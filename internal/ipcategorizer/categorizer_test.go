@@ -3,6 +3,7 @@ package ipcategorizer
 import (
 	"testing"
 
+	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -289,4 +290,86 @@ func TestExtractZone(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// newTestFormatter returns the same formatter configuration used in nameformat
+// package tests, suitable for exercising DeviceDNSToRecords with real-world
+// patterns.
+func newTestFormatter(t *testing.T) *nameformat.Formatter {
+	t.Helper()
+	f, err := nameformat.New(
+		[]string{
+			// standard device with env: dc1-h2a-r101-prod-hv-01
+			`^(?P<dc>[a-z0-9]+)-(?P<hall>[a-z]+[0-9][a-z0-9]*)-r(?P<rack>[0-9]+)-(?P<env>prod|mgmt|staging)-(?P<role>[a-z][a-z0-9-]*?)-(?P<idx>[0-9]+)$`,
+			// no hall: site01-r101-pdu-left-01
+			`^(?P<dc>[a-z0-9]+)-r(?P<rack>[0-9]+)-(?P<role>[a-z][a-z0-9-]*?)-(?P<idx>[0-9]+)$`,
+		},
+		`{{.name}}.{{template "zone" .}}`,
+		[]string{`{{.role}}{{.idx}}-{{.dc}}{{if .hall}}-{{.hall}}{{end}}-r{{.rack}}.{{template "zone" .}}`},
+		`{{.dc}}{{if .hall}}-{{alphaPrefix .hall}}{{end}}.{{.domain}}`,
+		"example.org",
+	)
+	require.NoError(t, err)
+	return f
+}
+
+func TestDeviceDNSToRecordsWithFormatter(t *testing.T) {
+	formatter := newTestFormatter(t)
+
+	deviceDNS := map[string]*DeviceDNSRecords{
+		"dc1-h2a-r101-prod-hv-01": {
+			DeviceName: "dc1-h2a-r101-prod-hv-01",
+			Zone:       "dc1-h.example.org", // legacy zone; ignored when the parser matches
+			PrimaryIP:  &netboxclient.IPRecord{Address: "10.0.0.1", Family: 4, InterfaceName: "mgmt0"},
+			BMCIP:      &netboxclient.IPRecord{Address: "10.0.8.1", Family: 4, InterfaceName: "bmc0"},
+		},
+		// does not match the parser -> legacy naming, no aliases
+		"core-router-wan": {
+			DeviceName: "core-router-wan",
+			Zone:       "core.example.org",
+			PrimaryIP:  &netboxclient.IPRecord{Address: "10.0.0.9", Family: 4},
+		},
+	}
+
+	records := DeviceDNSToRecords(deviceDNS, formatter)
+
+	byName := map[string]netboxclient.IPRecord{}
+	for _, r := range records {
+		byName[r.DNSName] = r
+	}
+	require.Len(t, records, 5)
+
+	canonical := byName["dc1-h2a-r101-prod-hv-01.dc1-h.example.org"]
+	assert.Equal(t, "10.0.0.1", canonical.Address, "primary A at canonical name")
+	assert.Empty(t, canonical.Type)
+
+	bmc := byName["dc1-h2a-r101-prod-hv-01-bmc.dc1-h.example.org"]
+	assert.Equal(t, "10.0.8.1", bmc.Address, "BMC A at canonical-bmc name")
+
+	alias := byName["hv01-dc1-h2a-r101.dc1-h.example.org"]
+	assert.Equal(t, netboxclient.RecordTypeCNAME, alias.Type)
+	assert.Equal(t, "dc1-h2a-r101-prod-hv-01.dc1-h.example.org", alias.CNAMETarget)
+	assert.Equal(t, "dc1-h2a-r101-prod-hv-01", alias.DeviceName)
+
+	bmcAlias := byName["hv01-dc1-h2a-r101-bmc.dc1-h.example.org"]
+	assert.Equal(t, netboxclient.RecordTypeCNAME, bmcAlias.Type)
+	assert.Equal(t, "dc1-h2a-r101-prod-hv-01-bmc.dc1-h.example.org", bmcAlias.CNAMETarget)
+
+	legacy := byName["core-router-wan.core.example.org"]
+	assert.Equal(t, "10.0.0.9", legacy.Address, "non-matching device keeps legacy name")
+}
+
+func TestDeviceDNSToRecordsNilFormatterIsLegacy(t *testing.T) {
+	deviceDNS := map[string]*DeviceDNSRecords{
+		"dev1": {
+			DeviceName: "dev1",
+			Zone:       "example.org",
+			PrimaryIP:  &netboxclient.IPRecord{Address: "10.0.0.1", Family: 4},
+			BMCIP:      &netboxclient.IPRecord{Address: "10.0.8.1", Family: 4},
+		},
+	}
+	records := DeviceDNSToRecords(deviceDNS, nil)
+	require.Len(t, records, 2)
+	assert.Equal(t, "dev1.example.org", records[0].DNSName)
+	assert.Equal(t, "dev1-bmc.example.org", records[1].DNSName)
 }
