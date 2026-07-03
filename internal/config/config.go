@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pallotron/coredns-netbox/internal/nameformat"
 )
 
 // Config holds the sidecar configuration populated from environment variables.
@@ -45,6 +47,15 @@ type Config struct {
 	// DNS domain configuration
 	DomainSuffix  string
 	StripDCLabel  bool
+
+	// Device name parsing and templating (issue #60). Parsers is an ordered
+	// list of RE2 regexes with named capture groups (first match wins);
+	// formats are text/template strings rendering complete FQDNs. See
+	// internal/nameformat.
+	DeviceNameParsers   []string
+	NameFormatCanonical string
+	NameFormatAliases   []string
+	NameFormatZone      string
 
 	// Reverse zone configuration
 	EnableReverseZones bool
@@ -91,6 +102,12 @@ func Load() (*Config, error) {
 		// DNS domain configuration
 		DomainSuffix: envOrDefault("DOMAIN_SUFFIX", "example.org"),
 		StripDCLabel: envOrDefault("STRIP_DC_LABEL", "false") == "true",
+
+		// Device name parsing and templating (issue #60)
+		DeviceNameParsers:   nameformat.SplitLines(os.Getenv("DEVICE_NAME_PARSERS")),
+		NameFormatCanonical: os.Getenv("NAME_FORMAT_CANONICAL"),
+		NameFormatAliases:   nameformat.SplitLines(os.Getenv("NAME_FORMAT_ALIASES")),
+		NameFormatZone:      os.Getenv("NAME_FORMAT_ZONE"),
 
 		// Reverse zone defaults
 		EnableReverseZones: envOrDefault("ENABLE_REVERSE_ZONES", "true") == "true",

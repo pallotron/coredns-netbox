@@ -40,6 +40,10 @@ var allEnvKeys = []string{
 	"REVERSE_ZONES_IPV6",
 	"GRPC_ADDR",
 	"GRPC_AUTH_TOKEN",
+	"DEVICE_NAME_PARSERS",
+	"NAME_FORMAT_CANONICAL",
+	"NAME_FORMAT_ALIASES",
+	"NAME_FORMAT_ZONE",
 }
 
 // clearEnv unsets all config-related env vars to ensure test isolation.
@@ -251,4 +255,36 @@ func TestGRPCConfigDefaults(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ":8083", cfg.GRPCAddr)
 	assert.Equal(t, "", cfg.GRPCAuthToken)
+}
+
+func TestLoadNameFormatSettings(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test")
+	t.Setenv("DEVICE_NAME_PARSERS", "^(?P<dc>[a-z]+)$\n\n ^(?P<x>[a-z]+)-r(?P<rack>[0-9]+)$ ")
+	t.Setenv("NAME_FORMAT_CANONICAL", "{{.name}}.{{.domain}}")
+	t.Setenv("NAME_FORMAT_ALIASES", "{{.x}}.{{.domain}}\n{{.dc}}.{{.domain}}")
+	t.Setenv("NAME_FORMAT_ZONE", "{{.domain}}")
+
+	c, err := Load()
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"^(?P<dc>[a-z]+)$", "^(?P<x>[a-z]+)-r(?P<rack>[0-9]+)$"}, c.DeviceNameParsers)
+	assert.Equal(t, "{{.name}}.{{.domain}}", c.NameFormatCanonical)
+	assert.Equal(t, []string{"{{.x}}.{{.domain}}", "{{.dc}}.{{.domain}}"}, c.NameFormatAliases)
+	assert.Equal(t, "{{.domain}}", c.NameFormatZone)
+}
+
+func TestLoadNameFormatDefaultsEmpty(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test")
+	t.Setenv("DEVICE_NAME_PARSERS", "")
+	t.Setenv("NAME_FORMAT_CANONICAL", "")
+	t.Setenv("NAME_FORMAT_ALIASES", "")
+	t.Setenv("NAME_FORMAT_ZONE", "")
+	c, err := Load()
+	require.NoError(t, err)
+	assert.Empty(t, c.DeviceNameParsers)
+	assert.Empty(t, c.NameFormatCanonical)
+	assert.Empty(t, c.NameFormatAliases)
+	assert.Empty(t, c.NameFormatZone)
 }
