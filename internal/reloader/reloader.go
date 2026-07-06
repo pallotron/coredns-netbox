@@ -7,6 +7,7 @@ import (
 	"time"
 
 	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -16,12 +17,28 @@ import (
 type Reloader struct {
 	addrs []string
 	token string
+
+	// RetryDelays are the waits between attempts for one address; a push is
+	// tried len(RetryDelays)+1 times before giving up. The first push after
+	// a rollout often races CoreDNS startup, and a dropped push defers zone
+	// load to CoreDNS's fallback poll interval.
+	RetryDelays []time.Duration
+
+	// ResultCounter counts the final outcome per address (label: result =
+	// success|error, after retries). RetryCounter counts individual retry
+	// attempts. Both are optional; nil disables the instrumentation.
+	ResultCounter *prometheus.CounterVec
+	RetryCounter  prometheus.Counter
 }
 
 // New creates a Reloader that will call Reload() on all addrs (host:port).
 // token is the bearer token for gRPC auth; empty means no auth header sent.
 func New(addrs []string, token string) *Reloader {
-	return &Reloader{addrs: addrs, token: token}
+	return &Reloader{
+		addrs:       addrs,
+		token:       token,
+		RetryDelays: []time.Duration{time.Second, 2 * time.Second, 4 * time.Second},
+	}
 }
 
 // Reload fans out Reload() RPCs to all configured addresses in parallel.
@@ -38,6 +55,9 @@ func (r *Reloader) Reload(ctx context.Context) {
 			defer wg.Done()
 			if err := r.reloadOne(ctx, addr); err != nil {
 				slog.Warn("coredns reload failed", "addr", addr, "err", err)
+				r.countResult("error")
+			} else {
+				r.countResult("success")
 			}
 		}(addr)
 	}
@@ -45,6 +65,32 @@ func (r *Reloader) Reload(ctx context.Context) {
 }
 
 func (r *Reloader) reloadOne(ctx context.Context, addr string) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		if err = r.pushOne(ctx, addr); err == nil {
+			return nil
+		}
+		if attempt >= len(r.RetryDelays) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(r.RetryDelays[attempt]):
+		}
+		if r.RetryCounter != nil {
+			r.RetryCounter.Inc()
+		}
+	}
+}
+
+func (r *Reloader) countResult(result string) {
+	if r.ResultCounter != nil {
+		r.ResultCounter.WithLabelValues(result).Inc()
+	}
+}
+
+func (r *Reloader) pushOne(ctx context.Context, addr string) error {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err

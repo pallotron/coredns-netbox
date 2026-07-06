@@ -1,4 +1,4 @@
 bin/
 .worktrees/
-sidecar
-analyzer
+/sidecar
+/analyzer

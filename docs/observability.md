@@ -1,5 +1,12 @@
 # Observability
 
+## Health Endpoints
+
+The sidecar serves two probe endpoints on `HEALTH_ADDR` (`:8082` by default):
+
+- `/livez` — returns 200 as soon as the HTTP server is listening. Use for the liveness probe; it only asserts the process is up, so a slow first NetBox fetch is never mistaken for a hung process.
+- `/healthz` — returns 200 after the first successful NetBox fetch and zone merge. Use for the readiness probe; zone-init containers also wait on it before fetching zone files.
+
 ## Prometheus Metrics
 
 The sidecar exposes a Prometheus metrics endpoint on the same port as `/healthz` (`:8082` by default, controlled by `HEALTH_ADDR`). In Kubernetes the port is named `sidecar-health` and exposed via the Service when `metrics.enabled: true`.
@@ -21,6 +28,8 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_zone_write_errors_total` | Counter | — | Zone file write failures |
 | `netbox_sidecar_netbox_fetch_retries_total` | Counter | — | Netbox HTTP request retries (excludes first attempt) |
 | `netbox_sidecar_zone_staleness_seconds` | Gauge | — | Seconds since the last successful poll (0 when healthy) |
+| `netbox_sidecar_coredns_reload_total` | Counter | `result=success\|error` | CoreDNS reload pushes per target address, final outcome after retries |
+| `netbox_sidecar_coredns_reload_retries_total` | Counter | — | CoreDNS reload push retries (excludes first attempt) |
 
 A Prometheus `ServiceMonitor` can be enabled via `metrics.serviceMonitor.enabled: true` for automatic scrape discovery in clusters running the Prometheus Operator.
 
