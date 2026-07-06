@@ -15,6 +15,8 @@ type Sidecar struct {
 	ZoneWriteErrorsTotal        prometheus.Counter
 	NetboxFetchRetriesTotal     prometheus.Counter
 	ZoneStalenessSeconds        prometheus.Gauge
+	CoreDNSReloadTotal          *prometheus.CounterVec
+	CoreDNSReloadRetriesTotal   prometheus.Counter
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -77,6 +79,16 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Name: "netbox_sidecar_zone_staleness_seconds",
 			Help: "Seconds since the last successful zone write. Zero on success; rises on Netbox outage.",
 		}),
+
+		CoreDNSReloadTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "netbox_sidecar_coredns_reload_total",
+			Help: "Total CoreDNS reload pushes per target address, partitioned by final result (after retries).",
+		}, []string{"result"}),
+
+		CoreDNSReloadRetriesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "netbox_sidecar_coredns_reload_retries_total",
+			Help: "Total CoreDNS reload push retry attempts (excludes the initial attempt).",
+		}),
 	}
 
 	reg.MustRegister(
@@ -91,6 +103,8 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.ZoneWriteErrorsTotal,
 		m.NetboxFetchRetriesTotal,
 		m.ZoneStalenessSeconds,
+		m.CoreDNSReloadTotal,
+		m.CoreDNSReloadRetriesTotal,
 	)
 
 	return m

@@ -197,15 +197,7 @@ func main() {
 	if !cfg.RunOnce {
 		var healthy atomic.Bool
 		mux := http.NewServeMux()
-		mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-			if healthy.Load() {
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte("ok"))
-			} else {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_, _ = w.Write([]byte("not ok"))
-			}
-		})
+		registerHealth(mux, &healthy)
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 		zoneserver.Register(mux, cfg.ZoneDir)
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
@@ -237,6 +229,8 @@ func main() {
 	}
 
 	rl := reloader.New(cfg.CoreDNSReloadAddrs, cfg.CoreDNSReloadToken)
+	rl.ResultCounter = m.CoreDNSReloadTotal
+	rl.RetryCounter = m.CoreDNSReloadRetriesTotal
 
 	// Run the poll loop
 	if err := run(ctx, cfg, client, categorizer, formatter, forwardDisc, reverseDisc, mgr, m, markReady,
@@ -244,6 +238,29 @@ func main() {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// registerHealth adds the probe endpoints to mux. /livez answers 200
+// unconditionally: the process serving HTTP is all that liveness may
+// assert, since the first NetBox fetch can legitimately take longer than
+// any liveness window and killing the sidecar mid-fetch restarts it from
+// scratch. /healthz turns 200 only after the first successful fetch+merge
+// (ready) — it is the readiness signal, and zone-init containers wait on
+// it before fetching zone files.
+func registerHealth(mux *http.ServeMux, ready *atomic.Bool) {
+	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if ready.Load() {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("not ok"))
+		}
+	})
 }
 
 // runOnceResult decides the outcome of --run-once mode.

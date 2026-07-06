@@ -283,9 +283,12 @@ spec:
               {{- if .Values.hostPort.sidecar }}
               hostPort: 8083
               {{- end }}
+          # Liveness only asserts the process is up (/livez): the first NetBox
+          # fetch can exceed any liveness window on large/slow instances, and
+          # killing the sidecar mid-fetch restarts the fetch from scratch.
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: sidecar-health
             initialDelaySeconds: 10
             periodSeconds: 30
