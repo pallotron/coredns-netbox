@@ -146,3 +146,66 @@ func TestReloader_SendsAuthToken(t *testing.T) {
 	assert.Equal(t, 1, srv.called)
 	assert.Equal(t, "bearer testtoken", gotAuth)
 }
+
+// gaugeValue reads the current value of a gauge without the testutil module.
+func gaugeValue(t *testing.T, g prometheus.Gauge) float64 {
+	t.Helper()
+	var m dto.Metric
+	require.NoError(t, g.Write(&m))
+	return m.GetGauge().GetValue()
+}
+
+// A push that exhausts its retries must leave the address dirty so the next
+// Reconcile call retries it; a successful push clears the dirty state and
+// makes further Reconcile calls a no-op.
+func TestReloader_ReconcileRetriesDirtyAddress(t *testing.T) {
+	addr, srv := startFakeServer(t)
+	srv.failFirst = 2
+
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+	r := reloader.New([]string{addr}, "")
+	r.ResultCounter = m.CoreDNSReloadTotal
+	r.DirtyGauge = m.CoreDNSReloadDirtyTargets
+	r.RetryDelays = nil // one attempt per cycle
+
+	r.Reload(context.Background()) // fails, addr stays dirty
+	assert.Equal(t, 1, srv.called)
+	assert.Equal(t, 1.0, gaugeValue(t, m.CoreDNSReloadDirtyTargets))
+
+	r.Reconcile(context.Background()) // fails again, still dirty
+	assert.Equal(t, 2, srv.called)
+	assert.Equal(t, 1.0, gaugeValue(t, m.CoreDNSReloadDirtyTargets))
+
+	r.Reconcile(context.Background()) // succeeds, clears dirty
+	assert.Equal(t, 3, srv.called)
+	assert.Equal(t, 0.0, gaugeValue(t, m.CoreDNSReloadDirtyTargets))
+
+	r.Reconcile(context.Background())
+	assert.Equal(t, 3, srv.called, "reconcile on a clean reloader must not push")
+
+	assert.Equal(t, 2.0, counterValue(t, m.CoreDNSReloadTotal.WithLabelValues("error")))
+	assert.Equal(t, 1.0, counterValue(t, m.CoreDNSReloadTotal.WithLabelValues("success")))
+}
+
+// Reload represents a zone change: it must push to every address, including
+// ones already clean from a previous cycle.
+func TestReloader_ReloadRemarksCleanAddrs(t *testing.T) {
+	addr, srv := startFakeServer(t)
+
+	r := reloader.New([]string{addr}, "")
+	r.Reload(context.Background())
+	assert.Equal(t, 1, srv.called)
+
+	r.Reload(context.Background())
+	assert.Equal(t, 2, srv.called, "a new zone change must push to clean addrs too")
+}
+
+// Reconcile before any Reload must be a no-op: nothing is dirty yet.
+func TestReloader_ReconcileBeforeReloadIsNoOp(t *testing.T) {
+	addr, srv := startFakeServer(t)
+
+	r := reloader.New([]string{addr}, "")
+	r.Reconcile(context.Background())
+	assert.Equal(t, 0, srv.called)
+}

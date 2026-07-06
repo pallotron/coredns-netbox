@@ -231,6 +231,7 @@ func main() {
 	rl := reloader.New(cfg.CoreDNSReloadAddrs, cfg.CoreDNSReloadToken)
 	rl.ResultCounter = m.CoreDNSReloadTotal
 	rl.RetryCounter = m.CoreDNSReloadRetriesTotal
+	rl.DirtyGauge = m.CoreDNSReloadDirtyTargets
 
 	// Run the poll loop
 	if err := run(ctx, cfg, client, categorizer, formatter, forwardDisc, reverseDisc, mgr, m, markReady,
@@ -380,6 +381,8 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				}
 				if changed {
 					rl.Reload(ctx)
+				} else {
+					rl.Reconcile(ctx)
 				}
 			}
 

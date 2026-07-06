@@ -17,6 +17,7 @@ type Sidecar struct {
 	ZoneStalenessSeconds        prometheus.Gauge
 	CoreDNSReloadTotal          *prometheus.CounterVec
 	CoreDNSReloadRetriesTotal   prometheus.Counter
+	CoreDNSReloadDirtyTargets   prometheus.Gauge
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -89,6 +90,11 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Name: "netbox_sidecar_coredns_reload_retries_total",
 			Help: "Total CoreDNS reload push retry attempts (excludes the initial attempt).",
 		}),
+
+		CoreDNSReloadDirtyTargets: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_coredns_reload_dirty_targets",
+			Help: "CoreDNS addresses whose last reload push has not succeeded yet. Non-zero for more than a few poll cycles means a pod is not accepting reloads.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -105,6 +111,7 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.ZoneStalenessSeconds,
 		m.CoreDNSReloadTotal,
 		m.CoreDNSReloadRetriesTotal,
+		m.CoreDNSReloadDirtyTargets,
 	)
 
 	return m
