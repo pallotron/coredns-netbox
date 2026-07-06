@@ -27,7 +27,7 @@ func TestGenerateZone(t *testing.T) {
 		{DNSName: "host3.example.org", Address: "2001:db8::1", Family: 6},
 	}
 
-	content, changed, err := gen.Generate(records)
+	content, changed, _, err := gen.Generate(records)
 	require.NoError(t, err, "Generate() error")
 	if !changed {
 		t.Error("expected changed=true on first generation")
@@ -53,7 +53,7 @@ func TestGenerateZone(t *testing.T) {
 	}
 
 	// Same records should not trigger a change
-	_, changed, err = gen.Generate(records)
+	_, changed, _, err = gen.Generate(records)
 	require.NoError(t, err, "Generate() error")
 	if changed {
 		t.Error("expected changed=false for identical records")
@@ -63,7 +63,7 @@ func TestGenerateZone(t *testing.T) {
 	records = append(records, netboxclient.IPRecord{
 		DNSName: "host4.example.org", Address: "10.0.0.4", Family: 4,
 	})
-	content, changed, err = gen.Generate(records)
+	content, changed, _, err = gen.Generate(records)
 	require.NoError(t, err, "Generate() error")
 	if !changed {
 		t.Error("expected changed=true for new records")
@@ -106,7 +106,7 @@ func TestGenerateSOATimers(t *testing.T) {
 			TTL:        300,
 		}, "")
 
-		content, _, err := gen.Generate(records)
+		content, _, _, err := gen.Generate(records)
 		require.NoError(t, err, "Generate() error")
 
 		assert.Contains(t, content, "3600      ; refresh")
@@ -124,7 +124,7 @@ func TestGenerateSOATimers(t *testing.T) {
 			SOA:        SOATimers{Refresh: 300, Retry: 60, Expire: 1209600, Minimum: 3600},
 		}, "")
 
-		content, _, err := gen.Generate(records)
+		content, _, _, err := gen.Generate(records)
 		require.NoError(t, err, "Generate() error")
 
 		assert.Contains(t, content, "300       ; refresh")
@@ -181,7 +181,7 @@ func TestGenerateReverseZone(t *testing.T) {
 		{Address: "4.2", DNSName: "server2.example.com", Family: 4},
 	}
 
-	content, changed, err := gen.Generate(records)
+	content, changed, _, err := gen.Generate(records)
 	require.NoError(t, err, "Generate() error")
 	if !changed {
 		t.Error("expected changed=true on first generation")
@@ -222,7 +222,7 @@ func TestGenerateForwardZone(t *testing.T) {
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
 	}
 
-	content, _, err := gen.Generate(records)
+	content, _, _, err := gen.Generate(records)
 	require.NoError(t, err, "Generate() error")
 
 	// Verify A record is present
@@ -274,7 +274,7 @@ host1 IN A 10.0.0.1
 		{DNSName: "host1.example.org", Address: "10.0.0.2", Family: 4}, // Different IP
 	}
 
-	content, changed, err := gen.Generate(records)
+	content, changed, _, err := gen.Generate(records)
 	require.NoError(t, err)
 	assert.True(t, changed, "should detect change when IP differs")
 
@@ -303,7 +303,7 @@ func TestSerialPersistenceNoFile(t *testing.T) {
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
 	}
 
-	content, changed, err := gen.Generate(records)
+	content, changed, _, err := gen.Generate(records)
 	require.NoError(t, err)
 	assert.True(t, changed, "should detect change on first generation")
 
@@ -329,7 +329,7 @@ func TestGeneratePerRecordTTL(t *testing.T) {
 		{DNSName: "host2.example.org", Address: "10.0.0.2", Family: 4, TTL: 60}, // per-record TTL
 	}
 
-	content, changed, err := g.Generate(records)
+	content, changed, _, err := g.Generate(records)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -352,13 +352,13 @@ func TestGenerateTTLChangeTriggersUpdate(t *testing.T) {
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4, TTL: 60},
 	}
 
-	_, changed, err := g.Generate(records)
+	_, changed, _, err := g.Generate(records)
 	require.NoError(t, err)
 	require.True(t, changed, "first generate should always change")
 
 	// Same name/address/family but different TTL — must trigger update
 	records[0].TTL = 120
-	content, changed, err := g.Generate(records)
+	content, changed, _, err := g.Generate(records)
 	require.NoError(t, err)
 	assert.True(t, changed, "TTL change must trigger zone regeneration")
 	assert.Contains(t, content, "host1 120 IN A 10.0.0.1")
@@ -397,7 +397,7 @@ func TestGenerateCNAME(t *testing.T) {
 		{DNSName: "alias2.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org", TTL: 60},
 	}
 
-	content, changed, err := g.Generate(records)
+	content, changed, _, err := g.Generate(records)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -418,18 +418,18 @@ func TestGenerateChangesOnCNAMERepoint(t *testing.T) {
 		{DNSName: "host2.example.org", Address: "10.0.0.2", Family: 4},
 		{DNSName: "alias1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "host1.example.org"},
 	}
-	_, changed, err := g.Generate(records)
+	_, changed, _, err := g.Generate(records)
 	require.NoError(t, err)
 	require.True(t, changed)
 
 	// Same input again: no change.
-	_, changed, err = g.Generate(records)
+	_, changed, _, err = g.Generate(records)
 	require.NoError(t, err)
 	assert.False(t, changed, "identical input must not regenerate")
 
 	// Re-point the alias: must regenerate.
 	records[2].CNAMETarget = "host2.example.org"
-	content, changed, err := g.Generate(records)
+	content, changed, _, err := g.Generate(records)
 	require.NoError(t, err)
 	assert.True(t, changed, "re-pointed alias must regenerate the zone")
 	assert.Contains(t, content, "alias1 IN CNAME host2.example.org.")
@@ -455,19 +455,19 @@ func TestGenerateIdempotency(t *testing.T) {
 	}
 
 	// First generation
-	content1, changed, err := gen.Generate(records)
+	content1, changed, _, err := gen.Generate(records)
 	require.NoError(t, err)
 	assert.True(t, changed, "should detect change on first generation")
 	assert.NotEmpty(t, content1, "should generate content")
 
 	// Second generation with same records (should be unchanged)
-	content2, changed, err := gen.Generate(records)
+	content2, changed, _, err := gen.Generate(records)
 	require.NoError(t, err)
 	assert.False(t, changed, "should not detect change when records identical")
 	assert.Empty(t, content2, "should return empty content when unchanged")
 
 	// Third generation with same records (verify stability)
-	content3, changed, err := gen.Generate(records)
+	content3, changed, _, err := gen.Generate(records)
 	require.NoError(t, err)
 	assert.False(t, changed, "should remain unchanged on third generation")
 	assert.Empty(t, content3, "should return empty content when unchanged")
@@ -481,7 +481,7 @@ func TestGenerateIdempotency(t *testing.T) {
 		records[2], // host2
 	}
 
-	content4, changed, err := gen.Generate(shuffledRecords)
+	content4, changed, _, err := gen.Generate(shuffledRecords)
 	require.NoError(t, err)
 	assert.False(t, changed, "should not detect change when records shuffled")
 	assert.Empty(t, content4, "should return empty content when records just shuffled")
@@ -498,8 +498,9 @@ func TestGenerateDropsCollidingCNAME(t *testing.T) {
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
 		{DNSName: "host1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "other.example.org"},
 	}
-	content, _, err := g.Generate(records)
+	content, _, count, err := g.Generate(records)
 	require.NoError(t, err)
 	assert.Contains(t, content, "host1 IN A 10.0.0.1")
 	assert.NotContains(t, content, "CNAME", "colliding CNAME must be dropped")
+	assert.Equal(t, 1, count, "count must reflect the post-filter record set, not the input")
 }
