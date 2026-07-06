@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
@@ -66,9 +67,50 @@ host2 IN A 10.2.0.1
 	// non-zone file should be ignored
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dynamic.json"), []byte("{}"), 0o644))
 
-	zones, err := loadZoneDir(dir)
+	zones, _, err := loadZoneDir(dir, nil)
 	require.NoError(t, err)
 	assert.Len(t, zones, 2)
 	assert.Contains(t, zones, "a.mycompany.com.")
 	assert.Contains(t, zones, "b.mycompany.com.")
+}
+
+func TestLoadZoneDir_ReusesUnchangedZones(t *testing.T) {
+	dir := t.TempDir()
+	zoneV1 := `$ORIGIN a.mycompany.com.
+$TTL 300
+@ IN SOA ns1.a.mycompany.com. admin.a.mycompany.com. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.a.mycompany.com.
+host1 IN A 10.1.0.1
+`
+	zoneV2 := `$ORIGIN a.mycompany.com.
+$TTL 300
+@ IN SOA ns1.a.mycompany.com. admin.a.mycompany.com. (2026052102 3600 900 604800 86400)
+@ IN NS ns1.a.mycompany.com.
+host2 IN A 10.1.0.2
+`
+	path := filepath.Join(dir, "db.a.mycompany.com")
+	require.NoError(t, os.WriteFile(path, []byte(zoneV1), 0o644))
+
+	zones1, cache1, err := loadZoneDir(dir, nil)
+	require.NoError(t, err)
+
+	t.Run("unchanged file is reused", func(t *testing.T) {
+		zones2, cache2, err := loadZoneDir(dir, cache1)
+		require.NoError(t, err)
+		assert.Same(t, zones1["a.mycompany.com."], zones2["a.mycompany.com."],
+			"unchanged zone must be reused, not re-parsed")
+		cache1 = cache2
+	})
+
+	t.Run("changed file is re-parsed", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(path, []byte(zoneV2), 0o644))
+		// Force a distinct mtime: write granularity can be sub-second.
+		newTime := time.Now().Add(2 * time.Second)
+		require.NoError(t, os.Chtimes(path, newTime, newTime))
+
+		zones3, _, err := loadZoneDir(dir, cache1)
+		require.NoError(t, err)
+		assert.NotSame(t, zones1["a.mycompany.com."], zones3["a.mycompany.com."])
+		assert.Contains(t, zones3["a.mycompany.com."].records, "host2.a.mycompany.com.")
+	})
 }

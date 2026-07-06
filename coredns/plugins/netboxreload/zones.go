@@ -80,24 +80,50 @@ func loadZoneFile(path string) (*zone, error) {
 	return parseZoneContent(base, data)
 }
 
+// cachedZone pairs a parsed zone with the validator that identified the
+// source content it was parsed from: the Last-Modified header for HTTP
+// fetches, mtime+size for directory loads. When the validator still matches
+// on the next reload, the parsed zone is reused instead of re-parsed —
+// safe because zones are immutable after construction.
+type cachedZone struct {
+	validator string
+	z         *zone
+}
+
 // loadZoneDir scans dir for files named db.* and loads each as a zone.
-// Returns a map from zone origin (e.g. "mycompany.com.") to *zone.
-func loadZoneDir(dir string) (map[string]*zone, error) {
+// Files whose mtime+size match an entry in prev (keyed by filename) are
+// reused without re-reading or re-parsing. The sidecar only rewrites a zone
+// file when its content hash changes, so mtime+size tracks content.
+// Returns the zones keyed by origin (e.g. "mycompany.com.") plus the cache
+// to pass as prev on the next load.
+func loadZoneDir(dir string, prev map[string]cachedZone) (map[string]*zone, map[string]cachedZone, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read zone dir %s: %w", dir, err)
+		return nil, nil, fmt.Errorf("read zone dir %s: %w", dir, err)
 	}
 
 	zones := make(map[string]*zone)
+	cache := make(map[string]cachedZone)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), "db.") {
 			continue
 		}
+		info, err := e.Info()
+		if err != nil {
+			return nil, nil, fmt.Errorf("stat %s: %w", e.Name(), err)
+		}
+		validator := fmt.Sprintf("%d|%d", info.ModTime().UnixNano(), info.Size())
+		if c, ok := prev[e.Name()]; ok && c.validator == validator {
+			zones[c.z.origin] = c.z
+			cache[e.Name()] = c
+			continue
+		}
 		z, err := loadZoneFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		zones[z.origin] = z
+		cache[e.Name()] = cachedZone{validator: validator, z: z}
 	}
-	return zones, nil
+	return zones, cache, nil
 }

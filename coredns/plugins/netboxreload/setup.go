@@ -25,7 +25,7 @@ func setup(c *caddy.Controller) error {
 	})
 
 	c.OnStartup(func() error {
-		if err := p.reloadZones(); err != nil {
+		if err := p.reloadZones("startup"); err != nil {
 			return plugin.Error(pluginName, err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
