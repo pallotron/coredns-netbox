@@ -30,6 +30,7 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_zone_staleness_seconds` | Gauge | — | Seconds since the last successful poll (0 when healthy) |
 | `netbox_sidecar_coredns_reload_total` | Counter | `result=success\|error` | CoreDNS reload pushes per target address, final outcome after retries |
 | `netbox_sidecar_coredns_reload_retries_total` | Counter | — | CoreDNS reload push retries (excludes first attempt) |
+| `netbox_sidecar_coredns_reload_dirty_targets` | Gauge | — | CoreDNS addresses whose last reload push has not succeeded yet; re-pushed on every poll cycle, so non-zero for more than a few cycles means a pod is not accepting reloads |
 
 A Prometheus `ServiceMonitor` can be enabled via `metrics.serviceMonitor.enabled: true` for automatic scrape discovery in clusters running the Prometheus Operator.
 
