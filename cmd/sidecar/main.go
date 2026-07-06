@@ -327,14 +327,18 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	if changed, mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
 		slog.Warn("initial merge failed", "err", mergeErr)
 	} else {
-		if changed && !cfg.RunOnce {
-			rl.Reload(ctx)
-		}
 		lastSuccessTime = time.Now()
 		statusTracker.SetMergeWrite(time.Now())
+		// Readiness must flip before the reload push: CoreDNS's reload
+		// handler fetches zone data back through the sidecar Service, which
+		// only routes to ready pods. On a fresh rollout there is no other
+		// sidecar endpoint, so pushing first guarantees the fetch fails.
 		if !firstSuccess && markReady != nil {
 			firstSuccess = true
 			markReady()
+		}
+		if changed && !cfg.RunOnce {
+			rl.Reload(ctx)
 		}
 	}
 
@@ -365,16 +369,17 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				statusTracker.SetNetboxPoll(time.Now())
 			}
 			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
-				if changed {
-					rl.Reload(ctx)
-				}
 				lastSuccessTime = time.Now()
 				m.ZoneStalenessSeconds.Set(0)
 				statusTracker.SetMergeWrite(time.Now())
 				statusTracker.SetStaleness(0)
+				// Same ordering as the initial poll: ready before push.
 				if !firstSuccess && markReady != nil {
 					firstSuccess = true
 					markReady()
+				}
+				if changed {
+					rl.Reload(ctx)
 				}
 			}
 
