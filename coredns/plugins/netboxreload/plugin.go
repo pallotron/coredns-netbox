@@ -28,6 +28,9 @@ type Plugin struct {
 	mu         sync.RWMutex
 	zones      map[string]*zone // origin (e.g. "mycompany.com.") -> loaded zone
 	grpcServer *grpc.Server     // stored for graceful shutdown via stopGRPC
+
+	reloadMu  sync.Mutex            // serializes reloadZones (gRPC push vs fallback poll)
+	fileCache map[string]cachedZone // filename -> parsed zone + validator; guarded by reloadMu
 }
 
 func (p *Plugin) Name() string { return pluginName }
@@ -111,7 +114,7 @@ func (p *Plugin) pollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := p.reloadZones(); err != nil {
+			if err := p.reloadZones("poll"); err != nil {
 				slog.Warn("netboxreload: poll reload failed", "err", err)
 			}
 		}
@@ -120,23 +123,51 @@ func (p *Plugin) pollLoop(ctx context.Context) {
 
 // reloadZones re-reads zones and atomically swaps the in-memory zone map.
 // When SourceURL is set, zones are fetched over HTTP; otherwise they are
-// read from Dir. I/O happens before the lock is taken; the lock only guards
-// the swap. Both sources are fail-fast: if any zone fails to load, the
-// in-memory map is left unchanged (safe partial-write behaviour).
-func (p *Plugin) reloadZones() error {
+// read from Dir. Zones whose source content is unchanged (per fileCache
+// validators) are reused rather than re-parsed, so an unchanged reload does
+// no parsing and allocates no duplicate zone data. I/O happens before the
+// lock is taken; the lock only guards the swap. Both sources are fail-fast:
+// if any zone fails to load, the in-memory map is left unchanged (safe
+// partial-write behaviour). trigger labels the reload metrics
+// (grpc|poll|startup); reloadMu serializes concurrent callers.
+func (p *Plugin) reloadZones(trigger string) error {
+	p.reloadMu.Lock()
+	defer p.reloadMu.Unlock()
+
 	var newZones map[string]*zone
+	var newCache map[string]cachedZone
 	var err error
 	if p.SourceURL != "" {
-		newZones, err = fetchZonesFromURL(p.SourceURL)
+		newZones, newCache, err = fetchZonesFromURL(p.SourceURL, p.fileCache)
 	} else {
-		newZones, err = loadZoneDir(p.Dir)
+		newZones, newCache, err = loadZoneDir(p.Dir, p.fileCache)
 	}
 	if err != nil {
+		reloadTotal.WithLabelValues(trigger, "error").Inc()
 		return err
 	}
-	p.mu.Lock()
-	p.zones = newZones
-	p.mu.Unlock()
+
+	changed := len(newCache) != len(p.fileCache)
+	for name, c := range newCache {
+		if changed {
+			break
+		}
+		if old, ok := p.fileCache[name]; !ok || old.z != c.z {
+			changed = true
+		}
+	}
+	p.fileCache = newCache
+
+	result := "unchanged"
+	if changed {
+		result = "reloaded"
+		p.mu.Lock()
+		p.zones = newZones
+		p.mu.Unlock()
+	}
+	reloadTotal.WithLabelValues(trigger, result).Inc()
+	lastReloadTimestamp.SetToCurrentTime()
+	zonesLoaded.Set(float64(len(newZones)))
 	return nil
 }
 

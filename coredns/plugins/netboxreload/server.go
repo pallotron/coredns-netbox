@@ -22,7 +22,7 @@ type grpcReloadServer struct {
 // cluster-internal port (not exposed outside the pod/node) so network
 // isolation is the security boundary.
 func (s *grpcReloadServer) Reload(_ context.Context, _ *pb.ZoneReloadRequest) (*pb.ZoneReloadResponse, error) {
-	if err := s.plugin.reloadZones(); err != nil {
+	if err := s.plugin.reloadZones("grpc"); err != nil {
 		slog.Error("netboxreload: zone reload failed", "err", err)
 		return nil, status.Errorf(codes.Internal, "reload: %v", err)
 	}

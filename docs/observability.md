@@ -24,6 +24,18 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 
 A Prometheus `ServiceMonitor` can be enabled via `metrics.serviceMonitor.enabled: true` for automatic scrape discovery in clusters running the Prometheus Operator.
 
+## CoreDNS Plugin Metrics
+
+The `netboxreload` plugin exports its own metrics through the standard CoreDNS `prometheus` endpoint (`:9153` by default), alongside the built-in query metrics:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `coredns_netboxreload_reload_total` | Counter | `trigger=grpc\|poll\|startup`, `result=reloaded\|unchanged\|error` | Zone reload attempts; `unchanged` means all source content matched the previous load and nothing was re-parsed |
+| `coredns_netboxreload_last_reload_timestamp_seconds` | Gauge | — | Unix timestamp of the last successful reload check (including unchanged ones) |
+| `coredns_netboxreload_zones_loaded` | Gauge | — | Zones currently loaded in memory |
+
+In steady state expect `result="unchanged"` on nearly every poll tick; a growing `result="error"` rate means the plugin cannot reach its zone source.
+
 ## Dev Environment
 
 In the dev environment the sidecar metrics port is mapped to `127.0.0.1:18082`:
