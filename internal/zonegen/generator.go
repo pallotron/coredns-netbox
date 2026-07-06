@@ -80,15 +80,16 @@ func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
 }
 
 // Generate creates a zone file string from the given records.
-// Returns the zone content, whether it changed from the last generation, and any error.
-func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, error) {
+// Returns the zone content, whether it changed from the last generation, the
+// number of records in the zone after collision filtering, and any error.
+func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int, error) {
 	if g.config.Type == ZoneTypeForward {
 		records = resolveCNAMECollisions(records, g.config.Origin)
 	}
 	hash := hashRecords(records)
 	if hash == g.lastHash {
 		slog.Debug("zone unchanged (hash match)", "zone", g.config.Origin, "hash", hash[:8], "records", len(records))
-		return "", false, nil
+		return "", false, len(records), nil
 	}
 
 	if g.lastHash != "" {
@@ -163,7 +164,7 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, err
 	}
 
 	g.lastHash = hash
-	return b.String(), true, nil
+	return b.String(), true, len(records), nil
 }
 
 // WriteFile atomically writes the zone content to the specified path.
