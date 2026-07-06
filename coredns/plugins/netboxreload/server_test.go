@@ -23,7 +23,7 @@ $TTL 300
 host1 IN A 10.0.0.1
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v1), 0o644))
-	zones, err := loadZoneDir(dir)
+	zones, _, err := loadZoneDir(dir, nil)
 	require.NoError(t, err)
 	p := &Plugin{Dir: dir, zones: zones}
 

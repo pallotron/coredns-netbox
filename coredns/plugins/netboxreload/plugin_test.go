@@ -41,7 +41,7 @@ func newTestPlugin(t *testing.T, zoneContent, zoneName string) *Plugin {
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "db."+zoneName), []byte(zoneContent), 0o644))
-	zones, err := loadZoneDir(dir)
+	zones, _, err := loadZoneDir(dir, nil)
 	require.NoError(t, err)
 	return &Plugin{Dir: dir, zones: zones}
 }
@@ -222,7 +222,7 @@ $TTL 300
 @ IN NS ns1.mycompany.com.
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(content), 0o644))
-	zones, err := loadZoneDir(dir)
+	zones, _, err := loadZoneDir(dir, nil)
 	require.NoError(t, err)
 	p := &Plugin{Dir: dir, zones: zones, PollInterval: 10 * time.Millisecond}
 
@@ -308,7 +308,7 @@ $TTL 300
 old IN A 10.0.0.1
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v1), 0o644))
-	zones, err := loadZoneDir(dir)
+	zones, _, err := loadZoneDir(dir, nil)
 	require.NoError(t, err)
 	p := &Plugin{Dir: dir, zones: zones}
 
@@ -320,10 +320,35 @@ $TTL 300
 new IN A 10.0.0.2
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(v2), 0o644))
-	require.NoError(t, p.reloadZones())
+	require.NoError(t, p.reloadZones("poll"))
 
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	assert.NotContains(t, p.zones["mycompany.com."].records, "old.mycompany.com.")
 	assert.Contains(t, p.zones["mycompany.com."].records, "new.mycompany.com.")
+}
+
+func TestReloadZones_UnchangedKeepsZones(t *testing.T) {
+	dir := t.TempDir()
+	content := `$ORIGIN mycompany.com.
+$TTL 300
+@ IN SOA ns1.mycompany.com. admin.mycompany.com. (2026052101 3600 900 604800 86400)
+@ IN NS ns1.mycompany.com.
+host1 IN A 10.0.0.1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.mycompany.com"), []byte(content), 0o644))
+	p := &Plugin{Dir: dir}
+	require.NoError(t, p.reloadZones("poll"))
+
+	p.mu.RLock()
+	z1 := p.zones["mycompany.com."]
+	p.mu.RUnlock()
+	require.NotNil(t, z1)
+
+	require.NoError(t, p.reloadZones("poll"))
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	assert.Same(t, z1, p.zones["mycompany.com."],
+		"unchanged files must not be re-parsed on reload")
 }
