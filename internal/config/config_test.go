@@ -44,6 +44,7 @@ var allEnvKeys = []string{
 	"NAME_FORMAT_CANONICAL",
 	"NAME_FORMAT_ALIASES",
 	"NAME_FORMAT_ZONE",
+	"NETBOX_WEBHOOK_SECRET",
 }
 
 // clearEnv unsets all config-related env vars to ensure test isolation.
@@ -287,4 +288,23 @@ func TestLoadNameFormatDefaultsEmpty(t *testing.T) {
 	assert.Empty(t, c.NameFormatCanonical)
 	assert.Empty(t, c.NameFormatAliases)
 	assert.Empty(t, c.NameFormatZone)
+}
+
+func TestLoad_NetboxWebhookSecret(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+	t.Setenv("NETBOX_WEBHOOK_SECRET", "shh-its-a-secret")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Equal(t, "shh-its-a-secret", cfg.NetboxWebhookSecret)
+}
+
+func TestLoad_NetboxWebhookSecret_DefaultsEmpty(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.NetboxWebhookSecret, "webhook route must be disabled by default")
 }
