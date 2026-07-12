@@ -45,6 +45,7 @@ var allEnvKeys = []string{
 	"NAME_FORMAT_ALIASES",
 	"NAME_FORMAT_ZONE",
 	"NETBOX_WEBHOOK_SECRET",
+	"WEBHOOK_POLL_MIN_INTERVAL",
 }
 
 // clearEnv unsets all config-related env vars to ensure test isolation.
@@ -80,6 +81,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 1000, cfg.PageSize)
 	assert.Equal(t, 10, cfg.MaxConcurrency)
 	assert.Equal(t, 60*time.Second, cfg.PollInterval)
+	assert.Equal(t, 5*time.Second, cfg.WebhookPollMinInterval)
 
 	// Retry defaults
 	assert.Equal(t, 3, cfg.NetboxRetryCount)
@@ -114,6 +116,7 @@ func TestLoad_NumericAndDurationOverrides(t *testing.T) {
 	t.Setenv("ZONE_DEPTH", "5")
 	t.Setenv("TTL", "600")
 	t.Setenv("POLL_INTERVAL", "120s")
+	t.Setenv("WEBHOOK_POLL_MIN_INTERVAL", "10s")
 	t.Setenv("NETBOX_PAGE_SIZE", "500")
 	t.Setenv("NETBOX_MAX_CONCURRENCY", "20")
 	t.Setenv("NETBOX_RETRY_COUNT", "5")
@@ -130,6 +133,7 @@ func TestLoad_NumericAndDurationOverrides(t *testing.T) {
 	assert.Equal(t, 5, cfg.ZoneDepth)
 	assert.Equal(t, uint32(600), cfg.TTL)
 	assert.Equal(t, 120*time.Second, cfg.PollInterval)
+	assert.Equal(t, 10*time.Second, cfg.WebhookPollMinInterval)
 	assert.Equal(t, 500, cfg.PageSize)
 	assert.Equal(t, 20, cfg.MaxConcurrency)
 	assert.Equal(t, 5, cfg.NetboxRetryCount)
@@ -152,6 +156,7 @@ func TestLoad_InvalidValues(t *testing.T) {
 		{"bad TTL", "TTL", "-1", "invalid TTL"},
 		{"bad TTL float", "TTL", "3.5", "invalid TTL"},
 		{"bad POLL_INTERVAL", "POLL_INTERVAL", "notduration", "invalid POLL_INTERVAL"},
+		{"bad WEBHOOK_POLL_MIN_INTERVAL", "WEBHOOK_POLL_MIN_INTERVAL", "notduration", "invalid WEBHOOK_POLL_MIN_INTERVAL"},
 		{"bad NETBOX_PAGE_SIZE", "NETBOX_PAGE_SIZE", "xyz", "invalid NETBOX_PAGE_SIZE"},
 		{"bad NETBOX_MAX_CONCURRENCY", "NETBOX_MAX_CONCURRENCY", "!!", "invalid NETBOX_MAX_CONCURRENCY"},
 		{"bad NETBOX_RETRY_COUNT", "NETBOX_RETRY_COUNT", "no", "invalid NETBOX_RETRY_COUNT"},

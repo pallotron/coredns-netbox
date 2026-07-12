@@ -174,6 +174,14 @@ func main() {
 	statusTracker := &grpcserver.StatusTracker{}
 	mergeSignal := make(chan struct{}, 1)
 	netboxSignal := make(chan struct{}, 1)
+	// webhookPollSignal is signaled by the Netbox webhook handler
+	// (internal/netboxwebhook) for events it can't apply directly — records
+	// without dns_name, which need ipcategorizer/nameformat's full-poll
+	// cross-record context. Deliberately separate from netboxSignal (used by
+	// the gRPC ForceNetboxPoll control call) so a deliberate operator-
+	// triggered force-poll always runs immediately, while only the webhook
+	// path is subject to WebhookPollMinInterval's cooldown.
+	webhookPollSignal := make(chan struct{}, 1)
 
 	slog.Info("starting sidecar", "discovery_mode", cfg.DiscoveryMode, "zone_dir", cfg.ZoneDir)
 
@@ -201,7 +209,7 @@ func main() {
 		registerHealth(mux, &healthy)
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 		zoneserver.Register(mux, cfg.ZoneDir)
-		netboxwebhook.Register(mux, cfg.NetboxWebhookSecret, store, forwardDisc, mergeSignal, m)
+		netboxwebhook.Register(mux, cfg.NetboxWebhookSecret, store, forwardDisc, mergeSignal, webhookPollSignal, m)
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -237,7 +245,7 @@ func main() {
 
 	// Run the poll loop
 	if err := run(ctx, cfg, client, categorizer, formatter, forwardDisc, reverseDisc, mgr, m, markReady,
-		store, netboxCache, statusTracker, mergeSignal, netboxSignal, rl); err != nil {
+		store, netboxCache, statusTracker, mergeSignal, netboxSignal, webhookPollSignal, rl); err != nil {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
@@ -289,7 +297,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	mgr *zonemanager.Manager, m *metrics.Sidecar, markReady func(),
 	store dynamicstore.DynamicStore, netboxCache *grpcserver.NetboxCache,
 	statusTracker *grpcserver.StatusTracker,
-	mergeSignal, netboxSignal <-chan struct{},
+	mergeSignal, netboxSignal, webhookPollSignal <-chan struct{},
 	rl *reloader.Reloader,
 ) error {
 	lastSuccessTime := time.Now()
@@ -365,6 +373,30 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	defer ticker.Stop()
 
 	lastNetboxZones := netboxZones
+	// lastWebhookPoll bounds how often a webhook-triggered poll (see
+	// webhookPollSignal below) can actually run, independent of how many
+	// events arrive. The zero value means the very first signal always
+	// fires immediately.
+	var lastWebhookPoll time.Time
+
+	// pollAndMerge does a full Netbox fetch + merge/write cycle, shared by
+	// the netboxSignal (ForceNetboxPoll) and webhookPollSignal cases below —
+	// identical except for webhookPollSignal's cooldown gate, which the
+	// caller applies before invoking this.
+	pollAndMerge := func() {
+		zones, err := doFetchNetbox()
+		if err == nil {
+			lastNetboxZones = zones
+			netboxCache.Update(zones)
+			statusTracker.SetNetboxPoll(time.Now())
+		}
+		if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+			if changed {
+				rl.Reload(ctx)
+			}
+			statusTracker.SetMergeWrite(time.Now())
+		}
+	}
 
 	for {
 		select {
@@ -400,18 +432,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 			}
 
 		case <-netboxSignal:
-			zones, err := doFetchNetbox()
-			if err == nil {
-				lastNetboxZones = zones
-				netboxCache.Update(zones)
-				statusTracker.SetNetboxPoll(time.Now())
-			}
-			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
-				if changed {
-					rl.Reload(ctx)
-				}
-				statusTracker.SetMergeWrite(time.Now())
-			}
+			pollAndMerge()
 
 		case <-mergeSignal:
 			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
@@ -420,8 +441,35 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				}
 				statusTracker.SetMergeWrite(time.Now())
 			}
+
+		case <-webhookPollSignal:
+			// Bound how often a webhook event without a dns_name (device-based
+			// DNS name generation — see internal/netboxwebhook) can trigger a
+			// full re-fetch, independent of how many such events arrive. This
+			// caps Netbox API request rate during a burst (e.g. many devices
+			// added in a region turnup) beyond what the channel's own
+			// buffered-size-1 coalescing already provides. A signal that
+			// arrives inside the cooldown window is simply dropped — the
+			// periodic poll (or a later webhook event once the cooldown has
+			// elapsed) is always there as a correctness backstop, consistent
+			// with how the rest of this feature treats the webhook path as a
+			// fast-path optimization, never the sole source of truth.
+			if !webhookPollAllowed(lastWebhookPoll, time.Now(), cfg.WebhookPollMinInterval) {
+				continue
+			}
+			lastWebhookPoll = time.Now()
+			pollAndMerge()
 		}
 	}
+}
+
+// webhookPollAllowed reports whether enough time has passed since the last
+// webhook-triggered poll (last) for another one to run now, given the
+// configured cooldown (min). Extracted as a pure function so the cooldown
+// gate itself — not just the surrounding run() loop — has direct unit test
+// coverage.
+func webhookPollAllowed(last, now time.Time, min time.Duration) bool {
+	return now.Sub(last) >= min
 }
 
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
