@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dtoMetric "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -335,4 +336,43 @@ func TestFetchIPAddresses_RetryRespectsContextCancellation(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("retry did not respect context cancellation (elapsed %v)", elapsed)
 	}
+}
+
+func TestRecordFromJSON(t *testing.T) {
+	raw := []byte(`{
+		"id": 18001,
+		"address": "10.9.0.1/24",
+		"dns_name": "host1.example.org",
+		"vrf": {"name": "mgmt-vrf"},
+		"assigned_object_type": "dcim.interface",
+		"assigned_object": {
+			"id": 1,
+			"name": "mgmt0",
+			"device": {"id": 1, "name": "dc1-h1a-r101-prod-hv-01"}
+		}
+	}`)
+
+	rec, err := RecordFromJSON(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "host1.example.org", rec.DNSName)
+	assert.Equal(t, "10.9.0.1", rec.Address, "CIDR suffix must be stripped")
+	assert.Equal(t, 4, rec.Family)
+	assert.Equal(t, "dc1-h1a-r101-prod-hv-01", rec.DeviceName)
+	assert.Equal(t, "mgmt0", rec.InterfaceName)
+	assert.Equal(t, "mgmt-vrf", rec.VRF)
+}
+
+func TestRecordFromJSON_NoAssignedObject(t *testing.T) {
+	raw := []byte(`{"address": "10.99.99.5/32", "dns_name": "standalone.example.org", "vrf": null, "assigned_object": null}`)
+
+	rec, err := RecordFromJSON(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "standalone.example.org", rec.DNSName)
+	assert.Empty(t, rec.DeviceName)
+	assert.Empty(t, rec.VRF)
+}
+
+func TestRecordFromJSON_InvalidJSON(t *testing.T) {
+	_, err := RecordFromJSON([]byte(`not-json`))
+	assert.Error(t, err)
 }
