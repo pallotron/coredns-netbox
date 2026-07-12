@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,6 +235,94 @@ func TestHandler_DeletedEvent_ManualRecordPinned_NotDeleted(t *testing.T) {
 		t.Fatal("mergeSignal must not fire when the delete was skipped")
 	default:
 	}
+}
+
+// TestHandler_RenameEvent_ManualRecordPinned_OldNameNotDeleted covers
+// whole-branch review finding 1: applyUpsert's rename branch must apply the
+// same manual-record precedence check applyDelete already uses before
+// deleting the old name. Without it, a manually-added (non-webhook-sourced)
+// record occupying the old name would be permanently, silently deleted —
+// data loss that nothing else (not the periodic poll, not
+// ReconcileWebhookSourced) would ever repair, since manual records only ever
+// exist in dynamicstore.
+func TestHandler_RenameEvent_ManualRecordPinned_OldNameNotDeleted(t *testing.T) {
+	srv, store, mergeSignal := newTestServer(t)
+	defer srv.Close()
+
+	// Seed a manually-added record (Source == "") at the name the rename
+	// event's snapshots.prechange.dns_name will reference.
+	require.NoError(t, store.UpsertRecords("mycompany.com", []netboxclient.IPRecord{
+		{DNSName: "webhook-test-1.mycompany.com", Address: "10.1.1.1", Family: 4},
+	}))
+
+	// updated_rename.json renames webhook-test-1.mycompany.com (the manually
+	// pinned name) to webhook-test-1-renamed.mycompany.com.
+	resp := postSigned(t, srv, readFixture(t, "updated_rename.json"), testSecret)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got := store.GetRecords("mycompany.com")
+	require.Len(t, got, 2, "the manual old-name record must survive, and the new name must still be upserted")
+
+	byName := make(map[string]netboxclient.IPRecord, len(got))
+	for _, r := range got {
+		byName[r.DNSName] = r
+	}
+
+	manual, ok := byName["webhook-test-1.mycompany.com"]
+	require.True(t, ok, "manually-added record at the old name must not be deleted by the rename")
+	assert.Equal(t, "10.1.1.1", manual.Address)
+	assert.Empty(t, manual.Source, "manual record's source must remain unset")
+
+	renamed, ok := byName["webhook-test-1-renamed.mycompany.com"]
+	require.True(t, ok, "handler must still proceed to upsert the new name despite skipping the old-name delete")
+	assert.Equal(t, netboxclient.SourceWebhook, renamed.Source)
+
+	// The new-name upsert is a real store mutation, so mergeSignal must still
+	// fire even though the old-name delete was skipped.
+	select {
+	case <-mergeSignal:
+	default:
+		t.Fatal("expected mergeSignal to fire because the new-name upsert mutated the store")
+	}
+}
+
+// TestHandler_ConcurrentSameNameDeliveries_NewerEventWins covers whole-branch
+// review finding 2: without a mutex serializing the read-decide-write
+// sequence in apply, two concurrent deliveries for the same DNS name can
+// both read the same "before" state, both pass their AppliedAt ordering
+// guard, and then race on the write — leaving the outcome dependent on write
+// arrival order rather than event recency. With the handler-level mutex in
+// place, the guard's read-decide-write sequence is atomic per event, so
+// regardless of which goroutine's HTTP request is scheduled/accepted first,
+// the record with the later AppliedAt timestamp must always be the one left
+// in the store.
+func TestHandler_ConcurrentSameNameDeliveries_NewerEventWins(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	defer srv.Close()
+
+	const dnsName = "webhook-test-1.mycompany.com"
+	older := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":{"address":"10.50.50.1/32","dns_name":"` + dnsName + `"}}`)
+	newer := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:05Z","object_type":"ipam.ipaddress","data":{"address":"10.50.50.2/32","dns_name":"` + dnsName + `"}}`)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		resp := postSigned(t, srv, older, testSecret)
+		resp.Body.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		resp := postSigned(t, srv, newer, testSecret)
+		resp.Body.Close()
+	}()
+	wg.Wait()
+
+	got := store.GetRecords("mycompany.com")
+	require.Len(t, got, 1)
+	assert.Equal(t, dnsName, got[0].DNSName)
+	assert.Equal(t, "10.50.50.2", got[0].Address, "the record from the newer event must win, regardless of delivery/arrival order")
 }
 
 func TestRegister_EmptySecretDoesNotRegisterRoute(t *testing.T) {

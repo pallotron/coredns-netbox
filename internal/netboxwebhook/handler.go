@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
@@ -38,6 +39,24 @@ type handler struct {
 	disc        zonediscovery.Discoverer
 	mergeSignal chan<- struct{}
 	m           *metrics.Sidecar
+
+	// mu serializes the read-decide-write sequence in apply (and everything
+	// it calls: applyDelete, applyUpsert, upsertGuarded, isManuallyPinned).
+	// Those guards each do a GetRecords read followed by a separate
+	// Upsert/DeleteRecords write, with no atomicity between the two calls —
+	// dynamicstore.FileStore's own internal lock only protects each
+	// individual call, not the sequence. net/http runs every request in its
+	// own goroutine, and Netbox's webhook dispatcher can deliver events for
+	// the same DNS name concurrently, so without this mutex two concurrent
+	// deliveries could both read the same "before" state, both pass their
+	// guard check, and then race on the write — silently defeating both the
+	// AppliedAt ordering guarantee and manual-record precedence. Locking
+	// around h.apply(p) alone (not signature verification or payload
+	// parsing, which don't touch the store) closes that race for all
+	// webhook-driven store mutations from this handler. This intentionally
+	// does NOT serialize against gRPC-driven writes to the same store (a
+	// separate write path) — an accepted, narrower scope.
+	mu sync.Mutex
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +87,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.mu.Lock()
 	applied, err := h.apply(p)
+	h.mu.Unlock()
 	if err != nil {
 		h.m.WebhookRequestsTotal.WithLabelValues("error").Inc()
 		slog.Warn("netboxwebhook: failed to apply event", "event", p.Event, "err", err)
@@ -117,21 +138,31 @@ func (h *handler) applyDelete(p payload) (bool, error) {
 	// Manual-record precedence: don't let a webhook "deleted" event remove a
 	// manually-added (non-webhook-sourced) record for the same name — mirrors
 	// upsertGuarded's guard against clobbering manually-pinned entries.
-	for _, existing := range h.store.GetRecords(zone) {
-		if existing.DNSName != name {
-			continue
-		}
-		if existing.Source != netboxclient.SourceWebhook {
-			slog.Warn("netboxwebhook: skipping delete, name is pinned by a manually-added record", "dns_name", name)
-			return false, nil
-		}
-		break
+	if h.isManuallyPinned(zone, name) {
+		slog.Warn("netboxwebhook: skipping delete, name is pinned by a manually-added record", "dns_name", name)
+		return false, nil
 	}
 
 	if err := h.store.DeleteRecords(zone, []string{name}); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// isManuallyPinned reports whether zone already holds a record for name that
+// was not sourced from the webhook (i.e. added via the gRPC
+// DynamicZoneService API). Such records must never be silently removed or
+// clobbered by webhook-driven writes — manual records only ever exist in
+// dynamicstore, so nothing else (not the periodic poll, not
+// ReconcileWebhookSourced) would ever restore them.
+func (h *handler) isManuallyPinned(zone, name string) bool {
+	for _, existing := range h.store.GetRecords(zone) {
+		if existing.DNSName != name {
+			continue
+		}
+		return existing.Source != netboxclient.SourceWebhook
+	}
+	return false
 }
 
 func (h *handler) applyUpsert(p payload) (bool, error) {
@@ -157,11 +188,21 @@ func (h *handler) applyUpsert(p payload) (bool, error) {
 	// Rename: the old name may live in a different zone bucket.
 	if p.Event == "updated" && p.Snapshots.PreChange != nil &&
 		p.Snapshots.PreChange.DNSName != "" && p.Snapshots.PreChange.DNSName != rec.DNSName {
-		if oldZone, ok := h.zoneFor(p.Snapshots.PreChange.DNSName); ok {
-			if err := h.store.DeleteRecords(oldZone, []string{p.Snapshots.PreChange.DNSName}); err != nil {
-				return false, err
+		oldName := p.Snapshots.PreChange.DNSName
+		if oldZone, ok := h.zoneFor(oldName); ok {
+			// Manual-record precedence: don't let a rename's old-name delete
+			// remove a manually-added (non-webhook-sourced) record that
+			// happens to occupy the old name — mirrors applyDelete's and
+			// upsertGuarded's guard against clobbering manually-pinned
+			// entries.
+			if h.isManuallyPinned(oldZone, oldName) {
+				slog.Warn("netboxwebhook: skipping rename delete, old name is pinned by a manually-added record", "dns_name", oldName)
+			} else {
+				if err := h.store.DeleteRecords(oldZone, []string{oldName}); err != nil {
+					return false, err
+				}
+				mutated = true
 			}
-			mutated = true
 		}
 	}
 
