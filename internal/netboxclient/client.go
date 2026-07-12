@@ -25,6 +25,13 @@ import (
 // address record. The zero value of Type means A/AAAA (from Family).
 const RecordTypeCNAME = "CNAME"
 
+// SourceWebhook marks an IPRecord as written by the Netbox webhook trigger
+// (internal/netboxwebhook), as opposed to the zero value "" which covers
+// both Netbox-fetched records and records added manually via the
+// DynamicZoneService gRPC API. Only dynamicstore-held records ever set this;
+// it is never present on Netbox-fetched records.
+const SourceWebhook = "webhook"
+
 // IPRecord is a simplified representation of a Netbox IP address with DNS info.
 type IPRecord struct {
 	DNSName       string `json:"dns_name"`
@@ -39,6 +46,13 @@ type IPRecord struct {
 	// canonical FQDN in CNAMETarget.
 	Type        string `json:"type,omitempty"`
 	CNAMETarget string `json:"cname_target,omitempty"`
+	// Source and AppliedAt are set only on dynamicstore-held records written
+	// by the Netbox webhook trigger (see internal/netboxwebhook). They are
+	// never read by zone generation or hashing (internal/zonegen) — only by
+	// the webhook handler's ordering guard and the periodic-poll
+	// reconciliation in cmd/sidecar/main.go.
+	Source    string    `json:"source,omitempty"`
+	AppliedAt time.Time `json:"applied_at,omitempty"`
 }
 
 // Client queries the Netbox IPAM API with parallel paginated fetching.
