@@ -18,6 +18,8 @@ type Sidecar struct {
 	CoreDNSReloadTotal          *prometheus.CounterVec
 	CoreDNSReloadRetriesTotal   prometheus.Counter
 	CoreDNSReloadDirtyTargets   prometheus.Gauge
+	WebhookRequestsTotal        *prometheus.CounterVec
+	WebhookLastEventTimestamp   prometheus.Gauge
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -95,6 +97,16 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Name: "netbox_sidecar_coredns_reload_dirty_targets",
 			Help: "CoreDNS addresses whose last reload push has not succeeded yet. Non-zero for more than a few poll cycles means a pod is not accepting reloads.",
 		}),
+
+		WebhookRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "netbox_sidecar_webhook_requests_total",
+			Help: "Total Netbox webhook requests received, partitioned by result.",
+		}, []string{"result"}),
+
+		WebhookLastEventTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_webhook_last_event_timestamp_seconds",
+			Help: "Unix timestamp of the last successfully applied Netbox webhook event.",
+		}),
 	}
 
 	reg.MustRegister(
@@ -112,6 +124,8 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.CoreDNSReloadTotal,
 		m.CoreDNSReloadRetriesTotal,
 		m.CoreDNSReloadDirtyTargets,
+		m.WebhookRequestsTotal,
+		m.WebhookLastEventTimestamp,
 	)
 
 	return m
