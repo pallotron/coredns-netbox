@@ -156,6 +156,55 @@ func (c *Client) retryDelay(attempt int) time.Duration {
 	return exp
 }
 
+// RecordFromJSON parses a single Netbox IP address object into an IPRecord.
+// It accepts the same JSON shape as one element of /api/ipam/ip-addresses/'s
+// "results" array, which is also the shape of a Netbox webhook's "data" field
+// for an ipam.ipaddress event (verified against a Netbox v4.6.0 webhook capture).
+// Fields present in a webhook payload but not read here (e.g. "id", "family",
+// "status") are intentionally ignored — family is derived from the address
+// string, exactly as fetchIPAddressesOnce already does.
+func RecordFromJSON(raw []byte) (IPRecord, error) {
+	var item ipItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return IPRecord{}, fmt.Errorf("decode ip address object: %w", err)
+	}
+	return ipItemToRecord(item), nil
+}
+
+// ipItemToRecord maps a decoded Netbox IP address object to an IPRecord.
+func ipItemToRecord(ip ipItem) IPRecord {
+	addr := stripCIDR(ip.Address)
+	family := 4
+	if strings.Contains(addr, ":") {
+		family = 6
+	}
+
+	deviceName := ""
+	interfaceName := ""
+	if ip.AssignedObject != nil {
+		interfaceName = ip.AssignedObject.Name
+		if ip.AssignedObject.Device != nil {
+			deviceName = ip.AssignedObject.Device.Name
+		} else if ip.AssignedObject.VirtualMachine != nil {
+			deviceName = ip.AssignedObject.VirtualMachine.Name
+		}
+	}
+
+	vrf := ""
+	if ip.VRF != nil {
+		vrf = ip.VRF.Name
+	}
+
+	return IPRecord{
+		DNSName:       ip.DNSName,
+		Address:       addr,
+		Family:        family,
+		DeviceName:    deviceName,
+		InterfaceName: interfaceName,
+		VRF:           vrf,
+	}
+}
+
 // fetchIPAddressesOnce retrieves all active IP addresses from Netbox
 // using parallel paginated requests (single attempt, no retry).
 func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
@@ -194,38 +243,7 @@ func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 
 			records := make([]IPRecord, 0, len(resp.Results))
 			for _, ip := range resp.Results {
-				addr := stripCIDR(ip.Address)
-				family := 4
-				if strings.Contains(addr, ":") {
-					family = 6
-				}
-
-				// Extract device and interface info
-				deviceName := ""
-				interfaceName := ""
-				if ip.AssignedObject != nil {
-					interfaceName = ip.AssignedObject.Name
-					if ip.AssignedObject.Device != nil {
-						deviceName = ip.AssignedObject.Device.Name
-					} else if ip.AssignedObject.VirtualMachine != nil {
-						deviceName = ip.AssignedObject.VirtualMachine.Name
-					}
-				}
-
-				// Extract VRF
-				vrf := ""
-				if ip.VRF != nil {
-					vrf = ip.VRF.Name
-				}
-
-				records = append(records, IPRecord{
-					DNSName:       ip.DNSName,
-					Address:       addr,
-					Family:        family,
-					DeviceName:    deviceName,
-					InterfaceName: interfaceName,
-					VRF:           vrf,
-				})
+				records = append(records, ipItemToRecord(ip))
 			}
 			results[pageNum] = records
 		}(page, page*c.pageSize)
