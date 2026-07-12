@@ -29,6 +29,8 @@ sidecar:
       value: ":8083"
     - name: GRPC_AUTH_TOKEN
       value: "devtoken"
+    - name: NETBOX_WEBHOOK_SECRET
+      value: "dev-webhook-secret"
 
 # Static ClusterIP for reproducible secondary configuration in e2e tests
 service:
