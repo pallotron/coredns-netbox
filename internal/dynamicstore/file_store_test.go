@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
@@ -117,4 +118,35 @@ func TestBatchDelete(t *testing.T) {
 	got := s.GetRecords("k8s.example.org")
 	require.Len(t, got, 1)
 	assert.Equal(t, "node2.k8s.example.org", got[0].DNSName)
+}
+
+func TestReconcileWebhookSourced_DropsOnlyStaleWebhookRecords(t *testing.T) {
+	s := newStore(t)
+	cutoff := time.Now()
+
+	require.NoError(t, s.UpsertRecords("example.org", []netboxclient.IPRecord{
+		{DNSName: "stale-webhook.example.org", Address: "10.0.0.1", Family: 4,
+			Source: netboxclient.SourceWebhook, AppliedAt: cutoff.Add(-time.Minute)},
+		{DNSName: "fresh-webhook.example.org", Address: "10.0.0.2", Family: 4,
+			Source: netboxclient.SourceWebhook, AppliedAt: cutoff.Add(time.Minute)},
+		{DNSName: "manual.example.org", Address: "10.0.0.3", Family: 4},
+	}))
+
+	require.NoError(t, s.ReconcileWebhookSourced(cutoff))
+
+	got := s.GetRecords("example.org")
+	names := make([]string, 0, len(got))
+	for _, r := range got {
+		names = append(names, r.DNSName)
+	}
+	assert.ElementsMatch(t, []string{"fresh-webhook.example.org", "manual.example.org"}, names)
+}
+
+func TestReconcileWebhookSourced_NoOpWhenNothingStale(t *testing.T) {
+	s := newStore(t)
+	require.NoError(t, s.UpsertRecords("example.org", []netboxclient.IPRecord{
+		{DNSName: "manual.example.org", Address: "10.0.0.1", Family: 4},
+	}))
+	require.NoError(t, s.ReconcileWebhookSourced(time.Now()))
+	assert.Len(t, s.GetRecords("example.org"), 1)
 }
