@@ -504,3 +504,29 @@ func TestGenerateDropsCollidingCNAME(t *testing.T) {
 	assert.NotContains(t, content, "CNAME", "colliding CNAME must be dropped")
 	assert.Equal(t, 1, count, "count must reflect the post-filter record set, not the input")
 }
+
+func TestGenerate_SourceAndAppliedAtDoNotAffectHash(t *testing.T) {
+	g1 := NewGenerator(ZoneConfig{
+		Origin: "example.org.", PrimaryNS: "ns1.example.org.", AdminEmail: "admin.example.org.",
+		TTL: 300, Type: ZoneTypeForward,
+	}, "")
+	content1, changed1, _, err := g1.Generate([]netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+	})
+	require.NoError(t, err)
+	assert.True(t, changed1)
+
+	// Same record, but now tagged as webhook-sourced with a timestamp — the
+	// generated zone content must be byte-identical and must NOT register as
+	// a change (the hash must only reflect DNS-relevant fields).
+	content2, changed2, _, err := g1.Generate([]netboxclient.IPRecord{
+		{
+			DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4,
+			Source: netboxclient.SourceWebhook, AppliedAt: time.Now(),
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, changed2, "Source/AppliedAt must not be part of the change-detection hash")
+	assert.Empty(t, content2, "unchanged generation returns empty content")
+	_ = content1
+}
