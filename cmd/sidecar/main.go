@@ -26,6 +26,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/pallotron/coredns-netbox/internal/netboxwebhook"
 	"github.com/pallotron/coredns-netbox/internal/reloader"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/pallotron/coredns-netbox/internal/zonefetch"
@@ -200,6 +201,7 @@ func main() {
 		registerHealth(mux, &healthy)
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 		zoneserver.Register(mux, cfg.ZoneDir)
+		netboxwebhook.Register(mux, cfg.NetboxWebhookSecret, store, forwardDisc, mergeSignal, m)
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -294,12 +296,23 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	firstSuccess := false
 
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
+		fetchStart := time.Now()
 		zm, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc, m, cfg.DomainSuffix)
-		if err != nil || !cfg.StripDCLabel {
+		if err != nil {
 			return zm, err
 		}
-		for zone, recs := range zm {
-			zm[zone] = zonediscovery.StripDCLabel(recs, cfg.DomainSuffix)
+		if cfg.StripDCLabel {
+			for zone, recs := range zm {
+				zm[zone] = zonediscovery.StripDCLabel(recs, cfg.DomainSuffix)
+			}
+		}
+		// A full Netbox fetch that started at fetchStart has, by definition,
+		// already captured any webhook-sourced change applied before that
+		// moment — so any such overlay entry is now redundant. This is what
+		// keeps a missed/duplicate webhook delivery from causing permanent
+		// drift (see internal/netboxwebhook and ReconcileWebhookSourced).
+		if err := store.ReconcileWebhookSourced(fetchStart); err != nil {
+			slog.Warn("failed to reconcile webhook-sourced dynamic records", "err", err)
 		}
 		return zm, nil
 	}
