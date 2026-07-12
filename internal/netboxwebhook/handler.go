@@ -25,11 +25,16 @@ const objectTypeIPAddress = "ipam.ipaddress"
 // Register adds the Netbox webhook route to mux. If secret is empty, no
 // route is registered at all — there is never an accidental unauthenticated
 // trigger endpoint.
-func Register(mux *http.ServeMux, secret string, store dynamicstore.DynamicStore, disc zonediscovery.Discoverer, mergeSignal chan<- struct{}, m *metrics.Sidecar) {
+//
+// pollSignal is signaled (non-blocking, buffered size 1 by convention, same
+// as netboxSignal/ForceNetboxPoll) whenever an event can't be applied
+// directly because it has no dns_name — see applyOutcome and the doc
+// comment on triggerPoll.
+func Register(mux *http.ServeMux, secret string, store dynamicstore.DynamicStore, disc zonediscovery.Discoverer, mergeSignal, pollSignal chan<- struct{}, m *metrics.Sidecar) {
 	if secret == "" {
 		return
 	}
-	h := &handler{secret: secret, store: store, disc: disc, mergeSignal: mergeSignal, m: m}
+	h := &handler{secret: secret, store: store, disc: disc, mergeSignal: mergeSignal, pollSignal: pollSignal, m: m}
 	mux.HandleFunc(Path, h.ServeHTTP)
 }
 
@@ -38,6 +43,7 @@ type handler struct {
 	store       dynamicstore.DynamicStore
 	disc        zonediscovery.Discoverer
 	mergeSignal chan<- struct{}
+	pollSignal  chan<- struct{}
 	m           *metrics.Sidecar
 
 	// mu serializes the read-decide-write sequence in apply (and everything
@@ -88,7 +94,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.mu.Lock()
-	applied, err := h.apply(p)
+	outcome, err := h.apply(p)
 	h.mu.Unlock()
 	if err != nil {
 		h.m.WebhookRequestsTotal.WithLabelValues("error").Inc()
@@ -97,23 +103,38 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if applied {
+	switch outcome {
+	case outcomeApplied:
 		h.m.WebhookRequestsTotal.WithLabelValues("ok").Inc()
 		h.m.WebhookLastEventTimestamp.SetToCurrentTime()
 		select {
 		case h.mergeSignal <- struct{}{}:
 		default:
 		}
-	} else {
+	case outcomePollTriggered:
+		h.m.WebhookRequestsTotal.WithLabelValues("poll_triggered").Inc()
+	default:
 		h.m.WebhookRequestsTotal.WithLabelValues("stale").Inc()
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-// apply routes the event to the right store mutation. Returns applied=true
-// only when a dynamicstore write actually happened (used to decide whether to
-// signal a re-merge).
-func (h *handler) apply(p payload) (applied bool, err error) {
+// applyOutcome distinguishes the three ways handling an event can end.
+type applyOutcome int
+
+const (
+	// outcomeNoop: nothing changed — stale/out-of-order event, pinned by a
+	// manual record, unroutable dns_name, or an unrecognized event type.
+	outcomeNoop applyOutcome = iota
+	// outcomeApplied: a real dynamicstore write happened; mergeSignal must fire.
+	outcomeApplied
+	// outcomePollTriggered: the event carries no dns_name, so a full Netbox
+	// poll was signaled instead of a direct write — see triggerPoll.
+	outcomePollTriggered
+)
+
+// apply routes the event to the right store mutation or poll trigger.
+func (h *handler) apply(p payload) (applyOutcome, error) {
 	switch p.Event {
 	case "deleted":
 		return h.applyDelete(p)
@@ -121,18 +142,47 @@ func (h *handler) apply(p payload) (applied bool, err error) {
 		return h.applyUpsert(p)
 	default:
 		slog.Debug("netboxwebhook: ignoring unknown event type", "event", p.Event)
-		return false, nil
+		return outcomeNoop, nil
 	}
 }
 
-func (h *handler) applyDelete(p payload) (bool, error) {
-	if p.Snapshots.PreChange == nil || p.Snapshots.PreChange.DNSName == "" {
-		return false, nil
+// triggerPoll signals a full Netbox poll for an event whose record has no
+// dns_name. Device-based DNS name generation (ipcategorizer/nameformat)
+// needs cross-record context a single webhook event can't supply:
+// ipcategorizer.SelectDeviceIPs picks the preferred IP for a device by
+// comparing ALL of that device's interfaces, and nameformat's CNAME alias
+// generation needs the full zone's record set to resolve collisions between
+// devices. Netbox's webhook payload (default or a custom body_template) is
+// always the plain REST-serialized object — never a live, queryable object
+// graph — so there is no way to obtain that context from the webhook alone,
+// regardless of which object type the webhook subscribes to; closing this
+// gap requires an actual poll.
+//
+// pollSignal is buffered size 1 with a non-blocking send, so a burst of
+// these events (e.g. many devices added during a region turnup) coalesces
+// into a single pending poll. cmd/sidecar's run() loop additionally
+// rate-limits how often it acts on this channel (WEBHOOK_POLL_MIN_INTERVAL)
+// so even a very large, sustained burst can't force full re-fetches faster
+// than that floor — see docs/netbox-webhook.md.
+func (h *handler) triggerPoll() {
+	select {
+	case h.pollSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (h *handler) applyDelete(p payload) (applyOutcome, error) {
+	if p.Snapshots.PreChange == nil {
+		return outcomeNoop, nil
 	}
 	name := p.Snapshots.PreChange.DNSName
+	if name == "" {
+		h.triggerPoll()
+		return outcomePollTriggered, nil
+	}
 	zone, ok := h.zoneFor(name)
 	if !ok {
-		return false, nil
+		return outcomeNoop, nil
 	}
 
 	// Manual-record precedence: don't let a webhook "deleted" event remove a
@@ -140,13 +190,13 @@ func (h *handler) applyDelete(p payload) (bool, error) {
 	// upsertGuarded's guard against clobbering manually-pinned entries.
 	if h.isManuallyPinned(zone, name) {
 		slog.Warn("netboxwebhook: skipping delete, name is pinned by a manually-added record", "dns_name", name)
-		return false, nil
+		return outcomeNoop, nil
 	}
 
 	if err := h.store.DeleteRecords(zone, []string{name}); err != nil {
-		return false, err
+		return outcomeNoop, err
 	}
-	return true, nil
+	return outcomeApplied, nil
 }
 
 // isManuallyPinned reports whether zone already holds a record for name that
@@ -165,17 +215,14 @@ func (h *handler) isManuallyPinned(zone, name string) bool {
 	return false
 }
 
-func (h *handler) applyUpsert(p payload) (bool, error) {
+func (h *handler) applyUpsert(p payload) (applyOutcome, error) {
 	rec, err := recordFromPayload(p)
 	if err != nil {
-		return false, err
+		return outcomeNoop, err
 	}
 	if rec.DNSName == "" {
-		// Device-based DNS name enrichment is not applied via the webhook
-		// path (see Global Constraints in the design doc) — the periodic
-		// poll will pick this up.
-		slog.Debug("netboxwebhook: ignoring event with no dns_name")
-		return false, nil
+		h.triggerPoll()
+		return outcomePollTriggered, nil
 	}
 
 	// mutated tracks whether any store write has happened so far in this
@@ -199,7 +246,7 @@ func (h *handler) applyUpsert(p payload) (bool, error) {
 				slog.Warn("netboxwebhook: skipping rename delete, old name is pinned by a manually-added record", "dns_name", oldName)
 			} else {
 				if err := h.store.DeleteRecords(oldZone, []string{oldName}); err != nil {
-					return false, err
+					return outcomeNoop, err
 				}
 				mutated = true
 			}
@@ -209,14 +256,23 @@ func (h *handler) applyUpsert(p payload) (bool, error) {
 	zone, ok := h.zoneFor(rec.DNSName)
 	if !ok {
 		slog.Warn("netboxwebhook: dns_name does not map to any configured zone", "dns_name", rec.DNSName)
-		return mutated, nil
+		if mutated {
+			return outcomeApplied, nil
+		}
+		return outcomeNoop, nil
 	}
 
 	applied, err := h.upsertGuarded(zone, rec)
 	if err != nil {
-		return mutated, err
+		if mutated {
+			return outcomeApplied, err
+		}
+		return outcomeNoop, err
 	}
-	return mutated || applied, nil
+	if mutated || applied {
+		return outcomeApplied, nil
+	}
+	return outcomeNoop, nil
 }
 
 // upsertGuarded applies rec unless a newer-or-equal webhook-sourced write

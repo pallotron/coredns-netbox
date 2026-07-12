@@ -21,17 +21,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestServer(t *testing.T) (*httptest.Server, dynamicstore.DynamicStore, chan struct{}) {
+func newTestServer(t *testing.T) (srv *httptest.Server, store dynamicstore.DynamicStore, mergeSignal, pollSignal chan struct{}) {
 	t.Helper()
 	store, err := dynamicstore.NewFileStore(filepath.Join(t.TempDir(), "dynamic.json"))
 	require.NoError(t, err)
 	disc := &zonediscovery.ZoneDepthDiscoverer{Depth: 2}
 	m := metrics.NewSidecar(prometheus.NewRegistry())
-	mergeSignal := make(chan struct{}, 1)
+	mergeSignal = make(chan struct{}, 1)
+	pollSignal = make(chan struct{}, 1)
 
 	mux := http.NewServeMux()
-	Register(mux, testSecret, store, disc, mergeSignal, m)
-	return httptest.NewServer(mux), store, mergeSignal
+	Register(mux, testSecret, store, disc, mergeSignal, pollSignal, m)
+	return httptest.NewServer(mux), store, mergeSignal, pollSignal
 }
 
 func computeSignature(secret string, body []byte) string {
@@ -52,7 +53,7 @@ func postSigned(t *testing.T, srv *httptest.Server, body []byte, secret string) 
 }
 
 func TestHandler_CreatedEvent_UpsertsRecord(t *testing.T) {
-	srv, store, mergeSignal := newTestServer(t)
+	srv, store, mergeSignal, _ := newTestServer(t)
 	defer srv.Close()
 
 	resp := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
@@ -72,7 +73,7 @@ func TestHandler_CreatedEvent_UpsertsRecord(t *testing.T) {
 }
 
 func TestHandler_InvalidSignature_Rejected(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	resp := postSigned(t, srv, readFixture(t, "created.json"), "wrong-secret")
@@ -82,7 +83,7 @@ func TestHandler_InvalidSignature_Rejected(t *testing.T) {
 }
 
 func TestHandler_RenameEvent_DeletesOldName(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	resp1 := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
@@ -99,7 +100,7 @@ func TestHandler_RenameEvent_DeletesOldName(t *testing.T) {
 }
 
 func TestHandler_DeletedEvent_RemovesRecord(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	resp1 := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
@@ -114,7 +115,7 @@ func TestHandler_DeletedEvent_RemovesRecord(t *testing.T) {
 }
 
 func TestHandler_StaleEvent_Ignored(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	// Seed a webhook-sourced record with a newer AppliedAt than the fixture's
@@ -135,7 +136,7 @@ func TestHandler_StaleEvent_Ignored(t *testing.T) {
 }
 
 func TestHandler_ManualRecordPinned_WebhookCannotOverride(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	require.NoError(t, store.UpsertRecords("mycompany.com", []netboxclient.IPRecord{
@@ -152,7 +153,7 @@ func TestHandler_ManualRecordPinned_WebhookCannotOverride(t *testing.T) {
 }
 
 func TestHandler_UnsupportedObjectType_Ignored(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"dcim.device","data":{}}`)
@@ -162,15 +163,60 @@ func TestHandler_UnsupportedObjectType_Ignored(t *testing.T) {
 	assert.Empty(t, store.GetRecords("mycompany.com"))
 }
 
-func TestHandler_EmptyDNSName_Ignored(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+// TestHandler_CreatedEvent_EmptyDNSName_TriggersPoll covers records that
+// rely on device-based DNS name generation (ipcategorizer/nameformat) rather
+// than an explicit dns_name in Netbox — the majority case in some
+// deployments. A single webhook event can't compute that name (it needs
+// cross-record context: comparing all of a device's interfaces, resolving
+// zone-wide CNAME alias collisions), so the handler triggers a full poll
+// instead of writing directly, and must not touch the store itself.
+func TestHandler_CreatedEvent_EmptyDNSName_TriggersPoll(t *testing.T) {
+	srv, store, mergeSignal, pollSignal := newTestServer(t)
 	defer srv.Close()
 
 	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":{"address":"10.0.0.9/32","dns_name":""}}`)
 	resp := postSigned(t, srv, body, testSecret)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, store.GetRecords("mycompany.com"), "no direct write — the handler can't compute a device-based name from one event")
+
+	select {
+	case <-pollSignal:
+	default:
+		t.Fatal("expected a full poll to be triggered for a dns_name-less event")
+	}
+	select {
+	case <-mergeSignal:
+		t.Fatal("mergeSignal must not fire when no direct store write happened")
+	default:
+	}
+}
+
+// TestHandler_DeletedEvent_EmptyDNSName_TriggersPoll mirrors the created-event
+// case: a "deleted" event whose prechange snapshot has no dns_name means the
+// removed IP was part of device-based DNS generation too — removing it may
+// change which interface the categorizer now prefers for that device, which
+// again needs the full poll's cross-record context.
+func TestHandler_DeletedEvent_EmptyDNSName_TriggersPoll(t *testing.T) {
+	srv, store, mergeSignal, pollSignal := newTestServer(t)
+	defer srv.Close()
+
+	body := []byte(`{"event":"deleted","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":null,"snapshots":{"prechange":{"dns_name":""}}}`)
+	resp := postSigned(t, srv, body, testSecret)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"))
+
+	select {
+	case <-pollSignal:
+	default:
+		t.Fatal("expected a full poll to be triggered for a dns_name-less deleted event")
+	}
+	select {
+	case <-mergeSignal:
+		t.Fatal("mergeSignal must not fire when no direct store write happened")
+	default:
+	}
 }
 
 // TestHandler_RenameEvent_MergeSignalFiresWhenNewZoneUnresolved covers review
@@ -180,7 +226,7 @@ func TestHandler_EmptyDNSName_Ignored(t *testing.T) {
 // delete is still a real store mutation and mergeSignal must fire — even
 // though no new record could be written.
 func TestHandler_RenameEvent_MergeSignalFiresWhenNewZoneUnresolved(t *testing.T) {
-	srv, store, mergeSignal := newTestServer(t)
+	srv, store, mergeSignal, _ := newTestServer(t)
 	defer srv.Close()
 
 	// Seed the old name so the rename's delete step has something to remove.
@@ -215,7 +261,7 @@ func TestHandler_RenameEvent_MergeSignalFiresWhenNewZoneUnresolved(t *testing.T)
 // record for the same name, mirroring upsertGuarded's existing precedence
 // rule for upserts.
 func TestHandler_DeletedEvent_ManualRecordPinned_NotDeleted(t *testing.T) {
-	srv, store, mergeSignal := newTestServer(t)
+	srv, store, mergeSignal, _ := newTestServer(t)
 	defer srv.Close()
 
 	require.NoError(t, store.UpsertRecords("mycompany.com", []netboxclient.IPRecord{
@@ -246,7 +292,7 @@ func TestHandler_DeletedEvent_ManualRecordPinned_NotDeleted(t *testing.T) {
 // ReconcileWebhookSourced) would ever repair, since manual records only ever
 // exist in dynamicstore.
 func TestHandler_RenameEvent_ManualRecordPinned_OldNameNotDeleted(t *testing.T) {
-	srv, store, mergeSignal := newTestServer(t)
+	srv, store, mergeSignal, _ := newTestServer(t)
 	defer srv.Close()
 
 	// Seed a manually-added record (Source == "") at the name the rename
@@ -298,7 +344,7 @@ func TestHandler_RenameEvent_ManualRecordPinned_OldNameNotDeleted(t *testing.T) 
 // the record with the later AppliedAt timestamp must always be the one left
 // in the store.
 func TestHandler_ConcurrentSameNameDeliveries_NewerEventWins(t *testing.T) {
-	srv, store, _ := newTestServer(t)
+	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
 	const dnsName = "webhook-test-1.mycompany.com"
@@ -331,7 +377,7 @@ func TestRegister_EmptySecretDoesNotRegisterRoute(t *testing.T) {
 	disc := &zonediscovery.ZoneDepthDiscoverer{Depth: 2}
 	m := metrics.NewSidecar(prometheus.NewRegistry())
 	mux := http.NewServeMux()
-	Register(mux, "", store, disc, make(chan struct{}, 1), m)
+	Register(mux, "", store, disc, make(chan struct{}, 1), make(chan struct{}, 1), m)
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

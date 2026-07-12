@@ -31,7 +31,7 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_coredns_reload_total` | Counter | `result=success\|error` | CoreDNS reload pushes per target address, final outcome after retries |
 | `netbox_sidecar_coredns_reload_retries_total` | Counter | — | CoreDNS reload push retries (excludes first attempt) |
 | `netbox_sidecar_coredns_reload_dirty_targets` | Gauge | — | CoreDNS addresses whose last reload push has not succeeded yet; re-pushed on every poll cycle, so non-zero for more than a few cycles means a pod is not accepting reloads |
-| `netbox_sidecar_webhook_requests_total` | Counter | `result=ok\|invalid_signature\|bad_payload\|stale\|unsupported_model\|error` | Netbox webhook requests received, partitioned by outcome |
+| `netbox_sidecar_webhook_requests_total` | Counter | `result=ok\|invalid_signature\|bad_payload\|stale\|unsupported_model\|poll_triggered\|error` | Netbox webhook requests received, partitioned by outcome. `poll_triggered` means the event had no `dns_name` and a full poll was signaled instead of a direct write — see [Netbox Webhook Trigger](netbox-webhook.md#records-without-dns_name). |
 | `netbox_sidecar_webhook_last_event_timestamp_seconds` | Gauge | — | Unix timestamp of the last successfully applied webhook event |
 
 A Prometheus `ServiceMonitor` can be enabled via `metrics.serviceMonitor.enabled: true` for automatic scrape discovery in clusters running the Prometheus Operator.

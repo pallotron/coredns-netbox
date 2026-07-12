@@ -70,6 +70,14 @@ type Config struct {
 	// Empty disables the route entirely (see internal/netboxwebhook.Register).
 	NetboxWebhookSecret string
 
+	// WebhookPollMinInterval bounds how often a webhook event without a
+	// dns_name (device-based DNS name generation) can trigger a full Netbox
+	// poll, independent of how many such events arrive — a hard ceiling on
+	// Netbox API request rate during a burst (e.g. many devices added in a
+	// region turnup), on top of the webhook signal channel's own coalescing.
+	// Does not apply to the gRPC ForceNetboxPoll control call.
+	WebhookPollMinInterval time.Duration
+
 	// CoreDNS reload notification
 	CoreDNSReloadAddrs []string // host:port addresses to call Reload() on after zone write
 	CoreDNSReloadToken string   // bearer token for CoreDNS gRPC reload (usually empty)
@@ -172,6 +180,16 @@ func Load() (*Config, error) {
 		c.PollInterval = d
 	} else {
 		c.PollInterval = 60 * time.Second
+	}
+
+	if v := os.Getenv("WEBHOOK_POLL_MIN_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WEBHOOK_POLL_MIN_INTERVAL: %w", err)
+		}
+		c.WebhookPollMinInterval = d
+	} else {
+		c.WebhookPollMinInterval = 5 * time.Second
 	}
 
 	if v := os.Getenv("NETBOX_PAGE_SIZE"); v != "" {

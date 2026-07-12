@@ -204,6 +204,7 @@ Customize interface categorization via environment variables:
 | `GRPC_ADDR` | `:8083` | Address the gRPC server listens on |
 | `GRPC_AUTH_TOKEN` | `""` | Bearer token required on all gRPC calls; empty disables auth |
 | `NETBOX_WEBHOOK_SECRET` | `""` | HMAC secret for the `/webhook/netbox` route; empty disables the route entirely. See [Netbox Webhook Trigger](netbox-webhook.md). |
+| `WEBHOOK_POLL_MIN_INTERVAL` | `5s` | Minimum interval between webhook-triggered full polls (records without `dns_name`); bounds Netbox API request rate during a burst of such events. Does not apply to the gRPC `ForceNetboxPoll` control call. See [Netbox Webhook Trigger](netbox-webhook.md). |
 | `BMC_INTERFACE_PATTERN` | `(?i)bmc\|ipmi\|ilo\|idrac` | Regex for BMC interfaces |
 | `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
 | `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |
