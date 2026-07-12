@@ -203,6 +203,7 @@ Customize interface categorization via environment variables:
 | `LOG_LEVEL` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 | `GRPC_ADDR` | `:8083` | Address the gRPC server listens on |
 | `GRPC_AUTH_TOKEN` | `""` | Bearer token required on all gRPC calls; empty disables auth |
+| `NETBOX_WEBHOOK_SECRET` | `""` | HMAC secret for the `/webhook/netbox` route; empty disables the route entirely. See [Netbox Webhook Trigger](netbox-webhook.md). |
 | `BMC_INTERFACE_PATTERN` | `(?i)bmc\|ipmi\|ilo\|idrac` | Regex for BMC interfaces |
 | `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
 | `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |
