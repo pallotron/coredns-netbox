@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 )
@@ -124,6 +125,32 @@ func (f *FileStore) BatchDelete(zone string, names []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteByNames(zone, names)
+	return f.persist()
+}
+
+// ReconcileWebhookSourced removes records with Source == netboxclient.SourceWebhook
+// whose AppliedAt is before cutoff, across all zones. Caller-visible zones with
+// no matching records are left untouched (no-op, no persist).
+func (f *FileStore) ReconcileWebhookSourced(cutoff time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	changed := false
+	for zone, recs := range f.data.Zones {
+		out := recs[:0:0]
+		for _, r := range recs {
+			if r.Source == netboxclient.SourceWebhook && r.AppliedAt.Before(cutoff) {
+				changed = true
+				continue
+			}
+			out = append(out, r)
+		}
+		f.data.Zones[zone] = out
+	}
+
+	if !changed {
+		return nil
+	}
 	return f.persist()
 }
 
