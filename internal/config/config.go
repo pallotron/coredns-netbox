@@ -66,6 +66,10 @@ type Config struct {
 	GRPCAddr      string
 	GRPCAuthToken string
 
+	// Netbox webhook trigger: HMAC secret for the /webhook/netbox route.
+	// Empty disables the route entirely (see internal/netboxwebhook.Register).
+	NetboxWebhookSecret string
+
 	// CoreDNS reload notification
 	CoreDNSReloadAddrs []string // host:port addresses to call Reload() on after zone write
 	CoreDNSReloadToken string   // bearer token for CoreDNS gRPC reload (usually empty)
@@ -117,6 +121,8 @@ func Load() (*Config, error) {
 		// gRPC server configuration
 		GRPCAddr:      envOrDefault("GRPC_ADDR", ":8083"),
 		GRPCAuthToken: os.Getenv("GRPC_AUTH_TOKEN"),
+
+		NetboxWebhookSecret: os.Getenv("NETBOX_WEBHOOK_SECRET"),
 
 		CoreDNSReloadAddrs: parseZoneList(os.Getenv("COREDNS_RELOAD_ADDRS")),
 		CoreDNSReloadToken: os.Getenv("COREDNS_RELOAD_TOKEN"),
