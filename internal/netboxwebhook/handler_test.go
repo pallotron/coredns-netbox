@@ -57,7 +57,7 @@ func TestHandler_CreatedEvent_UpsertsRecord(t *testing.T) {
 	defer srv.Close()
 
 	resp := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	got := store.GetRecords("mycompany.com")
@@ -77,7 +77,7 @@ func TestHandler_InvalidSignature_Rejected(t *testing.T) {
 	defer srv.Close()
 
 	resp := postSigned(t, srv, readFixture(t, "created.json"), "wrong-secret")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"))
 }
@@ -87,11 +87,11 @@ func TestHandler_RenameEvent_DeletesOldName(t *testing.T) {
 	defer srv.Close()
 
 	resp1 := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
-	resp1.Body.Close()
+	_ = resp1.Body.Close()
 	require.Equal(t, http.StatusOK, resp1.StatusCode)
 
 	resp2 := postSigned(t, srv, readFixture(t, "updated_rename.json"), testSecret)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	got := store.GetRecords("mycompany.com")
@@ -104,12 +104,12 @@ func TestHandler_DeletedEvent_RemovesRecord(t *testing.T) {
 	defer srv.Close()
 
 	resp1 := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
-	resp1.Body.Close()
+	_ = resp1.Body.Close()
 	resp2 := postSigned(t, srv, readFixture(t, "updated_rename.json"), testSecret)
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 
 	resp3 := postSigned(t, srv, readFixture(t, "deleted.json"), testSecret)
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp3.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"))
 }
@@ -127,7 +127,7 @@ func TestHandler_StaleEvent_Ignored(t *testing.T) {
 	}))
 
 	resp := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	got := store.GetRecords("mycompany.com")
@@ -144,7 +144,7 @@ func TestHandler_ManualRecordPinned_WebhookCannotOverride(t *testing.T) {
 	}))
 
 	resp := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	got := store.GetRecords("mycompany.com")
@@ -158,7 +158,7 @@ func TestHandler_UnsupportedObjectType_Ignored(t *testing.T) {
 
 	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"dcim.device","data":{}}`)
 	resp := postSigned(t, srv, body, testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"))
 }
@@ -176,7 +176,7 @@ func TestHandler_CreatedEvent_EmptyDNSName_TriggersPoll(t *testing.T) {
 
 	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":{"address":"10.0.0.9/32","dns_name":""}}`)
 	resp := postSigned(t, srv, body, testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"), "no direct write — the handler can't compute a device-based name from one event")
 
@@ -203,7 +203,7 @@ func TestHandler_DeletedEvent_EmptyDNSName_TriggersPoll(t *testing.T) {
 
 	body := []byte(`{"event":"deleted","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":null,"snapshots":{"prechange":{"dns_name":""}}}`)
 	resp := postSigned(t, srv, body, testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"))
 
@@ -231,7 +231,7 @@ func TestHandler_RenameEvent_MergeSignalFiresWhenNewZoneUnresolved(t *testing.T)
 
 	// Seed the old name so the rename's delete step has something to remove.
 	resp1 := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
-	resp1.Body.Close()
+	_ = resp1.Body.Close()
 	require.Equal(t, http.StatusOK, resp1.StatusCode)
 	// Drain the mergeSignal sent by the create so the assertion below only
 	// reflects the rename event itself.
@@ -245,7 +245,7 @@ func TestHandler_RenameEvent_MergeSignalFiresWhenNewZoneUnresolved(t *testing.T)
 	// (Depth: 2, used by newTestServer) cannot resolve to any zone.
 	body := []byte(`{"event":"updated","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":{"address":"10.99.99.5/32","dns_name":"unresolvable"},"snapshots":{"prechange":{"dns_name":"webhook-test-1.mycompany.com"}}}`)
 	resp2 := postSigned(t, srv, body, testSecret)
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	assert.Empty(t, store.GetRecords("mycompany.com"), "old name must have been deleted despite the new name's zone being unresolvable")
@@ -269,7 +269,7 @@ func TestHandler_DeletedEvent_ManualRecordPinned_NotDeleted(t *testing.T) {
 	}))
 
 	resp := postSigned(t, srv, readFixture(t, "deleted.json"), testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	got := store.GetRecords("mycompany.com")
@@ -304,7 +304,7 @@ func TestHandler_RenameEvent_ManualRecordPinned_OldNameNotDeleted(t *testing.T) 
 	// updated_rename.json renames webhook-test-1.mycompany.com (the manually
 	// pinned name) to webhook-test-1-renamed.mycompany.com.
 	resp := postSigned(t, srv, readFixture(t, "updated_rename.json"), testSecret)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	got := store.GetRecords("mycompany.com")
@@ -356,12 +356,12 @@ func TestHandler_ConcurrentSameNameDeliveries_NewerEventWins(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		resp := postSigned(t, srv, older, testSecret)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}()
 	go func() {
 		defer wg.Done()
 		resp := postSigned(t, srv, newer, testSecret)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}()
 	wg.Wait()
 
@@ -383,6 +383,6 @@ func TestRegister_EmptySecretDoesNotRegisterRoute(t *testing.T) {
 	defer srv.Close()
 	resp, err := srv.Client().Post(srv.URL+Path, "application/json", bytes.NewReader([]byte(`{}`)))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
