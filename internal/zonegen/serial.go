@@ -6,17 +6,21 @@ import (
 	"time"
 )
 
-// NextSerial returns the next SOA serial in YYYYMMDDNN format.
-// If the current serial is from today, it increments NN.
-// Otherwise it starts a new day with NN=01.
+// NextSerial returns the next SOA serial. Serials are seeded in YYYYMMDDNN
+// form for operator readability, but monotonicity wins over the date
+// encoding: once a day's two-digit NN window is exhausted the serial keeps
+// incrementing into the next day's numeric space (RFC 1982 — secondaries
+// only compare serials, never parse them). The encoding re-synchronizes on
+// the first write of a later day, when that day's base overtakes the
+// carried-forward value.
 func NextSerial(current uint32) uint32 {
 	now := time.Now().UTC()
 	todayBase := uint32(now.Year()*1000000 + int(now.Month())*10000 + now.Day()*100)
 
-	if current >= todayBase && current < todayBase+99 {
-		return current + 1
+	if current < todayBase {
+		return todayBase + 1
 	}
-	return todayBase + 1
+	return current + 1
 }
 
 // ParseSerial parses a serial number from a string.

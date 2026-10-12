@@ -166,6 +166,19 @@ func TestNextSerial(t *testing.T) {
 	}
 }
 
+// N10 (acceptance-test matrix): the SOA serial must be strictly monotonic
+// at any realistic change rate. YYYYMMDDNN allows 99 increments per UTC
+// day; the 100th same-day write used to wrap back to todayBase+1 (G2),
+// which silently freezes every AXFR secondary until the next UTC day.
+func TestNextSerialMonotonicAcross100SameDayWrites(t *testing.T) {
+	s := NextSerial(0)
+	for i := 0; i < 150; i++ {
+		next := NextSerial(s)
+		require.Greater(t, next, s, "serial regressed on write %d", i+2)
+		s = next
+	}
+}
+
 func TestGenerateReverseZone(t *testing.T) {
 	gen := NewGenerator(ZoneConfig{
 		Origin:     "1.10.in-addr.arpa",
