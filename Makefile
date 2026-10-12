@@ -1,5 +1,5 @@
-.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.helm proto \
-       dev dev.cluster dev.netbox dev.token dev.seed dev.images dev.pod-services dev.deploy dev.wait dev.teardown \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.e2e.chaos test.helm proto \
+       dev dev.cluster dev.netbox dev.netbox.down dev.netbox.up dev.chaos.kill-sidecar dev.token dev.seed dev.images dev.pod-services dev.deploy dev.wait dev.teardown \
        dev.shell dev.shell.sidecar \
        lint clean
 
@@ -53,6 +53,30 @@ test.e2e:
 	DNS_POD0=127.0.0.1:15360 \
 	DNS_POD1=127.0.0.1:15361 \
 	go test ./tests/e2e/... -v -count=1 -tags=e2e
+
+# test.e2e.chaos: failure-mode tests (N16/N17/N22 of the acceptance matrix) —
+# they mutate the dev cluster (scale NetBox to zero, delete the sidecar pod)
+# and take ~15 min, so they are separate from test.e2e to keep the fast suite
+# fast. Same env as test.e2e, plus the CHAOS_TESTS gate.
+test.e2e.chaos:
+	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken \
+	NAME_TEMPLATES=true \
+	COREDNS_RELOAD_ADDR=127.0.0.1:18054 \
+	DNS_POD0=127.0.0.1:15360 \
+	DNS_POD1=127.0.0.1:15361 \
+	CHAOS_TESTS=true \
+	go test ./tests/e2e/... -v -count=1 -tags=e2e -run '^TestChaos_' -timeout 30m
+
+# Human-facing chaos helpers — the same operations the chaos tests perform.
+dev.netbox.down:
+	$(KUBECTL) -n $(NETBOX_NAMESPACE) scale deploy/netbox --replicas=0
+
+dev.netbox.up:
+	$(KUBECTL) -n $(NETBOX_NAMESPACE) scale deploy/netbox --replicas=1
+	$(KUBECTL) -n $(NETBOX_NAMESPACE) rollout status deploy/netbox --timeout=10m
+
+dev.chaos.kill-sidecar:
+	$(KUBECTL) -n $(HELM_NAMESPACE) delete pod -l app.kubernetes.io/component=sidecar
 
 # test.e2e.local: full local loop — rebuilds images, redeploys, waits, then runs e2e
 # Requires: make dev.cluster dev.netbox dev.token dev.seed (one-time setup)

@@ -25,6 +25,9 @@ jobs:
         uses: nolar/setup-k3d-k3s@v1
         with:
           skip-creation: true
+          # The action resolves k3s/k3d versions via the GitHub releases API;
+          # unauthenticated calls get rate-limited (curl 403) on busy runners.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
@@ -54,6 +57,7 @@ jobs:
           make dev.netbox dev.token dev.seed dev.deploy
           make dev.wait
           make test.e2e
+          make test.e2e.chaos
 
       - name: Collect logs on failure
         if: failure()
