@@ -183,3 +183,59 @@ func pollInterval() time.Duration {
 	}
 	return 60 * time.Second
 }
+
+// N17 (acceptance-test matrix): NetBox down mid-run. Queries keep serving
+// from the last good zones, zone_staleness_seconds climbs and
+// poll_total{result="error"} increments while NetBox is away, and the first
+// poll after recovery resets staleness with no restart. Component analog of
+// PoC A9.
+func TestChaos_N17_NetboxDownMidRun(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	// Restore NetBox no matter how the test exits.
+	t.Cleanup(func() {
+		scaleDeploy(t, "netbox", "netbox", 1)
+		waitDeployReady(t, "netbox", "netbox", 10*time.Minute)
+	})
+
+	before := fetchMetrics(t)
+	errBefore, _ := metricValue(before, `netbox_sidecar_poll_total{result="error"}`)
+
+	probe := startProbe(t, 500*time.Millisecond)
+
+	scaleDeploy(t, "netbox", "netbox", 0)
+
+	// Outlast at least two poll intervals so ≥2 polls fail.
+	time.Sleep(2*pollInterval() + pollInterval()/2)
+
+	during := fetchMetrics(t)
+	errDuring, ok := metricValue(during, `netbox_sidecar_poll_total{result="error"}`)
+	require.True(t, ok, "poll_total{result=\"error\"} series must exist during the outage")
+	require.Greater(t, errDuring, errBefore, "failed polls must be counted during the outage")
+	staleness, ok := metricValue(during, "netbox_sidecar_zone_staleness_seconds")
+	require.True(t, ok, "zone_staleness_seconds series must exist")
+	require.Greater(t, staleness, 0.0, "staleness must climb while NetBox is down")
+
+	// Recover and wait for the next successful poll to reset staleness.
+	scaleDeploy(t, "netbox", "netbox", 1)
+	waitDeployReady(t, "netbox", "netbox", 10*time.Minute)
+
+	recoveryDeadline := time.Now().Add(3*pollInterval() + 2*time.Minute)
+	recovered := false
+	for time.Now().Before(recoveryDeadline) {
+		after := fetchMetrics(t)
+		if s, ok := metricValue(after, "netbox_sidecar_zone_staleness_seconds"); ok && s == 0 {
+			recovered = true
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+
+	stats := probe.Stop()
+	require.True(t, recovered, "staleness must reset after NetBox returns, without a sidecar restart")
+	require.Greater(t, stats.Total, 0, "probe must have run")
+	require.Zero(t, stats.Failures,
+		"DNS must keep answering through the whole outage; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+}
