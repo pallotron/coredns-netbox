@@ -376,3 +376,55 @@ func TestRecordFromJSON_InvalidJSON(t *testing.T) {
 	_, err := RecordFromJSON([]byte(`not-json`))
 	assert.Error(t, err)
 }
+
+// N18 (acceptance-test matrix): a failure on any page of the paginated
+// fan-out must discard the whole poll — the zone is never built from a
+// truncated record set. Correct today by construction of
+// fetchIPAddressesOnce; this pin is load-bearing for G1's blast radius
+// (a partial set that slipped through would publish a shrunken zone to
+// every AXFR secondary).
+func TestFetchIPAddresses_PartialPageFailureFailsClosed(t *testing.T) {
+	allRecords := []mockIPAddr{
+		newMockAddr(1, "10.0.0.1/24", "host1.example.org"),
+		newMockAddr(2, "10.0.0.2/24", "host2.example.org"),
+		newMockAddr(3, "10.0.0.3/24", "host3.example.org"),
+		newMockAddr(4, "10.0.0.4/24", "host4.example.org"),
+		newMockAddr(5, "10.0.0.5/24", "host5.example.org"),
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		offset := 0
+		if v := q.Get("offset"); v != "" {
+			_, _ = fmt.Sscanf(v, "%d", &offset)
+		}
+		// The count probe (offset=0, limit=1) and the first page (offset=0)
+		// succeed; every later page fails — NetBox dying mid-pagination.
+		if offset > 0 {
+			http.Error(w, "worker crashed", http.StatusInternalServerError)
+			return
+		}
+
+		limit := 2
+		if v := q.Get("limit"); v != "" {
+			_, _ = fmt.Sscanf(v, "%d", &limit)
+		}
+		end := offset + limit
+		if end > len(allRecords) {
+			end = len(allRecords)
+		}
+		resp := mockIPList{Count: len(allRecords), Results: allRecords[offset:end]}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	// pageSize 2 over 5 records -> 3 pages; pages at offset 2 and 4 fail.
+	client, err := New(srv.URL, "testtoken", 2, 5, 0, 0, 0)
+	require.NoError(t, err, "New() error")
+
+	records, err := client.FetchIPAddresses(context.Background())
+	require.Error(t, err, "a failed page must fail the whole fetch")
+	assert.Contains(t, err.Error(), "netbox API returned 500", "error should surface the page failure")
+	assert.Empty(t, records, "no partial record set may be returned")
+}
