@@ -303,12 +303,18 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	lastSuccessTime := time.Now()
 	firstSuccess := false
 
+	// lastRecordCount is the record count behind the currently published
+	// zones, fed back into fetchNetbox's publishAllowed guard (G1). Zero
+	// means nothing published yet, so a fresh install against an empty
+	// Netbox still bootstraps.
+	lastRecordCount := 0
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
 		fetchStart := time.Now()
-		zm, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc, m, cfg.DomainSuffix)
+		zm, count, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc, m, cfg.DomainSuffix, lastRecordCount)
 		if err != nil {
 			return zm, err
 		}
+		lastRecordCount = count
 		if cfg.StripDCLabel {
 			for zone, recs := range zm {
 				zm[zone] = zonediscovery.StripDCLabel(recs, cfg.DomainSuffix)
@@ -472,18 +478,29 @@ func webhookPollAllowed(last, now time.Time, min time.Duration) bool {
 	return now.Sub(last) >= min
 }
 
+// publishAllowed reports whether a successful Netbox fetch that yielded
+// newCount records may replace the previously published set of prevCount
+// records. Minimal G1 policy: never replace a non-empty set with an empty
+// one — an empty-but-HTTP-200 result must not wipe the zones and fan out
+// to every secondary. Empty is fine while nothing has been published yet.
+// A percentage-based shrink guard (matrix N21) is a separate, still-open
+// product decision and deliberately not implemented here.
+func publishAllowed(prevCount, newCount int) bool {
+	return newCount > 0 || prevCount == 0
+}
+
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	categorizer *ipcategorizer.Categorizer, formatter *nameformat.Formatter,
 	forwardDisc, reverseDisc zonediscovery.Discoverer,
-	m *metrics.Sidecar, domainSuffix string,
-) (zonediscovery.ZoneMap, error) {
+	m *metrics.Sidecar, domainSuffix string, prevCount int,
+) (zonediscovery.ZoneMap, int, error) {
 	slog.Info("fetching IP addresses from netbox")
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
 	m.NetboxFetchDurationSeconds.Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
-		return nil, fmt.Errorf("fetch IP addresses: %w", err)
+		return nil, 0, fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
 	slog.Info("fetched IP addresses from netbox", "count", len(records))
@@ -491,12 +508,18 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	if len(records) == 0 {
 		m.NetboxEmptyResponseTotal.Inc()
 	}
+	if !publishAllowed(prevCount, len(records)) {
+		m.PollTotal.WithLabelValues("error").Inc()
+		slog.Error("netbox returned zero records while zones are published; refusing to publish and serving existing zones",
+			"previous_count", prevCount)
+		return nil, 0, fmt.Errorf("netbox returned 0 records but %d were previously published; refusing to publish an empty zone set", prevCount)
+	}
 
 	enriched := enrichRecordsWithDeviceNames(records, categorizer, domainSuffix, formatter)
 
 	forwardZones, err := forwardDisc.Discover(enriched)
 	if err != nil {
-		return nil, fmt.Errorf("discover forward zones: %w", err)
+		return nil, 0, fmt.Errorf("discover forward zones: %w", err)
 	}
 	slog.Info("discovered forward zones", "count", len(forwardZones))
 	for _, zone := range zonediscovery.CNAMEOnlyZones(forwardZones) {
@@ -508,12 +531,12 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	if reverseDisc != nil {
 		reverseZones, err := reverseDisc.Discover(enriched)
 		if err != nil {
-			return nil, fmt.Errorf("discover reverse zones: %w", err)
+			return nil, 0, fmt.Errorf("discover reverse zones: %w", err)
 		}
 		slog.Info("discovered reverse zones", "count", len(reverseZones))
 		maps.Copy(combined, reverseZones)
 	}
-	return combined, nil
+	return combined, len(records), nil
 }
 
 
