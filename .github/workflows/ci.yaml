@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: ['**']
+  # merge_group: run the same required checks (unit-tests, lint, helm) on the
+  # merge queue's speculative merge commits — without this trigger the queue
+  # would wait on checks that never report and time every entry out.
+  merge_group:
 
 jobs:
   unit-tests:
