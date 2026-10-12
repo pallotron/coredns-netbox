@@ -355,7 +355,9 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	if changed, mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
 		slog.Warn("initial merge failed", "err", mergeErr)
 	} else {
-		lastSuccessTime = time.Now()
+		if fetchErr == nil {
+			lastSuccessTime = time.Now()
+		}
 		statusTracker.SetMergeWrite(time.Now())
 		// Readiness must flip before the reload push: CoreDNS's reload
 		// handler fetches zone data back through the sidecar Service, which
@@ -421,10 +423,17 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				statusTracker.SetNetboxPoll(time.Now())
 			}
 			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
-				lastSuccessTime = time.Now()
-				m.ZoneStalenessSeconds.Set(0)
+				// Staleness measures the age of the NetBox data being served,
+				// so it resets only when the FETCH succeeded. A successful
+				// merge of the previous (stale) zones — NetBox down, serve
+				// stale — must leave it climbing, or the staleness alert can
+				// never fire (G6: merge success used to reset it every tick).
+				if err == nil {
+					lastSuccessTime = time.Now()
+					m.ZoneStalenessSeconds.Set(0)
+					statusTracker.SetStaleness(0)
+				}
 				statusTracker.SetMergeWrite(time.Now())
-				statusTracker.SetStaleness(0)
 				// Same ordering as the initial poll: ready before push.
 				if !firstSuccess && markReady != nil {
 					firstSuccess = true
