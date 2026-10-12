@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -12,22 +13,26 @@ import (
 
 // Config holds the sidecar configuration populated from environment variables.
 type Config struct {
-	NetboxURL      string
-	NetboxToken    string
-	DiscoveryMode  string
-	ZoneDepth      int
-	ZoneDir        string
-	PollInterval   time.Duration
-	TTL            uint32
-	PageSize       int
-	MaxConcurrency      int
+	NetboxURL            string
+	NetboxToken          string
+	DiscoveryMode        string
+	ZoneDepth            int
+	ZoneDir              string
+	PollInterval         time.Duration
+	TTL                  uint32
+	PageSize             int
+	MaxConcurrency       int
 	NetboxRetryCount     int
 	NetboxRetryBaseDelay time.Duration
 	NetboxRetryMaxDelay  time.Duration
-	RunOnce             bool
-	HealthAddr     string
-	PrimaryNS      string
-	AdminEmail     string
+	RunOnce              bool
+	HealthAddr           string
+	PrimaryNS            string
+	// PrimaryNSIP, when set, gives PrimaryNS an address record in the zone
+	// that contains it (the SOA/NS name resolves nowhere otherwise — it has
+	// no NetBox object). Optional; empty disables the record.
+	PrimaryNSIP string
+	AdminEmail  string
 
 	// Interface categorization patterns (regex)
 	BMCInterfacePattern       string
@@ -45,8 +50,8 @@ type Config struct {
 	SOAMinimum uint32
 
 	// DNS domain configuration
-	DomainSuffix  string
-	StripDCLabel  bool
+	DomainSuffix string
+	StripDCLabel bool
 
 	// Device name parsing and templating (issue #60). Parsers is an ordered
 	// list of RE2 regexes with named capture groups (first match wins);
@@ -85,24 +90,25 @@ type Config struct {
 
 func Load() (*Config, error) {
 	c := &Config{
-		NetboxURL:      envOrDefault("NETBOX_URL", "http://netbox.netbox.svc.cluster.local"),
-		NetboxToken:    os.Getenv("NETBOX_TOKEN"),
-		DiscoveryMode:  envOrDefault("DISCOVERY_MODE", "zone-depth"),
-		ZoneDir:        envOrDefault("ZONE_DIR", "/zones"),
-		ZoneDepth:      2,
-		TTL:            300,
-		PageSize:       1000,
-		MaxConcurrency:      10,
+		NetboxURL:            envOrDefault("NETBOX_URL", "http://netbox.netbox.svc.cluster.local"),
+		NetboxToken:          os.Getenv("NETBOX_TOKEN"),
+		DiscoveryMode:        envOrDefault("DISCOVERY_MODE", "zone-depth"),
+		ZoneDir:              envOrDefault("ZONE_DIR", "/zones"),
+		ZoneDepth:            2,
+		TTL:                  300,
+		PageSize:             1000,
+		MaxConcurrency:       10,
 		NetboxRetryCount:     3,
 		NetboxRetryBaseDelay: 1 * time.Second,
 		NetboxRetryMaxDelay:  30 * time.Second,
-		HealthAddr:          envOrDefault("HEALTH_ADDR", ":8082"),
-		PrimaryNS:      envOrDefault("PRIMARY_NS", "ns1.example.org."),
-		AdminEmail:     envOrDefault("ADMIN_EMAIL", "admin.example.org."),
-		SOARefresh:     3600,
-		SOARetry:       900,
-		SOAExpire:      604800,
-		SOAMinimum:     86400,
+		HealthAddr:           envOrDefault("HEALTH_ADDR", ":8082"),
+		PrimaryNS:            envOrDefault("PRIMARY_NS", "ns1.example.org."),
+		PrimaryNSIP:          os.Getenv("PRIMARY_NS_IP"),
+		AdminEmail:           envOrDefault("ADMIN_EMAIL", "admin.example.org."),
+		SOARefresh:           3600,
+		SOARetry:             900,
+		SOAExpire:            604800,
+		SOAMinimum:           86400,
 
 		// Interface categorization patterns
 		BMCInterfacePattern:       envOrDefault("BMC_INTERFACE_PATTERN", "(?i)bmc|ipmi|ilo|idrac"),
@@ -138,6 +144,10 @@ func Load() (*Config, error) {
 
 	if c.NetboxToken == "" {
 		return nil, fmt.Errorf("NETBOX_TOKEN is required")
+	}
+
+	if c.PrimaryNSIP != "" && net.ParseIP(c.PrimaryNSIP) == nil {
+		return nil, fmt.Errorf("invalid PRIMARY_NS_IP %q: not an IP address", c.PrimaryNSIP)
 	}
 
 	if v := os.Getenv("ZONE_DEPTH"); v != "" {

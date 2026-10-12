@@ -9,18 +9,19 @@ import (
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
-	"github.com/pallotron/coredns-netbox/internal/zonegen"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
+	"github.com/pallotron/coredns-netbox/internal/zonegen"
 )
 
 // Manager maintains one zonegen.Generator per discovered zone and writes
 // zone files to a directory using the naming convention db.<zoneName>.
 type Manager struct {
-	zoneDir    string
-	primaryNS  string
-	adminEmail string
-	ttl        uint32
-	soa        zonegen.SOATimers
+	zoneDir     string
+	primaryNS   string
+	primaryNSIP string
+	adminEmail  string
+	ttl         uint32
+	soa         zonegen.SOATimers
 
 	generators map[string]*zonegen.Generator
 }
@@ -35,14 +36,15 @@ type UpdateStats struct {
 
 // New creates a new zone Manager. Zero-value soa timers fall back to
 // zonegen.DefaultSOATimers.
-func New(zoneDir, primaryNS, adminEmail string, ttl uint32, soa zonegen.SOATimers) *Manager {
+func New(zoneDir, primaryNS, primaryNSIP, adminEmail string, ttl uint32, soa zonegen.SOATimers) *Manager {
 	return &Manager{
-		zoneDir:    zoneDir,
-		primaryNS:  primaryNS,
-		adminEmail: adminEmail,
-		ttl:        ttl,
-		soa:        soa,
-		generators: make(map[string]*zonegen.Generator),
+		zoneDir:     zoneDir,
+		primaryNS:   primaryNS,
+		primaryNSIP: primaryNSIP,
+		adminEmail:  adminEmail,
+		ttl:         ttl,
+		soa:         soa,
+		generators:  make(map[string]*zonegen.Generator),
 	}
 }
 
@@ -75,12 +77,13 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 			// Pass zone file path so generator can read existing serial for continuity
 			zonePath := m.zonePath(zone)
 			gen = zonegen.NewGenerator(zonegen.ZoneConfig{
-				Origin:     zone,
-				PrimaryNS:  m.primaryNS,
-				AdminEmail: m.adminEmail,
-				TTL:        m.ttl,
-				Type:       zoneType,
-				SOA:        m.soa,
+				Origin:      zone,
+				PrimaryNS:   m.primaryNS,
+				PrimaryNSIP: m.primaryNSIP,
+				AdminEmail:  m.adminEmail,
+				TTL:         m.ttl,
+				Type:        zoneType,
+				SOA:         m.soa,
 			}, zonePath)
 			m.generators[zone] = gen
 		}

@@ -147,7 +147,7 @@ func main() {
 		slog.Info("reverse zones enabled", "ipv4_zones", cfg.ReverseZonesIPv4, "ipv6_zones", cfg.ReverseZonesIPv6)
 	}
 
-	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.AdminEmail, cfg.TTL, zonegen.SOATimers{
+	mgr := zonemanager.New(cfg.ZoneDir, cfg.PrimaryNS, cfg.PrimaryNSIP, cfg.AdminEmail, cfg.TTL, zonegen.SOATimers{
 		Refresh: cfg.SOARefresh,
 		Retry:   cfg.SOARetry,
 		Expire:  cfg.SOAExpire,
@@ -539,7 +539,6 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	return combined, len(records), nil
 }
 
-
 // enrichRecordsWithDeviceNames implements a hybrid approach:
 // - Keep records that already have dns_name populated (qualifying bare names with domainSuffix)
 // - Generate DNS names from device names for records without dns_name
@@ -573,4 +572,3 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *
 
 	return result
 }
-

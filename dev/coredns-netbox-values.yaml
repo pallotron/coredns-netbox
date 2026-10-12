@@ -70,6 +70,8 @@ nameFormats:
 
 # DNS metadata
 primaryNS: ns1.mycompany.com.
+# TEST-NET-1 address so the e2e suite can assert the NS name resolves (N15).
+primaryNSIP: 192.0.2.53
 adminEmail: admin.mycompany.com.
 
 # Reduce cache TTL for dev/e2e: ensures CoreDNS reload (10s) outlasts any
