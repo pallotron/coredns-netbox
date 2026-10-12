@@ -96,6 +96,30 @@ func TestPublishAllowed(t *testing.T) {
 	}
 }
 
+// Gap G4: before the first successful NetBox fetch of this process, a
+// merge/write would hand removeOrphans an empty NetBox zone set and delete
+// every cached zone file — the PVC cache that serve-stale across sidecar
+// restarts (matrix N16/N22) depends on. Merging is only safe once NetBox
+// data exists in memory, or when there is nothing on disk to destroy.
+func TestMergeAllowed(t *testing.T) {
+	tests := []struct {
+		name               string
+		fetchSucceededOnce bool
+		hasExistingZones   bool
+		want               bool
+	}{
+		{"normal operation after first successful fetch", true, true, true},
+		{"first fetch ok, fresh disk", true, false, true},
+		{"restart with NetBox down and cached zones: refuse", false, true, false},
+		{"fresh install with NetBox down, nothing to destroy", false, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, mergeAllowed(tt.fetchSucceededOnce, tt.hasExistingZones))
+		})
+	}
+}
+
 func TestFetchNetboxRefusesEmptyOverPublished(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

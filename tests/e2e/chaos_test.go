@@ -277,3 +277,53 @@ func TestChaos_N22_SidecarKilled(t *testing.T) {
 			zone, serialBefore, serialAfter)
 	}
 }
+
+// N16 (acceptance-test matrix): NetBox down when the sidecar starts. The
+// replacement sidecar must come up Running (not CrashLoopBackOff), must NOT
+// destroy the cached zone files (gap G4 — pre-fix it merged an empty NetBox
+// set and removeOrphans wiped the PVC), and DNS must answer throughout. The
+// pod stays NotReady until NetBox returns — that is by design (readiness
+// gates on the first successful fetch+merge).
+func TestChaos_N16_NetboxDownAtSidecarStartup(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	sidecarSel := "app.kubernetes.io/component=sidecar"
+
+	t.Cleanup(func() {
+		scaleDeploy(t, "netbox", "netbox", 1)
+		waitDeployReady(t, "netbox", "netbox", 10*time.Minute)
+		waitDeployReady(t, "coredns-netbox", "coredns-netbox-sidecar", 10*time.Minute)
+	})
+
+	probe := startProbe(t, 500*time.Millisecond)
+
+	// NetBox gone first, THEN restart the sidecar: the replacement starts
+	// with a failing initial fetch and only the PVC cache to serve.
+	scaleDeploy(t, "netbox", "netbox", 0)
+	time.Sleep(10 * time.Second)
+	kubectlOut(t, "-n", "coredns-netbox", "delete", "pod", "-l", sidecarSel, "--wait=false")
+
+	waitPodRunning(t, "coredns-netbox", sidecarSel, 3*time.Minute)
+
+	// Hold the degraded state across a poll interval: the replacement must
+	// neither crash-loop nor wipe the cache (the probe would catch a wipe
+	// the moment a reload pushed empty zones to CoreDNS).
+	time.Sleep(pollInterval() + 30*time.Second)
+
+	restarts := kubectlOut(t, "-n", "coredns-netbox", "get", "pod", "-l", sidecarSel,
+		"-o", "jsonpath={.items[0].status.containerStatuses[0].restartCount}")
+	require.Equal(t, "0", strings.TrimSpace(restarts),
+		"replacement sidecar must not crash-loop while NetBox is down")
+
+	// Recovery: NetBox back -> sidecar becomes Ready and polls succeed.
+	scaleDeploy(t, "netbox", "netbox", 1)
+	waitDeployReady(t, "netbox", "netbox", 10*time.Minute)
+	waitDeployReady(t, "coredns-netbox", "coredns-netbox-sidecar", 10*time.Minute)
+
+	stats := probe.Stop()
+	require.Greater(t, stats.Total, 0, "probe must have run")
+	require.Zero(t, stats.Failures,
+		"DNS must answer through sidecar restart + NetBox outage + recovery; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+}

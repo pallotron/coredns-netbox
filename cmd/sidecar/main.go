@@ -308,6 +308,9 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	// means nothing published yet, so a fresh install against an empty
 	// Netbox still bootstraps.
 	lastRecordCount := 0
+	// fetchSucceededOnce flips when any Netbox fetch of this process
+	// succeeds; until then merges are gated by mergeAllowed (G4).
+	fetchSucceededOnce := false
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
 		fetchStart := time.Now()
 		zm, count, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc, m, cfg.DomainSuffix, lastRecordCount)
@@ -315,6 +318,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 			return zm, err
 		}
 		lastRecordCount = count
+		fetchSucceededOnce = true
 		if cfg.StripDCLabel {
 			for zone, recs := range zm {
 				zm[zone] = zonediscovery.StripDCLabel(recs, cfg.DomainSuffix)
@@ -335,6 +339,16 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 		return merge.Write(netboxZones, store, mgr, m, reverseDisc)
 	}
 
+	// guardedMergeAndWrite applies the G4 gate; callers treat a skipped
+	// merge like a merge error (no reload, no success bookkeeping).
+	guardedMergeAndWrite := func(netboxZones zonediscovery.ZoneMap) (bool, error) {
+		if !mergeAllowed(fetchSucceededOnce, mgr.HasExistingZones()) {
+			slog.Warn("skipping merge/write: no successful Netbox fetch yet and cached zone files exist; serving existing zones (G4 guard)")
+			return false, fmt.Errorf("merge gated until first successful netbox fetch")
+		}
+		return doMergeAndWrite(netboxZones)
+	}
+
 	// In run-once (zone-init) mode, skip the Netbox fetch if zone files already
 	// exist on disk. This allows fast pod restarts when zoneStorage.persistent
 	// is enabled: CoreDNS starts immediately from the existing PVC content while
@@ -352,7 +366,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 		netboxCache.Update(netboxZones)
 		statusTracker.SetNetboxPoll(time.Now())
 	}
-	if changed, mergeErr := doMergeAndWrite(netboxZones); mergeErr != nil {
+	if changed, mergeErr := guardedMergeAndWrite(netboxZones); mergeErr != nil {
 		slog.Warn("initial merge failed", "err", mergeErr)
 	} else {
 		if fetchErr == nil {
@@ -398,7 +412,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 			netboxCache.Update(zones)
 			statusTracker.SetNetboxPoll(time.Now())
 		}
-		if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+		if changed, mergeErr := guardedMergeAndWrite(lastNetboxZones); mergeErr == nil {
 			if changed {
 				rl.Reload(ctx)
 			}
@@ -422,7 +436,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 				netboxCache.Update(zones)
 				statusTracker.SetNetboxPoll(time.Now())
 			}
-			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+			if changed, mergeErr := guardedMergeAndWrite(lastNetboxZones); mergeErr == nil {
 				// Staleness measures the age of the NetBox data being served,
 				// so it resets only when the FETCH succeeded. A successful
 				// merge of the previous (stale) zones — NetBox down, serve
@@ -450,7 +464,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 			pollAndMerge()
 
 		case <-mergeSignal:
-			if changed, mergeErr := doMergeAndWrite(lastNetboxZones); mergeErr == nil {
+			if changed, mergeErr := guardedMergeAndWrite(lastNetboxZones); mergeErr == nil {
 				if changed {
 					rl.Reload(ctx)
 				}
@@ -496,6 +510,16 @@ func webhookPollAllowed(last, now time.Time, min time.Duration) bool {
 // product decision and deliberately not implemented here.
 func publishAllowed(prevCount, newCount int) bool {
 	return newCount > 0 || prevCount == 0
+}
+
+// mergeAllowed reports whether a merge/write cycle may run. Before the first
+// successful Netbox fetch of this process, lastNetboxZones is nil, so a merge
+// would feed removeOrphans an empty Netbox set and delete every cached zone
+// file — the PVC cache that serve-stale across restarts depends on (G4). A
+// merge with no fetched data is only safe when there is nothing on disk to
+// destroy (fresh install), where it lets dynamic-only zones publish.
+func mergeAllowed(fetchSucceededOnce, hasExistingZones bool) bool {
+	return fetchSucceededOnce || !hasExistingZones
 }
 
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
