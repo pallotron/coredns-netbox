@@ -514,3 +514,23 @@ func TestAXFRIncludesCNAME(t *testing.T) {
 	}
 	require.True(t, foundCNAME, "AXFR of mycompany.com must include %s CNAME %s", tmplAlias, tmplCanonical)
 }
+
+// N15 (acceptance-test matrix) / gap G3: the name referenced by every zone's
+// SOA and NS records must itself resolve. The sidecar emits its address from
+// PRIMARY_NS_IP (192.0.2.53 in dev/coredns-netbox-values.yaml).
+func TestPrimaryNSHasARecord(t *testing.T) {
+	waitForPrimary(t)
+	r := query(t, "ns1.mycompany.com.", dns.TypeA)
+
+	require.Equal(t, dns.RcodeSuccess, r.Rcode,
+		"expected NOERROR for the NS name, got %s", dns.RcodeToString[r.Rcode])
+	require.NotEmpty(t, r.Answer, "expected an A record for the NS name")
+
+	found := false
+	for _, ans := range r.Answer {
+		if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP("192.0.2.53")) {
+			found = true
+		}
+	}
+	require.True(t, found, "expected 192.0.2.53 in A answers for ns1.mycompany.com")
+}

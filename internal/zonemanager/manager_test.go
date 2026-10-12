@@ -14,13 +14,13 @@ import (
 
 func TestManager_HasExistingZones_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 	assert.False(t, mgr.HasExistingZones(), "expected false for empty zone dir")
 }
 
 func TestManager_HasExistingZones_WithZoneFiles(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "db.example.org"), []byte("data"), 0o644), "setup")
 
@@ -29,7 +29,7 @@ func TestManager_HasExistingZones_WithZoneFiles(t *testing.T) {
 
 func TestManager_HasExistingZones_IgnoresNonZoneFiles(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "some-other-file"), []byte("data"), 0o644), "setup")
 
@@ -38,7 +38,7 @@ func TestManager_HasExistingZones_IgnoresNonZoneFiles(t *testing.T) {
 
 func TestManager_CreateZoneFiles(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{
@@ -61,7 +61,7 @@ func TestManager_CreateZoneFiles(t *testing.T) {
 
 func TestManager_MultipleZones(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{
@@ -86,7 +86,7 @@ func TestManager_MultipleZones(t *testing.T) {
 
 func TestManager_RemoveOrphanedZones(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	// Create initial zones
 	zm := zonediscovery.ZoneMap{
@@ -115,7 +115,7 @@ func TestManager_RemoveOrphanedZones(t *testing.T) {
 
 func TestManager_NoChangeSkipsWrite(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{
@@ -138,7 +138,7 @@ func TestManager_NoChangeSkipsWrite(t *testing.T) {
 
 func TestManager_RemoveStaleFiles(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	// Manually create a stale zone file
 	_ = os.WriteFile(filepath.Join(dir, "db.stale.example.org"), []byte("stale"), 0o644)
@@ -157,7 +157,7 @@ func TestManager_RemoveStaleFiles(t *testing.T) {
 
 func TestManager_UpdateStats_Created(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{
@@ -177,7 +177,7 @@ func TestManager_UpdateStats_Created(t *testing.T) {
 
 func TestManager_UpdateStats_Updated(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{
@@ -203,7 +203,7 @@ func TestManager_UpdateStats_Updated(t *testing.T) {
 
 func TestManager_UpdateStats_NoChange(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{
@@ -223,7 +223,7 @@ func TestManager_UpdateStats_NoChange(t *testing.T) {
 
 func TestManager_UpdateStats_Deleted(t *testing.T) {
 	dir := t.TempDir()
-	mgr := New(dir, "ns1.example.org.", "admin.example.org.", 30, zonegen.SOATimers{})
+	mgr := New(dir, "ns1.example.org.", "", "admin.example.org.", 30, zonegen.SOATimers{})
 
 	zm := zonediscovery.ZoneMap{
 		"example.org": []netboxclient.IPRecord{

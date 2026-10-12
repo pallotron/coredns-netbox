@@ -143,6 +143,10 @@ pollInterval: "60s"
 ttl: 300
 
 primaryNS: ns1.example.org.
+# Optional address record for primaryNS, emitted in the zone that contains
+# the name (typically this service's LoadBalancer/ClusterIP). Without it the
+# SOA/NS name never resolves — it has no NetBox object behind it.
+primaryNSIP: ""
 adminEmail: admin.example.org.
 
 # SOA timers (seconds) for generated zones. refresh/retry control how often

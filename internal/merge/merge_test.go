@@ -22,7 +22,7 @@ func newComponents(t *testing.T) (string, dynamicstore.DynamicStore, *zonemanage
 	dir := t.TempDir()
 	store, err := dynamicstore.NewFileStore(filepath.Join(dir, "dynamic.json"))
 	require.NoError(t, err)
-	mgr := zonemanager.New(dir, "ns1.example.org.", "admin.example.org.", 300, zonegen.SOATimers{})
+	mgr := zonemanager.New(dir, "ns1.example.org.", "", "admin.example.org.", 300, zonegen.SOATimers{})
 	m := metrics.NewSidecar(prometheus.NewRegistry())
 	return dir, store, mgr, m
 }

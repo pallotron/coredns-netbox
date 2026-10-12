@@ -77,6 +77,10 @@ spec:
               value: {{ .Values.ttl | quote }}
             - name: PRIMARY_NS
               value: {{ .Values.primaryNS | quote }}
+            {{- if .Values.primaryNSIP }}
+            - name: PRIMARY_NS_IP
+              value: {{ .Values.primaryNSIP | quote }}
+            {{- end }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}
             - name: SOA_REFRESH
@@ -215,6 +219,10 @@ spec:
               value: {{ .Values.ttl | quote }}
             - name: PRIMARY_NS
               value: {{ .Values.primaryNS | quote }}
+            {{- if .Values.primaryNSIP }}
+            - name: PRIMARY_NS_IP
+              value: {{ .Values.primaryNSIP | quote }}
+            {{- end }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}
             - name: SOA_REFRESH

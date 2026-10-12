@@ -179,6 +179,102 @@ func TestNextSerialMonotonicAcross100SameDayWrites(t *testing.T) {
 	}
 }
 
+// N15 (acceptance-test matrix) / gap G3: PrimaryNS is named in every zone's
+// SOA and NS records but its address was never emitted, so the NS name
+// itself returned NXDOMAIN. With PrimaryNSIP configured, the forward zone
+// that contains the PrimaryNS name serves a matching address record; a
+// NetBox-managed record for the same name takes precedence.
+func TestGeneratePrimaryNSAddressRecord(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
+	}
+
+	t.Run("A record emitted in the zone containing the NS name", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:      "example.org",
+			PrimaryNS:   "ns1.example.org.",
+			AdminEmail:  "admin.example.org.",
+			TTL:         300,
+			PrimaryNSIP: "192.0.2.53",
+		}, "")
+		content, _, _, err := gen.Generate(records)
+		require.NoError(t, err, "Generate() error")
+		assert.Contains(t, content, "ns1 IN A 192.0.2.53")
+	})
+
+	t.Run("AAAA record for an IPv6 address", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:      "example.org",
+			PrimaryNS:   "ns1.example.org.",
+			AdminEmail:  "admin.example.org.",
+			TTL:         300,
+			PrimaryNSIP: "2001:db8::53",
+		}, "")
+		content, _, _, err := gen.Generate(records)
+		require.NoError(t, err, "Generate() error")
+		assert.Contains(t, content, "ns1 IN AAAA 2001:db8::53")
+	})
+
+	t.Run("not emitted when the NS name lives in another zone", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:      "other.org",
+			PrimaryNS:   "ns1.example.org.",
+			AdminEmail:  "admin.example.org.",
+			TTL:         300,
+			PrimaryNSIP: "192.0.2.53",
+		}, "")
+		content, _, _, err := gen.Generate([]netboxclient.IPRecord{
+			{DNSName: "host1.other.org", Address: "10.0.0.2", Family: 4},
+		})
+		require.NoError(t, err, "Generate() error")
+		assert.NotContains(t, content, "192.0.2.53")
+	})
+
+	t.Run("not emitted when PrimaryNSIP is unset", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:     "example.org",
+			PrimaryNS:  "ns1.example.org.",
+			AdminEmail: "admin.example.org.",
+			TTL:        300,
+		}, "")
+		content, _, _, err := gen.Generate(records)
+		require.NoError(t, err, "Generate() error")
+		assert.NotContains(t, content, "ns1 IN A")
+	})
+
+	t.Run("never emitted in reverse zones", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:      "1.10.in-addr.arpa",
+			PrimaryNS:   "ns1.example.org.",
+			AdminEmail:  "admin.example.org.",
+			TTL:         300,
+			Type:        ZoneTypeReverse,
+			PrimaryNSIP: "192.0.2.53",
+		}, "")
+		content, _, _, err := gen.Generate([]netboxclient.IPRecord{
+			{Address: "3.2", DNSName: "server1.example.com", Family: 4},
+		})
+		require.NoError(t, err, "Generate() error")
+		assert.NotContains(t, content, "192.0.2.53")
+	})
+
+	t.Run("a NetBox-managed record for the same name wins", func(t *testing.T) {
+		gen := NewGenerator(ZoneConfig{
+			Origin:      "example.org",
+			PrimaryNS:   "ns1.example.org.",
+			AdminEmail:  "admin.example.org.",
+			TTL:         300,
+			PrimaryNSIP: "192.0.2.53",
+		}, "")
+		content, _, _, err := gen.Generate([]netboxclient.IPRecord{
+			{DNSName: "ns1.example.org", Address: "10.0.0.99", Family: 4},
+		})
+		require.NoError(t, err, "Generate() error")
+		assert.Contains(t, content, "ns1 IN A 10.0.0.99")
+		assert.NotContains(t, content, "192.0.2.53")
+	})
+}
+
 func TestGenerateReverseZone(t *testing.T) {
 	gen := NewGenerator(ZoneConfig{
 		Origin:     "1.10.in-addr.arpa",

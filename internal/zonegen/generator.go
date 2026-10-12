@@ -51,6 +51,10 @@ type ZoneConfig struct {
 	TTL        uint32
 	Type       ZoneType // forward or reverse
 	SOA        SOATimers
+	// PrimaryNSIP, when set, is the address served for the PrimaryNS name in
+	// the forward zone that contains it — without it the name referenced by
+	// every SOA/NS record never resolves (it has no NetBox object).
+	PrimaryNSIP string
 }
 
 // Generator produces DNS zone files from Netbox records.
@@ -119,6 +123,13 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int
 	// NS record
 	fmt.Fprintf(&b, "@ IN NS %s\n\n", g.config.PrimaryNS)
 
+	// G3: PrimaryNS is named in every zone's SOA/NS but lives in exactly one
+	// zone — serve its address there so the name actually resolves. A
+	// NetBox-managed record for the same name takes precedence.
+	if g.config.Type != ZoneTypeReverse && g.config.PrimaryNSIP != "" {
+		g.writePrimaryNSAddress(&b, records, origin)
+	}
+
 	// Sort records for deterministic output
 	sorted := make([]netboxclient.IPRecord, len(records))
 	copy(sorted, records)
@@ -185,6 +196,27 @@ func WriteFile(path, content string) error {
 	}
 
 	return nil
+}
+
+// writePrimaryNSAddress emits an address record for the PrimaryNS name when
+// it belongs to this zone. Skipped when the name is out of zone or when a
+// NetBox record already defines it (the operator-managed address wins).
+func (g *Generator) writePrimaryNSAddress(b *strings.Builder, records []netboxclient.IPRecord, origin string) {
+	nsName := strings.TrimSuffix(g.config.PrimaryNS, ".")
+	short := shortName(nsName, origin)
+	if strings.HasSuffix(short, ".") {
+		return // out of zone: shortName returns the FQDN unchanged, dot-terminated
+	}
+	for _, r := range records {
+		if strings.TrimSuffix(r.DNSName, ".") == nsName {
+			return
+		}
+	}
+	rtype := "A"
+	if strings.Contains(g.config.PrimaryNSIP, ":") {
+		rtype = "AAAA"
+	}
+	fmt.Fprintf(b, "%s IN %s %s\n\n", short, rtype, g.config.PrimaryNSIP)
 }
 
 // shortName extracts the relative name from an FQDN given the zone origin.
