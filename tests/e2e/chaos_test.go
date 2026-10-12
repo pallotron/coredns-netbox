@@ -239,3 +239,41 @@ func TestChaos_N17_NetboxDownMidRun(t *testing.T) {
 		"DNS must keep answering through the whole outage; first failure: %s (of %d queries)",
 		stats.FirstFailure, stats.Total)
 }
+
+// N22 (acceptance-test matrix): killing the sidecar must not disturb DNS —
+// CoreDNS replicas keep serving their zones while the replacement sidecar
+// (strategy Recreate) comes back and re-fetches.
+//
+// Serial note (gap G5, decision pending): the replacement's generators start
+// with an empty content hash, so today the first Generate after a restart
+// rewrites every zone with serial+1 and re-transfers to all secondaries.
+// The serial delta is logged here, not asserted, until G5 is decided.
+func TestChaos_N22_SidecarKilled(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	zone := forwardZone("dc1")
+	serialBefore := soaSerial(t, zone)
+
+	probe := startProbe(t, 500*time.Millisecond)
+
+	kubectlOut(t, "-n", "coredns-netbox", "delete", "pod",
+		"-l", "app.kubernetes.io/component=sidecar", "--wait=false")
+	waitDeployReady(t, "coredns-netbox", "coredns-netbox-sidecar", 5*time.Minute)
+
+	// Give the replacement one fetch+merge cycle.
+	time.Sleep(pollInterval() + 30*time.Second)
+
+	stats := probe.Stop()
+	require.Greater(t, stats.Total, 0, "probe must have run")
+	require.Zero(t, stats.Failures,
+		"DNS must keep answering across a sidecar restart; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+
+	serialAfter := soaSerial(t, zone)
+	require.GreaterOrEqual(t, serialAfter, serialBefore, "serial must never regress (RFC 1982)")
+	if serialAfter != serialBefore {
+		t.Logf("G5: sidecar restart bumped %s serial %d -> %d (restart-triggered rewrite; decision pending)",
+			zone, serialBefore, serialAfter)
+	}
+}
