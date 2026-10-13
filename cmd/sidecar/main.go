@@ -93,6 +93,7 @@ func main() {
 		slog.Error("failed to create netbox client", "err", err)
 		os.Exit(1)
 	}
+	client.SetPublishStatuses(cfg.PublishStatuses)
 
 	// Create IP categorizer for device-based DNS record generation
 	categorizer, err := ipcategorizer.NewCategorizer(
@@ -209,7 +210,7 @@ func main() {
 		registerHealth(mux, &healthy)
 		mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 		zoneserver.Register(mux, cfg.ZoneDir)
-		netboxwebhook.Register(mux, cfg.NetboxWebhookSecret, store, forwardDisc, mergeSignal, webhookPollSignal, m)
+		netboxwebhook.Register(mux, cfg.NetboxWebhookSecret, store, forwardDisc, mergeSignal, webhookPollSignal, m, cfg.PublishStatuses)
 		srv := &http.Server{Addr: cfg.HealthAddr, Handler: mux}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

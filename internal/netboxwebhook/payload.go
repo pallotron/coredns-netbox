@@ -3,6 +3,7 @@ package netboxwebhook
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
@@ -34,6 +35,29 @@ func parsePayload(body []byte) (payload, error) {
 		return payload{}, fmt.Errorf("decode webhook payload: %w", err)
 	}
 	return p, nil
+}
+
+// statusFromData extracts the status value from a created/updated payload's
+// data object (API shape: {"status": {"value": "reserved", ...}}; a custom
+// body_template may serialize it as a bare string instead). Returns "" when
+// the field is absent or unparseable — the caller then publishes as before
+// (pre-G7 behavior) rather than dropping the event.
+func statusFromData(data json.RawMessage) string {
+	var obj struct {
+		Status struct {
+			Value string `json:"value"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil && obj.Status.Value != "" {
+		return strings.ToLower(obj.Status.Value)
+	}
+	var flat struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &flat); err == nil {
+		return strings.ToLower(flat.Status)
+	}
+	return ""
 }
 
 // recordFromPayload builds an IPRecord from a created/updated payload's data

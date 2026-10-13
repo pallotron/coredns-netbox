@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -427,4 +428,54 @@ func TestFetchIPAddresses_PartialPageFailureFailsClosed(t *testing.T) {
 	require.Error(t, err, "a failed page must fail the whole fetch")
 	assert.Contains(t, err.Error(), "netbox API returned 500", "error should surface the page failure")
 	assert.Empty(t, records, "no partial record set may be returned")
+}
+
+// The status= query params are the poll path's entire publish-status
+// policy (N1 in the acceptance matrix): NetBox filters server-side, the
+// sidecar has no client-side status logic. Dropping or mistyping the param
+// would silently leak every reserved/deprecated/dhcp IP into the zones.
+func TestFetchIPAddresses_StatusQueryParams(t *testing.T) {
+	var mu sync.Mutex
+	var gotStatuses [][]string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotStatuses = append(gotStatuses, r.URL.Query()["status"])
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":0,"next":null,"previous":null,"results":[]}`))
+	}))
+	defer srv.Close()
+
+	client, err := New(srv.URL, "testtoken", 100, 2, 0, 0, 0)
+	require.NoError(t, err, "New() error")
+
+	_, err = client.FetchIPAddresses(context.Background())
+	require.NoError(t, err)
+	mu.Lock()
+	require.NotEmpty(t, gotStatuses)
+	for _, s := range gotStatuses {
+		assert.Equal(t, []string{"active"}, s, "default must request only active IPs")
+	}
+	gotStatuses = nil
+	mu.Unlock()
+
+	client.SetPublishStatuses([]string{"active", "reserved"})
+	_, err = client.FetchIPAddresses(context.Background())
+	require.NoError(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, gotStatuses)
+	for _, s := range gotStatuses {
+		assert.Equal(t, []string{"active", "reserved"}, s, "configured set must be requested verbatim")
+	}
+}
+
+// SetPublishStatuses with an empty slice must not clear the active-only
+// default — an unset config value may plumb through as nil.
+func TestSetPublishStatusesIgnoresEmpty(t *testing.T) {
+	client, err := New("http://netbox.example.org", "testtoken", 100, 2, 0, 0, 0)
+	require.NoError(t, err)
+	client.SetPublishStatuses(nil)
+	assert.Equal(t, []string{"active"}, client.publishStatuses)
 }

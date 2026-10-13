@@ -81,6 +81,10 @@ spec:
             - name: PRIMARY_NS_IP
               value: {{ .Values.primaryNSIP | quote }}
             {{- end }}
+            {{- if .Values.publishStatuses }}
+            - name: NETBOX_PUBLISH_STATUSES
+              value: {{ .Values.publishStatuses | quote }}
+            {{- end }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}
             - name: SOA_REFRESH
@@ -222,6 +226,10 @@ spec:
             {{- if .Values.primaryNSIP }}
             - name: PRIMARY_NS_IP
               value: {{ .Values.primaryNSIP | quote }}
+            {{- end }}
+            {{- if .Values.publishStatuses }}
+            - name: NETBOX_PUBLISH_STATUSES
+              value: {{ .Values.publishStatuses | quote }}
             {{- end }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}

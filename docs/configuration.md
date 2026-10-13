@@ -171,6 +171,7 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `ttl` | `300` | Default TTL for DNS records |
 | `primaryNS` | `ns1.example.org.` | SOA primary nameserver |
 | `primaryNSIP` | `""` | Optional address (A/AAAA) record for the `primaryNS` name, emitted in the zone that contains it — typically this service's LoadBalancer or ClusterIP. Empty disables the record, in which case the SOA/NS name does not resolve (it has no Netbox object behind it). A Netbox-managed record for the same name takes precedence. |
+| `publishStatuses` | `""` | Comma-separated NetBox IP statuses published to DNS (valid: `active`, `reserved`, `deprecated`, `dhcp`, `slaac`); empty means `active` only. One policy for both ingestion paths: the poll fetch filters server-side (`status=` params) and the webhook treats an event whose status is outside the set as a delete. |
 | `adminEmail` | `admin.example.org.` | SOA admin email (dot notation) |
 | `domainSuffix` | `example.org` | DNS domain suffix for device-based record generation (zone extraction from device names) |
 | `stripDCLabel` | `false` | Strip the DC label (immediately before `domainSuffix`) from all Netbox DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |

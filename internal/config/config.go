@@ -34,6 +34,13 @@ type Config struct {
 	PrimaryNSIP string
 	AdminEmail  string
 
+	// PublishStatuses is the set of NetBox IP statuses published to DNS.
+	// It is the single policy enforced on BOTH ingestion paths: the poll
+	// path filters server-side (one status= query param per entry) and the
+	// webhook fast path treats an event whose object is outside the set as
+	// a delete. Default: active only.
+	PublishStatuses []string
+
 	// Interface categorization patterns (regex)
 	BMCInterfacePattern       string
 	LoopbackInterfacePattern  string
@@ -150,6 +157,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid PRIMARY_NS_IP %q: not an IP address", c.PrimaryNSIP)
 	}
 
+	statuses, err := ParsePublishStatuses(os.Getenv("NETBOX_PUBLISH_STATUSES"))
+	if err != nil {
+		return nil, err
+	}
+	c.PublishStatuses = statuses
+
 	if v := os.Getenv("ZONE_DEPTH"); v != "" {
 		d, err := strconv.Atoi(v)
 		if err != nil {
@@ -243,6 +256,46 @@ func Load() (*Config, error) {
 	}
 
 	return c, nil
+}
+
+// validPublishStatuses are the NetBox IPAddress status values the sidecar
+// accepts in NETBOX_PUBLISH_STATUSES. Kept to the stable set NetBox has
+// shipped across 3.x/4.x so a typo fails at startup instead of silently
+// matching nothing (an unknown status= filter would return zero records).
+var validPublishStatuses = map[string]bool{
+	"active":     true,
+	"reserved":   true,
+	"deprecated": true,
+	"dhcp":       true,
+	"slaac":      true,
+}
+
+// ParsePublishStatuses parses the comma-separated NETBOX_PUBLISH_STATUSES
+// value. Empty input yields the default policy: active only.
+func ParsePublishStatuses(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return []string{"active"}, nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range strings.Split(s, ",") {
+		status := strings.ToLower(strings.TrimSpace(part))
+		if status == "" {
+			continue
+		}
+		if !validPublishStatuses[status] {
+			return nil, fmt.Errorf("invalid NETBOX_PUBLISH_STATUSES entry %q: must be one of active, reserved, deprecated, dhcp, slaac", status)
+		}
+		if seen[status] {
+			continue
+		}
+		seen[status] = true
+		out = append(out, status)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("NETBOX_PUBLISH_STATUSES %q contains no statuses", s)
+	}
+	return out, nil
 }
 
 func envOrDefault(key, def string) string {

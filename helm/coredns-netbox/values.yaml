@@ -147,6 +147,14 @@ primaryNS: ns1.example.org.
 # the name (typically this service's LoadBalancer/ClusterIP). Without it the
 # SOA/NS name never resolves — it has no NetBox object behind it.
 primaryNSIP: ""
+
+# NetBox IP statuses published to DNS, comma-separated (valid: active,
+# reserved, deprecated, dhcp, slaac). Empty means the default policy:
+# active only. Applies to BOTH ingestion paths — the poll filter and the
+# webhook fast path (an event for a status outside the set is treated as a
+# delete). Example: "active,reserved" to also publish reserved IPs (e.g.
+# pre-provisioned device addresses).
+publishStatuses: ""
 adminEmail: admin.example.org.
 
 # SOA timers (seconds) for generated zones. refresh/retry control how often

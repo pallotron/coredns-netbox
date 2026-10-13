@@ -30,11 +30,23 @@ const objectTypeIPAddress = "ipam.ipaddress"
 // as netboxSignal/ForceNetboxPoll) whenever an event can't be applied
 // directly because it has no dns_name — see applyOutcome and the doc
 // comment on triggerPoll.
-func Register(mux *http.ServeMux, secret string, store dynamicstore.DynamicStore, disc zonediscovery.Discoverer, mergeSignal, pollSignal chan<- struct{}, m *metrics.Sidecar) {
+//
+// publishStatuses is the same policy set the poll path filters on
+// (config.PublishStatuses): an event whose object status is outside the set
+// is treated as a delete, never an upsert. nil/empty falls back to the
+// active-only default so the two paths can't diverge by omission.
+func Register(mux *http.ServeMux, secret string, store dynamicstore.DynamicStore, disc zonediscovery.Discoverer, mergeSignal, pollSignal chan<- struct{}, m *metrics.Sidecar, publishStatuses []string) {
 	if secret == "" {
 		return
 	}
-	h := &handler{secret: secret, store: store, disc: disc, mergeSignal: mergeSignal, pollSignal: pollSignal, m: m}
+	if len(publishStatuses) == 0 {
+		publishStatuses = []string{"active"}
+	}
+	published := make(map[string]bool, len(publishStatuses))
+	for _, s := range publishStatuses {
+		published[s] = true
+	}
+	h := &handler{secret: secret, store: store, disc: disc, mergeSignal: mergeSignal, pollSignal: pollSignal, m: m, published: published}
 	mux.HandleFunc(Path, h.ServeHTTP)
 }
 
@@ -45,6 +57,9 @@ type handler struct {
 	mergeSignal chan<- struct{}
 	pollSignal  chan<- struct{}
 	m           *metrics.Sidecar
+	// published is the publish-status policy set (see Register). Events for
+	// objects outside it are routed to deletion in applyUpsert.
+	published map[string]bool
 
 	// mu serializes the read-decide-write sequence in apply (and everything
 	// it calls: applyDelete, applyUpsert, upsertGuarded, isManuallyPinned).
@@ -225,6 +240,18 @@ func (h *handler) applyUpsert(p payload) (applyOutcome, error) {
 		return outcomePollTriggered, nil
 	}
 
+	// G7 (acceptance-test matrix): the fast path must enforce the same
+	// publish-status policy as the poll path's status= filters, or a
+	// created/updated event for e.g. a reserved IP would publish a record
+	// the next full poll has to claw back. An event for an object outside
+	// the published set behaves like "deleted": the name (and, on a rename,
+	// the old name) must stop resolving now. A payload with no status field
+	// (custom body_template) publishes as before — fail-open to the
+	// pre-gate behavior rather than silently dropping events.
+	if status := statusFromData(p.Data); status != "" && !h.published[status] {
+		return h.removeUnpublished(p, rec.DNSName, status)
+	}
+
 	// mutated tracks whether any store write has happened so far in this
 	// call. mergeSignal must fire whenever a real write happened — including
 	// a rename's old-name delete succeeding even if the new name's zone can't
@@ -273,6 +300,35 @@ func (h *handler) applyUpsert(p payload) (applyOutcome, error) {
 		return outcomeApplied, nil
 	}
 	return outcomeNoop, nil
+}
+
+// removeUnpublished handles a created/updated event whose object status is
+// outside the publish set: every name the event touches (the current
+// dns_name, plus the pre-change name on a rename) is deleted from the
+// dynamic store, with the same manual-pin guard as applyDelete.
+func (h *handler) removeUnpublished(p payload, name, status string) (applyOutcome, error) {
+	slog.Info("netboxwebhook: object status not in publish set, treating event as delete",
+		"dns_name", name, "status", status)
+	names := []string{name}
+	if p.Snapshots.PreChange != nil && p.Snapshots.PreChange.DNSName != "" && p.Snapshots.PreChange.DNSName != name {
+		names = append(names, p.Snapshots.PreChange.DNSName)
+	}
+	outcome := outcomeNoop
+	for _, n := range names {
+		zone, ok := h.zoneFor(n)
+		if !ok {
+			continue
+		}
+		if h.isManuallyPinned(zone, n) {
+			slog.Warn("netboxwebhook: skipping status-driven delete, name is pinned by a manually-added record", "dns_name", n)
+			continue
+		}
+		if err := h.store.DeleteRecords(zone, []string{n}); err != nil {
+			return outcome, err
+		}
+		outcome = outcomeApplied
+	}
+	return outcome, nil
 }
 
 // upsertGuarded applies rec unless a newer-or-equal webhook-sourced write
