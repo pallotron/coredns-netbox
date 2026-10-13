@@ -54,10 +54,10 @@ test.e2e:
 	DNS_POD1=127.0.0.1:15361 \
 	go test ./tests/e2e/... -v -count=1 -tags=e2e
 
-# test.e2e.chaos: failure-mode tests (N16/N17/N22 of the acceptance matrix) —
-# they mutate the dev cluster (scale NetBox to zero, delete the sidecar pod)
-# and take ~15 min, so they are separate from test.e2e to keep the fast suite
-# fast. Same env as test.e2e, plus the CHAOS_TESTS gate.
+# test.e2e.chaos: failure-mode and NetBox-mutation tests (N11/N12/N13 and
+# N16/N17/N22 of the acceptance matrix) — they mutate the dev cluster or
+# NetBox data and take ~15-20 min, so they are separate from test.e2e to
+# keep the fast suite fast. Same env as test.e2e, plus the CHAOS_TESTS gate.
 test.e2e.chaos:
 	STRIP_DC_LABEL=true DC_LABEL_REWRITE=true GRPC_AUTH_TOKEN=devtoken \
 	NAME_TEMPLATES=true \
@@ -65,7 +65,7 @@ test.e2e.chaos:
 	DNS_POD0=127.0.0.1:15360 \
 	DNS_POD1=127.0.0.1:15361 \
 	CHAOS_TESTS=true \
-	go test ./tests/e2e/... -v -count=1 -tags=e2e -run '^TestChaos_' -timeout 30m
+	go test ./tests/e2e/... -v -count=1 -tags=e2e -run '^Test(Chaos|Mutate)_' -timeout 30m
 
 # Human-facing chaos helpers — the same operations the chaos tests perform.
 dev.netbox.down:
