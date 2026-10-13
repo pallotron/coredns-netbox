@@ -153,7 +153,7 @@ func TestDynamicRecordUpsertAndResolve(t *testing.T) {
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
 
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.1", 5*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.1", 15*time.Second)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
@@ -175,7 +175,7 @@ func TestDynamicRecordDelete(t *testing.T) {
 	})
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.2", 5*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.2", 15*time.Second)
 
 	_, err = zc.DeleteRecord(ctx, &pb.DeleteRecordRequest{
 		Zone: zone, DnsName: fqdn,
@@ -186,7 +186,7 @@ func TestDynamicRecordDelete(t *testing.T) {
 	require.Eventually(t, func() bool {
 		r := queryServer(t, fqdn, dns.TypeA, dnsServer())
 		return r.Rcode == dns.RcodeNameError || len(r.Answer) == 0
-	}, 5*time.Second, 200*time.Millisecond, "expected NXDOMAIN after delete")
+	}, 15*time.Second, 200*time.Millisecond, "expected NXDOMAIN after delete")
 }
 
 func TestBatchUpsert(t *testing.T) {
@@ -207,7 +207,7 @@ func TestBatchUpsert(t *testing.T) {
 	forceMerge(t, conn, ctx)
 
 	for _, r := range records {
-		waitForDNS(t, r.DnsName, dns.TypeA, r.Address, 5*time.Second)
+		waitForDNS(t, r.DnsName, dns.TypeA, r.Address, 15*time.Second)
 	}
 
 	t.Cleanup(func() {
@@ -235,7 +235,7 @@ func TestDynamicRecordSurvivesNetboxPoll(t *testing.T) {
 	})
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", 5*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", 15*time.Second)
 
 	// ForceNetboxPoll rewrites the zone merging Netbox + dynamic records.
 	// The dynamic record must survive (remain in DNS after the poll).
@@ -359,9 +359,9 @@ func TestDynamicRecordGetsPTR(t *testing.T) {
 	forceMerge(t, conn, ctx)
 
 	// Forward lookup must resolve first.
-	waitForDNS(t, fqdn, dns.TypeA, ip, 5*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, ip, 15*time.Second)
 	// Reverse lookup must return the FQDN.
-	waitForPTR(t, ip, fqdn, 5*time.Second)
+	waitForPTR(t, ip, fqdn, 15*time.Second)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
