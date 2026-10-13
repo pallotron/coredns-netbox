@@ -65,6 +65,11 @@ type Client struct {
 	retryCount     int
 	retryBaseDelay time.Duration
 	retryMaxDelay  time.Duration
+	// publishStatuses are the NetBox IP statuses requested from the API
+	// (one status= query param each — NetBox ORs repeated filters). This is
+	// the poll path's half of the publish-status policy; defaults to active
+	// only. See SetPublishStatuses.
+	publishStatuses []string
 	// RetryCounter is an optional Prometheus counter incremented on each retry attempt.
 	// Set after construction. Safe to leave nil (no-op).
 	RetryCounter prometheus.Counter
@@ -105,15 +110,27 @@ func New(baseURL, token string, pageSize, maxConcurrency, retryCount int, retryB
 		return nil, fmt.Errorf("invalid netbox URL: %w", err)
 	}
 	return &Client{
-		baseURL:        strings.TrimRight(u.String(), "/"),
-		token:          token,
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
-		pageSize:       pageSize,
-		maxConcurrency: maxConcurrency,
-		retryCount:     retryCount,
-		retryBaseDelay: retryBaseDelay,
-		retryMaxDelay:  retryMaxDelay,
+		baseURL:         strings.TrimRight(u.String(), "/"),
+		token:           token,
+		httpClient:      &http.Client{Timeout: 30 * time.Second},
+		pageSize:        pageSize,
+		maxConcurrency:  maxConcurrency,
+		retryCount:      retryCount,
+		retryBaseDelay:  retryBaseDelay,
+		retryMaxDelay:   retryMaxDelay,
+		publishStatuses: []string{"active"},
 	}, nil
+}
+
+// SetPublishStatuses replaces the set of NetBox IP statuses the fetch
+// requests (config.ParsePublishStatuses validates the values). Set once
+// after construction, before the first fetch; an empty slice is ignored so
+// the active-only default can never be accidentally cleared.
+func (c *Client) SetPublishStatuses(statuses []string) {
+	if len(statuses) == 0 {
+		return
+	}
+	c.publishStatuses = statuses
 }
 
 // FetchIPAddresses retrieves all active IP addresses from Netbox,
@@ -281,8 +298,18 @@ func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
 }
 
 // fetchPage retrieves a single page of IP addresses from the Netbox API.
+// Status filtering is server-side: one status= param per published status
+// (NetBox ORs repeated filters). This query is the only thing keeping
+// non-published IPs (reserved/deprecated/...) out of the zones on the poll
+// path — pinned by N1 in the acceptance matrix.
 func (c *Client) fetchPage(ctx context.Context, offset, limit int) (*ipListResponse, error) {
-	reqURL := fmt.Sprintf("%s/api/ipam/ip-addresses/?status=active&limit=%d&offset=%d", c.baseURL, limit, offset)
+	q := url.Values{}
+	for _, s := range c.publishStatuses {
+		q.Add("status", s)
+	}
+	q.Set("limit", fmt.Sprint(limit))
+	q.Set("offset", fmt.Sprint(offset))
+	reqURL := fmt.Sprintf("%s/api/ipam/ip-addresses/?%s", c.baseURL, q.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {

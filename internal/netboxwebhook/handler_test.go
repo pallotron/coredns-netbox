@@ -31,7 +31,7 @@ func newTestServer(t *testing.T) (srv *httptest.Server, store dynamicstore.Dynam
 	pollSignal = make(chan struct{}, 1)
 
 	mux := http.NewServeMux()
-	Register(mux, testSecret, store, disc, mergeSignal, pollSignal, m)
+	Register(mux, testSecret, store, disc, mergeSignal, pollSignal, m, nil)
 	return httptest.NewServer(mux), store, mergeSignal, pollSignal
 }
 
@@ -377,7 +377,7 @@ func TestRegister_EmptySecretDoesNotRegisterRoute(t *testing.T) {
 	disc := &zonediscovery.ZoneDepthDiscoverer{Depth: 2}
 	m := metrics.NewSidecar(prometheus.NewRegistry())
 	mux := http.NewServeMux()
-	Register(mux, "", store, disc, make(chan struct{}, 1), make(chan struct{}, 1), m)
+	Register(mux, "", store, disc, make(chan struct{}, 1), make(chan struct{}, 1), m, nil)
 
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -385,4 +385,103 @@ func TestRegister_EmptySecretDoesNotRegisterRoute(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// newTestServerWithStatuses is newTestServer with an explicit publish-status
+// policy (G7: the webhook path enforces the same set the poll path filters on).
+func newTestServerWithStatuses(t *testing.T, statuses []string) (srv *httptest.Server, store dynamicstore.DynamicStore, mergeSignal chan struct{}) {
+	t.Helper()
+	store, err := dynamicstore.NewFileStore(filepath.Join(t.TempDir(), "dynamic.json"))
+	require.NoError(t, err)
+	disc := &zonediscovery.ZoneDepthDiscoverer{Depth: 2}
+	m := metrics.NewSidecar(prometheus.NewRegistry())
+	mergeSignal = make(chan struct{}, 1)
+
+	mux := http.NewServeMux()
+	Register(mux, testSecret, store, disc, mergeSignal, make(chan struct{}, 1), m, statuses)
+	return httptest.NewServer(mux), store, mergeSignal
+}
+
+// withStatus rewrites the fixture's status object to the given value.
+func withStatus(t *testing.T, body []byte, status string) []byte {
+	t.Helper()
+	old := []byte(`"status": {"value": "active", "label": "Active"}`)
+	require.True(t, bytes.Contains(body, old), "fixture must carry the active status object")
+	return bytes.Replace(body, old, []byte(`"status": {"value": "`+status+`", "label": "`+status+`"}`), 1)
+}
+
+// G7: a created event for an object outside the publish set must never
+// materialize a record.
+func TestHandler_UnpublishedStatusCreate_NeverPublished(t *testing.T) {
+	srv, store, _, _ := newTestServer(t)
+	defer srv.Close()
+
+	resp := postSigned(t, srv, withStatus(t, readFixture(t, "created.json"), "reserved"), testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Empty(t, store.GetRecords("mycompany.com"), "reserved IP must not be published")
+}
+
+// G7: an update that moves an object out of the publish set behaves like a
+// delete — the record stops resolving now, not at the next full poll.
+func TestHandler_UnpublishedStatusUpdate_RemovesRecord(t *testing.T) {
+	srv, store, mergeSignal, _ := newTestServer(t)
+	defer srv.Close()
+
+	resp1 := postSigned(t, srv, readFixture(t, "created.json"), testSecret)
+	_ = resp1.Body.Close()
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+	require.Len(t, store.GetRecords("mycompany.com"), 1)
+	<-mergeSignal // drain the create's signal
+
+	resp2 := postSigned(t, srv, withStatus(t, readFixture(t, "created.json"), "reserved"), testSecret)
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp2.StatusCode)
+	assert.Empty(t, store.GetRecords("mycompany.com"), "record must be removed when status leaves the publish set")
+
+	select {
+	case <-mergeSignal:
+	default:
+		t.Fatal("expected mergeSignal after status-driven delete")
+	}
+}
+
+// G7 + manual-record precedence: a status-driven delete must not remove a
+// manually-added (non-webhook) record, mirroring applyDelete's guard.
+func TestHandler_UnpublishedStatus_ManualPinPreserved(t *testing.T) {
+	srv, store, _, _ := newTestServer(t)
+	defer srv.Close()
+
+	require.NoError(t, store.UpsertRecords("mycompany.com", []netboxclient.IPRecord{
+		{DNSName: "webhook-test-1.mycompany.com", Address: "10.99.99.5", Family: 4},
+	}))
+
+	resp := postSigned(t, srv, withStatus(t, readFixture(t, "created.json"), "reserved"), testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got := store.GetRecords("mycompany.com")
+	require.Len(t, got, 1, "manually-added record must survive a status-driven delete")
+	assert.NotEqual(t, netboxclient.SourceWebhook, got[0].Source)
+}
+
+// The publish set is configurable: with reserved included, a reserved IP's
+// event upserts exactly like an active one.
+func TestHandler_ConfiguredStatusAccepted(t *testing.T) {
+	srv, store, mergeSignal := newTestServerWithStatuses(t, []string{"active", "reserved"})
+	defer srv.Close()
+
+	resp := postSigned(t, srv, withStatus(t, readFixture(t, "created.json"), "reserved"), testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got := store.GetRecords("mycompany.com")
+	require.Len(t, got, 1)
+	assert.Equal(t, "webhook-test-1.mycompany.com", got[0].DNSName)
+
+	select {
+	case <-mergeSignal:
+	default:
+		t.Fatal("expected mergeSignal to be sent")
+	}
 }

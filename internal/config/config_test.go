@@ -13,6 +13,7 @@ import (
 var allEnvKeys = []string{
 	"NETBOX_URL",
 	"NETBOX_TOKEN",
+	"NETBOX_PUBLISH_STATUSES",
 	"DISCOVERY_MODE",
 	"ZONE_DIR",
 	"ZONE_DEPTH",
@@ -312,4 +313,36 @@ func TestLoad_NetboxWebhookSecret_DefaultsEmpty(t *testing.T) {
 	cfg, err := Load()
 	require.NoError(t, err)
 	assert.Empty(t, cfg.NetboxWebhookSecret, "webhook route must be disabled by default")
+}
+
+func TestParsePublishStatuses(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    []string
+		wantErr string
+	}{
+		{"empty input defaults to active only", "", []string{"active"}, ""},
+		{"whitespace-only input defaults to active only", "   ", []string{"active"}, ""},
+		{"single status", "active", []string{"active"}, ""},
+		{"multiple statuses", "active,reserved", []string{"active", "reserved"}, ""},
+		{"normalizes case and whitespace", " Reserved , ACTIVE ", []string{"reserved", "active"}, ""},
+		{"deduplicates", "active,active,reserved", []string{"active", "reserved"}, ""},
+		{"every valid status accepted", "active,reserved,deprecated,dhcp,slaac",
+			[]string{"active", "reserved", "deprecated", "dhcp", "slaac"}, ""},
+		{"unknown status rejected", "active,bogus", nil, `invalid NETBOX_PUBLISH_STATUSES entry "bogus"`},
+		{"only separators rejected", ",,", nil, "contains no statuses"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParsePublishStatuses(tt.in)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
