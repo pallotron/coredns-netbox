@@ -272,10 +272,13 @@ func TestChaos_N22_SidecarKilled(t *testing.T) {
 
 	serialAfter := soaSerial(t, zone)
 	require.GreaterOrEqual(t, serialAfter, serialBefore, "serial must never regress (RFC 1982)")
-	if serialAfter != serialBefore {
-		t.Logf("G5: sidecar restart bumped %s serial %d -> %d (restart-triggered rewrite; decision pending)",
-			zone, serialBefore, serialAfter)
-	}
+	// G5 (fixed): the replacement sidecar seeds its content fingerprint
+	// from the zone file, so an unchanged record set must NOT be rewritten
+	// — a restart no longer bumps every serial and fans out a full AXFR
+	// re-transfer to every secondary. This was a Logf measurement while
+	// the decision was pending; now it is the pin.
+	require.Equal(t, serialBefore, serialAfter,
+		"sidecar restart must not rewrite an unchanged zone (G5): serial %d -> %d", serialBefore, serialAfter)
 }
 
 // N16 (acceptance-test matrix): NetBox down when the sidecar starts. The

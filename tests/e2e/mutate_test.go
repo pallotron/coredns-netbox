@@ -83,6 +83,13 @@ func waitAllServers(t *testing.T, timeout time.Duration, cond func(server string
 	t.Fatalf(msg, args...)
 }
 
+// cleanupConverge is the deadline for post-test deletions to converge on
+// every replica. Deliberately wider than the 25s in-test budget: cleanups
+// assert nothing about product latency — their only job is handing the
+// next test a converged zone — and on a degraded CI node (slow I/O,
+// pod-network flaps) a deletion can need a second reload cycle.
+const cleanupConverge = 40 * time.Second
+
 // waitNameGone waits until the name returns NXDOMAIN (or an empty answer)
 // from every replica. Cleanups use it so each test hands the next one a
 // fully converged zone — otherwise the next test reads a baseline (SOA
@@ -147,7 +154,7 @@ func TestMutate_N12_ChangeAndDelete(t *testing.T) {
 deleted, _ = IPAddress.objects.filter(dns_name="server-n12.dc1.mycompany.com").delete()
 print(deleted)`)
 		forcePoll(t)
-		waitNameGone(t, fqdn, dns.TypeA, 25*time.Second)
+		waitNameGone(t, fqdn, dns.TypeA, cleanupConverge)
 	})
 
 	// Create.
@@ -209,7 +216,7 @@ func TestMutate_N13_BatchChange(t *testing.T) {
 deleted, _ = IPAddress.objects.filter(dns_name__startswith="bulk-n13-").delete()
 print(deleted)`)
 		forcePoll(t)
-		waitNameGone(t, hostFQDN("bulk-n13-1", "dc3"), dns.TypeA, 25*time.Second)
+		waitNameGone(t, hostFQDN("bulk-n13-1", "dc3"), dns.TypeA, cleanupConverge)
 	})
 
 	// Baseline only once every replica agrees — a preceding test's cleanup
@@ -276,7 +283,7 @@ func TestMutate_N11_PollPathCreateTiming(t *testing.T) {
 deleted, _ = IPAddress.objects.filter(dns_name="server-n11.dc1.mycompany.com").delete()
 print(deleted)`)
 		forcePoll(t)
-		waitNameGone(t, fqdn, dns.TypeA, 25*time.Second)
+		waitNameGone(t, fqdn, dns.TypeA, cleanupConverge)
 	})
 
 	netboxORM(t, `from ipam.models import IPAddress
@@ -309,7 +316,7 @@ func TestMutate_N1_OnlyActivePublished(t *testing.T) {
 deleted, _ = IPAddress.objects.filter(dns_name__startswith="server-n1-").delete()
 print(deleted)`)
 		forcePoll(t)
-		waitNameGone(t, fqdnFor("active"), dns.TypeA, 25*time.Second)
+		waitNameGone(t, fqdnFor("active"), dns.TypeA, cleanupConverge)
 	})
 
 	netboxORM(t, `from ipam.models import IPAddress
@@ -365,7 +372,7 @@ addrs = [f"10.77.2.{i}/24" for i in range(1, 6)]
 deleted, _ = IPAddress.objects.filter(address__in=addrs).delete()
 print(deleted)`)
 		forcePoll(t)
-		waitNameGone(t, canary, dns.TypeA, 25*time.Second)
+		waitNameGone(t, canary, dns.TypeA, cleanupConverge)
 	})
 
 	// One legit canary plus the hostile names, all in one batch: once the

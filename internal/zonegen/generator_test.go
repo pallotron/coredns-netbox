@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -728,5 +729,83 @@ func TestGenerateDropsUnsafeDNSNames(t *testing.T) {
 		_, changed, _, err = g.Generate(withOffender)
 		require.NoError(t, err)
 		assert.False(t, changed, "an added offender must not cause a rewrite: the emitted set is unchanged")
+	})
+}
+
+// G5: the record-set fingerprint is persisted in the zone file, so a
+// replacement sidecar recognizes unchanged content and does NOT rewrite
+// every zone with serial+1 (which forced a full AXFR re-transfer to every
+// secondary on each restart).
+func TestGeneratorPersistsContentHashAcrossRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db.example.org")
+	cfg := ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+	}
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "192.0.2.1", Family: 4},
+		{DNSName: "host2.example.org", Address: "192.0.2.2", Family: 4},
+	}
+
+	g1 := NewGenerator(cfg, path)
+	content, changed, _, err := g1.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Contains(t, content, "; content-hash: ", "fingerprint comment must be persisted")
+	require.NoError(t, WriteFile(path, content))
+	serial1, err := readSerialFromZoneFile(path)
+	require.NoError(t, err)
+
+	t.Run("restart with unchanged records does not rewrite", func(t *testing.T) {
+		g2 := NewGenerator(cfg, path)
+		_, changed, _, err := g2.Generate(records)
+		require.NoError(t, err)
+		assert.False(t, changed, "unchanged record set after restart must not bump the serial")
+	})
+
+	t.Run("restart with changed records writes with serial continuity", func(t *testing.T) {
+		g2 := NewGenerator(cfg, path)
+		more := append(append([]netboxclient.IPRecord(nil), records...),
+			netboxclient.IPRecord{DNSName: "host3.example.org", Address: "192.0.2.3", Family: 4})
+		content2, changed, _, err := g2.Generate(more)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.NoError(t, WriteFile(path, content2))
+		serial2, err := readSerialFromZoneFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, serial1+1, serial2, "serial continues from the persisted value")
+	})
+
+	t.Run("stale or foreign hash fails open: rewrite", func(t *testing.T) {
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		stale := regexp.MustCompile(`(?m)^; content-hash: [0-9a-f]{64}$`).
+			ReplaceAllString(string(raw), "; content-hash: "+strings.Repeat("0", 64))
+		require.NotEqual(t, string(raw), stale, "hash line must have been replaced")
+		require.NoError(t, os.WriteFile(path, []byte(stale), 0o644))
+
+		g3 := NewGenerator(cfg, path)
+		more := append(append([]netboxclient.IPRecord(nil), records...),
+			netboxclient.IPRecord{DNSName: "host3.example.org", Address: "192.0.2.3", Family: 4})
+		_, changed, _, err := g3.Generate(more)
+		require.NoError(t, err)
+		assert.True(t, changed, "a stale fingerprint must trigger a rewrite, never a skip")
+	})
+
+	t.Run("pre-G5 file without the comment behaves as before", func(t *testing.T) {
+		raw, err := os.ReadFile(path)
+		require.NoError(t, err)
+		legacy := regexp.MustCompile(`(?m)^; content-hash: [0-9a-f]{64}$`).ReplaceAllString(string(raw), ";")
+		require.NotEqual(t, string(raw), legacy, "hash line must have been removed")
+		legacyPath := filepath.Join(t.TempDir(), "db.legacy.example.org")
+		require.NoError(t, os.WriteFile(legacyPath, []byte(legacy), 0o644))
+
+		g4 := NewGenerator(cfg, legacyPath)
+		_, changed, _, err := g4.Generate(records)
+		require.NoError(t, err)
+		assert.True(t, changed, "no persisted fingerprint: first generation writes, as pre-G5")
 	})
 }
