@@ -83,10 +83,71 @@ func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
 	return g
 }
 
+// safeZoneNameRE accepts names that can be emitted into a zone file
+// without altering its syntax: dot-separated labels of letters, digits,
+// underscore and interior hyphens, optionally dot-terminated. Anything
+// else — whitespace, quotes, semicolons, parentheses, control characters,
+// and above all newlines — is zone-file metacharacter territory. The
+// case-insensitive sibling of nameformat's renderedNameRE.
+var safeZoneNameRE = regexp.MustCompile(`^[a-zA-Z0-9_]([a-zA-Z0-9_-]*[a-zA-Z0-9_])?(\.[a-zA-Z0-9_]([a-zA-Z0-9_-]*[a-zA-Z0-9_])?)*\.?$`)
+
+// safeZoneName reports whether name is safe to write into a zone file and
+// parseable by the file plugin (label and total length limits included —
+// an over-long label is rejected by the zone parser just like a syntax
+// error, with the same blast radius).
+func safeZoneName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	if !safeZoneNameRE.MatchString(name) {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		if len(label) > 63 {
+			return false
+		}
+	}
+	return true
+}
+
+// dropUnsafeNames filters out records whose DNS name (or CNAME target)
+// cannot be emitted safely — G8 in the acceptance matrix: NetBox's API
+// validates dns_name, but ORM writes (plugins, custom scripts, imports)
+// bypass it, and before this guard a single hostile value reached the
+// rendered zone, CoreDNS refused to parse the file, and EVERY zone update
+// froze until the row was deleted (live finding: a dns_name with an
+// embedded space wedged db.10.in-addr.arpa via its PTR target). Offenders
+// are dropped loudly; the rest of the zone proceeds. Filtering happens
+// before hashing, so a dropped record never causes a spurious rewrite.
+func dropUnsafeNames(records []netboxclient.IPRecord, zone string) []netboxclient.IPRecord {
+	kept := records
+	copied := false
+	for i, r := range records {
+		bad := !safeZoneName(r.DNSName)
+		if !bad && r.Type == netboxclient.RecordTypeCNAME && !safeZoneName(r.CNAMETarget) {
+			bad = true
+		}
+		if !bad {
+			if copied {
+				kept = append(kept, r)
+			}
+			continue
+		}
+		slog.Error("dropping record: dns_name unsafe for zone file emission",
+			"zone", zone, "dns_name", r.DNSName, "address", r.Address, "cname_target", r.CNAMETarget)
+		if !copied {
+			kept = append([]netboxclient.IPRecord(nil), records[:i]...)
+			copied = true
+		}
+	}
+	return kept
+}
+
 // Generate creates a zone file string from the given records.
 // Returns the zone content, whether it changed from the last generation, the
 // number of records in the zone after collision filtering, and any error.
 func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int, error) {
+	records = dropUnsafeNames(records, g.config.Origin)
 	if g.config.Type == ZoneTypeForward {
 		records = resolveCNAMECollisions(records, g.config.Origin)
 	}

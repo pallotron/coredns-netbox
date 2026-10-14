@@ -327,3 +327,70 @@ func TestChaos_N16_NetboxDownAtSidecarStartup(t *testing.T) {
 		"DNS must answer through sidecar restart + NetBox outage + recovery; first failure: %s (of %d queries)",
 		stats.FirstFailure, stats.Total)
 }
+
+// N19 (acceptance-test matrix): a revoked API token surfaces as poll
+// errors; the last good zones keep serving (N17 semantics); recovery after
+// the token is restored needs no restart. The dev NetBox issues v2 tokens
+// (HMAC-hashed at rest — the plaintext cannot be recreated after a
+// delete), so revocation is an expiry flip rather than a row delete: the
+// sidecar sees the same HTTP 403 either way.
+func TestChaos_N19_TokenRevoked(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	// Restore every token no matter how the test exits.
+	t.Cleanup(func() {
+		netboxORM(t, `from users.models import Token
+print("restored", Token.objects.update(expires=None))`)
+		forcePoll(t)
+	})
+
+	before := fetchMetrics(t)
+	errBefore, _ := metricValue(before, `netbox_sidecar_poll_total{result="error"}`)
+
+	probe := startProbe(t, 500*time.Millisecond)
+
+	netboxORM(t, `import datetime
+from django.utils import timezone
+from users.models import Token
+print("expired", Token.objects.update(expires=timezone.now() - datetime.timedelta(days=1)))`)
+	forcePoll(t)
+
+	// The failed poll must be counted while answers keep coming from the
+	// last good zones.
+	deadline := time.Now().Add(pollInterval() + time.Minute)
+	counted := false
+	for time.Now().Before(deadline) {
+		during := fetchMetrics(t)
+		if v, ok := metricValue(during, `netbox_sidecar_poll_total{result="error"}`); ok && v > errBefore {
+			counted = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	require.True(t, counted, "revoked token must surface as poll errors (error count still at %v)", errBefore)
+
+	// Restore and verify recovery without a restart: the next successful
+	// poll resets staleness.
+	netboxORM(t, `from users.models import Token
+print("restored", Token.objects.update(expires=None))`)
+	forcePoll(t)
+
+	recoveryDeadline := time.Now().Add(pollInterval() + 2*time.Minute)
+	recovered := false
+	for time.Now().Before(recoveryDeadline) {
+		after := fetchMetrics(t)
+		if s, ok := metricValue(after, "netbox_sidecar_zone_staleness_seconds"); ok && s == 0 {
+			recovered = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	stats := probe.Stop()
+	require.True(t, recovered, "polls must succeed again after the token is restored, without a restart")
+	require.Greater(t, stats.Total, 0, "probe must have run")
+	require.Zero(t, stats.Failures,
+		"DNS must keep answering while the token is revoked; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+}
