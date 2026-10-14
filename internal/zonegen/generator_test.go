@@ -639,3 +639,94 @@ func TestGenerate_SourceAndAppliedAtDoNotAffectHash(t *testing.T) {
 	assert.Empty(t, content2, "unchanged generation returns empty content")
 	_ = content1
 }
+
+// G8 (acceptance matrix N6, passthrough half): a dns_name that NetBox's
+// API would reject can still arrive via ORM writes; emitted verbatim it
+// corrupts the zone file and CoreDNS then refuses EVERY update (observed
+// live: an embedded space wedged the reverse zone via its PTR target).
+// Offenders must be dropped — the rest of the zone proceeds.
+func TestGenerateDropsUnsafeDNSNames(t *testing.T) {
+	longLabel := strings.Repeat("x", 64)
+
+	t.Run("forward zone", func(t *testing.T) {
+		g := NewGenerator(ZoneConfig{
+			Origin:     "example.org",
+			PrimaryNS:  "ns1.example.org.",
+			AdminEmail: "admin.example.org.",
+			TTL:        300,
+			Type:       ZoneTypeForward,
+		}, "")
+		content, changed, count, err := g.Generate([]netboxclient.IPRecord{
+			{DNSName: "good.example.org", Address: "192.0.2.1", Family: 4},
+			{DNSName: "bad name.example.org", Address: "192.0.2.2", Family: 4},
+			{DNSName: "semi;colon.example.org", Address: "192.0.2.3", Family: 4},
+			{DNSName: "quote\"host.example.org", Address: "192.0.2.4", Family: 4},
+			{DNSName: "newline.example.org\ninjected.example.org. IN A 192.0.2.66", Address: "192.0.2.5", Family: 4},
+			{DNSName: longLabel + ".example.org", Address: "192.0.2.6", Family: 4},
+		})
+		require.NoError(t, err)
+		require.True(t, changed)
+		assert.Equal(t, 1, count, "only the safe record survives")
+		assert.Contains(t, content, "good IN A 192.0.2.1")
+		assert.NotContains(t, content, "injected", "newline injection must not reach the zone")
+		assert.NotContains(t, content, "bad name")
+		assert.NotContains(t, content, ";colon")
+		assert.NotContains(t, content, `"`)
+		assert.NotContains(t, content, longLabel)
+	})
+
+	t.Run("reverse zone PTR target", func(t *testing.T) {
+		g := NewGenerator(ZoneConfig{
+			Origin:     "2.0.192.in-addr.arpa",
+			PrimaryNS:  "ns1.example.org.",
+			AdminEmail: "admin.example.org.",
+			TTL:        300,
+			Type:       ZoneTypeReverse,
+		}, "")
+		content, changed, count, err := g.Generate([]netboxclient.IPRecord{
+			{Address: "1", DNSName: "good.example.org", Family: 4},
+			{Address: "2", DNSName: "bad target.example.org", Family: 4},
+		})
+		require.NoError(t, err)
+		require.True(t, changed)
+		assert.Equal(t, 1, count)
+		assert.Contains(t, content, "1 IN PTR good.example.org.")
+		assert.NotContains(t, content, "bad target")
+	})
+
+	t.Run("unsafe CNAME target", func(t *testing.T) {
+		g := NewGenerator(ZoneConfig{
+			Origin:     "example.org",
+			PrimaryNS:  "ns1.example.org.",
+			AdminEmail: "admin.example.org.",
+			TTL:        300,
+			Type:       ZoneTypeForward,
+		}, "")
+		content, _, count, err := g.Generate([]netboxclient.IPRecord{
+			{DNSName: "host1.example.org", Address: "192.0.2.1", Family: 4},
+			{DNSName: "alias.example.org", Type: netboxclient.RecordTypeCNAME,
+				CNAMETarget: "evil target.example.org"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 1, count)
+		assert.NotContains(t, content, "alias")
+		assert.NotContains(t, content, "evil target")
+	})
+
+	t.Run("dropping an offender does not change the hash of the survivors", func(t *testing.T) {
+		g := NewGenerator(ZoneConfig{
+			Origin: "example.org", PrimaryNS: "ns1.example.org.",
+			AdminEmail: "admin.example.org.", TTL: 300, Type: ZoneTypeForward,
+		}, "")
+		clean := []netboxclient.IPRecord{{DNSName: "good.example.org", Address: "192.0.2.1", Family: 4}}
+		_, changed, _, err := g.Generate(clean)
+		require.NoError(t, err)
+		require.True(t, changed, "initial generation writes")
+
+		withOffender := append(clean, netboxclient.IPRecord{
+			DNSName: "bad name.example.org", Address: "192.0.2.9", Family: 4})
+		_, changed, _, err = g.Generate(withOffender)
+		require.NoError(t, err)
+		assert.False(t, changed, "an added offender must not cause a rewrite: the emitted set is unchanged")
+	})
+}

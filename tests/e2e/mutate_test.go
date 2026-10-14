@@ -291,3 +291,119 @@ print("created")`)
 	t.Logf("N11 poll-path create-to-resolvable: %s (budget: fetch + 10s reload + 5s cache)", elapsed)
 	require.Less(t, elapsed, 25*time.Second, "create must be resolvable within one poll + reload")
 }
+
+// N1 (acceptance-test matrix): only status=active IPs are published — the
+// FLEET-47 semantic. The whole policy is a server-side filter (the fetch
+// URL's status= params, default active-only; configurable via
+// NETBOX_PUBLISH_STATUSES), so this pins the end-to-end default: reserved,
+// deprecated and dhcp IPs must never materialize as A or PTR records.
+func TestMutate_N1_OnlyActivePublished(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	statuses := []string{"active", "reserved", "deprecated", "dhcp"}
+	fqdnFor := func(status string) string { return hostFQDN("server-n1-"+status, "dc1") }
+
+	t.Cleanup(func() {
+		netboxORM(t, `from ipam.models import IPAddress
+deleted, _ = IPAddress.objects.filter(dns_name__startswith="server-n1-").delete()
+print(deleted)`)
+		forcePoll(t)
+		waitNameGone(t, fqdnFor("active"), dns.TypeA, 25*time.Second)
+	})
+
+	netboxORM(t, `from ipam.models import IPAddress
+for i, status in enumerate(["active", "reserved", "deprecated", "dhcp"]):
+    IPAddress.objects.create(address=f"10.77.1.{i + 1}/24",
+                             dns_name=f"server-n1-{status}.dc1.mycompany.com",
+                             status=status)
+print("created 4")`)
+	forcePoll(t)
+
+	// All four rows landed before the same poll, so the zone version that
+	// serves the active record is the exact zone that would contain the
+	// other three if the filter were broken. Once every replica serves it,
+	// single-shot negative checks are race-free.
+	waitForDNS(t, fqdnFor("active"), dns.TypeA, "10.77.1.1", 25*time.Second)
+	waitForPTR(t, "10.77.1.1", fqdnFor("active"), 25*time.Second)
+	waitAllServers(t, 25*time.Second, func(server string) bool {
+		r := queryServer(t, fqdnFor("active"), dns.TypeA, server)
+		return r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
+	}, "active record must be served by every replica before the negative checks")
+
+	for i, status := range statuses[1:] {
+		addr := fmt.Sprintf("10.77.1.%d", i+2)
+		for _, server := range dnsProbeServers() {
+			r := queryServer(t, fqdnFor(status), dns.TypeA, server)
+			require.Truef(t, r.Rcode == dns.RcodeNameError || len(r.Answer) == 0,
+				"%s IP must not have an A record (server %s)", status, server)
+			ptrName, err := dns.ReverseAddr(addr)
+			require.NoError(t, err)
+			rp := queryServer(t, ptrName, dns.TypePTR, server)
+			require.Truef(t, rp.Rcode == dns.RcodeNameError || len(rp.Answer) == 0,
+				"%s IP must not have a PTR record (server %s)", status, server)
+		}
+	}
+}
+
+// N6 (acceptance-test matrix), passthrough half: hostile dns_name values
+// must never corrupt the zone. NetBox's API validates dns_name, but ORM
+// writes (plugins, custom scripts, legacy data) bypass validation, so the
+// generator is the last line of defense. The batch includes a newline
+// injection: if it reached the zone file verbatim it would materialize an
+// attacker-chosen record.
+func TestMutate_N6_HostileDNSNames(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	canary := hostFQDN("server-n6-canary", "dc1")
+	injected := hostFQDN("evil-n6-injected", "dc1")
+
+	t.Cleanup(func() {
+		netboxORM(t, `from ipam.models import IPAddress
+addrs = [f"10.77.2.{i}/24" for i in range(1, 6)]
+deleted, _ = IPAddress.objects.filter(address__in=addrs).delete()
+print(deleted)`)
+		forcePoll(t)
+		waitNameGone(t, canary, dns.TypeA, 25*time.Second)
+	})
+
+	// One legit canary plus the hostile names, all in one batch: once the
+	// canary resolves, the post-batch zone is being served. (Backtick Go
+	// string: the \n below reaches Python verbatim, which turns it into a
+	// real newline inside the stored dns_name.)
+	netboxORM(t, `from ipam.models import IPAddress
+hostile = [
+    "bad name.dc1.mycompany.com",
+    "semi;colon.dc1.mycompany.com",
+    "quote\"host.dc1.mycompany.com",
+    "newline.dc1.mycompany.com\nevil-n6-injected.dc1.mycompany.com. IN A 192.0.2.66",
+]
+IPAddress.objects.create(address="10.77.2.1/24",
+                         dns_name="server-n6-canary.dc1.mycompany.com", status="active")
+for i, name in enumerate(hostile):
+    IPAddress.objects.create(address=f"10.77.2.{i + 2}/24", dns_name=name, status="active")
+print("created", 1 + len(hostile))`)
+	forcePoll(t)
+
+	// The zone must still load: the canary from the same batch resolves. If
+	// a hostile name wedges the reload, this is where it shows.
+	waitForDNS(t, canary, dns.TypeA, "10.77.2.1", 25*time.Second)
+
+	// The injection attempt must not have materialized a record.
+	for _, server := range dnsProbeServers() {
+		r := queryServer(t, injected, dns.TypeA, server)
+		require.Truef(t, r.Rcode == dns.RcodeNameError || len(r.Answer) == 0,
+			"newline injection must not materialize %s (server %s)", injected, server)
+	}
+
+	// And the zone as a whole still transfers and parses.
+	tr := new(dns.Transfer)
+	m := new(dns.Msg)
+	m.SetAxfr(dns.Fqdn(forwardZone("dc1")))
+	env, err := tr.In(m, dnsServer())
+	require.NoError(t, err, "AXFR must still work with hostile records present")
+	for e := range env {
+		require.NoError(t, e.Error, "AXFR envelope must parse")
+	}
+}

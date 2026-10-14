@@ -11,6 +11,10 @@ Ops (env vars):
   OP=del        DNS_NAME=<fqdn>
   OP=bulk-add   PREFIX=<name-prefix> ZONE=<zone> COUNT=<n> NET=<10.x>
   OP=bulk-del   PREFIX=<name-prefix>
+  OP=revoke-token   (expires every API token; v2 tokens are HMAC-hashed at
+                     rest so deletion would be unrecoverable — expiry is the
+                     reversible form of revocation)
+  OP=restore-token  (clears the expiry on every API token)
 
 The e2e mutation tests (tests/e2e/mutate_test.go) perform the same
 operations inline; this script is the human-facing equivalent.
@@ -54,5 +58,18 @@ elif op == "bulk-del":
         dns_name__startswith=os.environ["PREFIX"]
     ).delete()
     print(f"deleted {deleted}")
+elif op == "revoke-token":
+    import datetime
+
+    from django.utils import timezone
+    from users.models import Token
+
+    n = Token.objects.update(expires=timezone.now() - datetime.timedelta(days=1))
+    print(f"expired {n} token(s)")
+elif op == "restore-token":
+    from users.models import Token
+
+    n = Token.objects.update(expires=None)
+    print(f"restored {n} token(s)")
 else:
     raise SystemExit(f"unknown OP {op!r}")
