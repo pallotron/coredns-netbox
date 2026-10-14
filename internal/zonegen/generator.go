@@ -45,9 +45,9 @@ func DefaultSOATimers() SOATimers {
 
 // ZoneConfig holds parameters for zone file generation.
 type ZoneConfig struct {
-	Origin     string   // e.g., "example.org." or "1.10.in-addr.arpa"
-	PrimaryNS  string   // e.g., "ns1.example.org."
-	AdminEmail string   // e.g., "admin.example.org."
+	Origin     string // e.g., "example.org." or "1.10.in-addr.arpa"
+	PrimaryNS  string // e.g., "ns1.example.org."
+	AdminEmail string // e.g., "admin.example.org."
 	TTL        uint32
 	Type       ZoneType // forward or reverse
 	SOA        SOATimers
@@ -59,14 +59,17 @@ type ZoneConfig struct {
 
 // Generator produces DNS zone files from Netbox records.
 type Generator struct {
-	config    ZoneConfig
-	lastHash  string
-	serial    uint32
+	config   ZoneConfig
+	lastHash string
+	serial   uint32
 }
 
 // NewGenerator creates a new zone file generator.
-// If zonePath is provided and exists, it reads the current SOA serial
-// from the file to ensure serial continuity across restarts.
+// If zonePath is provided and exists, it reads the current SOA serial AND
+// the persisted content hash from the file: the serial for continuity, the
+// hash so an unchanged record set is recognized across restarts (G5 — a
+// fresh process used to start with an empty hash, rewrite every zone with
+// serial+1, and force a full AXFR re-transfer to every secondary).
 func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
 	if cfg.SOA == (SOATimers{}) {
 		cfg.SOA = DefaultSOATimers()
@@ -77,6 +80,9 @@ func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
 	if zonePath != "" {
 		if serial, err := readSerialFromZoneFile(zonePath); err == nil && serial > 0 {
 			g.serial = serial
+		}
+		if hash, err := readContentHashFromZoneFile(zonePath); err == nil && hash != "" {
+			g.lastHash = hash
 		}
 	}
 
@@ -173,6 +179,12 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int
 	// SOA record
 	fmt.Fprintf(&b, "$ORIGIN %s\n", origin)
 	fmt.Fprintf(&b, "$TTL %d\n", g.config.TTL)
+	// The record-set fingerprint, persisted with the data it fingerprints.
+	// A replacement sidecar seeds lastHash from this comment and skips the
+	// rewrite when nothing changed (G5). A hand-edited or regenerated-by-
+	// other-means file carries a stale hash, which fails open: mismatch →
+	// rewrite. Zone-file comments are ignored by every parser.
+	fmt.Fprintf(&b, "; content-hash: %s\n", hash)
 	fmt.Fprintf(&b, "@ IN SOA %s %s (\n", g.config.PrimaryNS, g.config.AdminEmail)
 	fmt.Fprintf(&b, "    %d   ; serial\n", g.serial)
 	fmt.Fprintf(&b, "    %-9d ; refresh\n", g.config.SOA.Refresh)
@@ -347,6 +359,29 @@ func hashRecords(records []netboxclient.IPRecord) string {
 		_, _ = fmt.Fprintf(h, "%s|%s|%d|%d|%s|%s\n", r.DNSName, r.Address, r.Family, r.TTL, r.Type, r.CNAMETarget)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// contentHashRE matches the persisted record-set fingerprint comment that
+// Generate writes near the top of every zone file.
+var contentHashRE = regexp.MustCompile(`^; content-hash: ([0-9a-f]{64})$`)
+
+// readContentHashFromZoneFile reads the persisted content hash from an
+// existing zone file, "" when the file has none (pre-G5 files, hand-written
+// zones). Scans only the leading lines — the comment sits right after $TTL.
+func readContentHashFromZoneFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+
+	scanner := bufio.NewScanner(file)
+	for i := 0; scanner.Scan() && i < 10; i++ {
+		if m := contentHashRE.FindStringSubmatch(scanner.Text()); len(m) == 2 {
+			return m[1], nil
+		}
+	}
+	return "", nil
 }
 
 // readSerialFromZoneFile attempts to read the SOA serial from an existing zone file.
