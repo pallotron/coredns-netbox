@@ -6,6 +6,7 @@ import "github.com/prometheus/client_golang/prometheus"
 type Sidecar struct {
 	PollTotal                   *prometheus.CounterVec
 	PollDurationSeconds         prometheus.Histogram
+	PollCycleDurationSeconds    prometheus.Histogram
 	LastSuccessfulPollTimestamp prometheus.Gauge
 	NetboxFetchDurationSeconds  prometheus.Histogram
 	NetboxRecordsFetched        prometheus.Gauge
@@ -32,9 +33,21 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		}, []string{"result"}),
 
 		PollDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "netbox_sidecar_poll_duration_seconds",
-			Help:    "Duration of each full poll cycle (fetch + discover + write).",
+			Name: "netbox_sidecar_poll_duration_seconds",
+			// Observed in internal/merge around the merge+write phase only:
+			// it does NOT include the Netbox fetch, which dominates the cycle
+			// at production scale (measured: ~4.5s merge vs ~34s fetch). Use
+			// netbox_sidecar_poll_cycle_duration_seconds for the whole cycle
+			// — capacity planning against POLL_INTERVAL needs that one. The
+			// name is kept as-is so existing dashboards/alerts keep working.
+			Help:    "Duration of the merge+write phase (generate, write, reload trigger), excluding the Netbox fetch.",
 			Buckets: []float64{0.5, 1, 2, 5, 10, 30, 60, 120},
+		}),
+
+		PollCycleDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "netbox_sidecar_poll_cycle_duration_seconds",
+			Help:    "Duration of a complete periodic poll cycle (Netbox fetch + merge + write). Compare against POLL_INTERVAL for headroom.",
+			Buckets: []float64{1, 5, 10, 20, 30, 45, 60, 90, 120, 300},
 		}),
 
 		LastSuccessfulPollTimestamp: prometheus.NewGauge(prometheus.GaugeOpts{
@@ -112,6 +125,7 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 	reg.MustRegister(
 		m.PollTotal,
 		m.PollDurationSeconds,
+		m.PollCycleDurationSeconds,
 		m.LastSuccessfulPollTimestamp,
 		m.NetboxFetchDurationSeconds,
 		m.NetboxRecordsFetched,

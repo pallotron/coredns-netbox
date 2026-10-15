@@ -1,4 +1,4 @@
-.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.e2e.chaos test.helm proto \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.e2e.chaos test.helm proto dev.seed.scale dev.scale.report \
        dev dev.cluster dev.netbox dev.netbox.down dev.netbox.up dev.chaos.kill-sidecar dev.token dev.seed dev.images dev.pod-services dev.deploy dev.wait dev.teardown \
        dev.shell dev.shell.sidecar \
        lint clean
@@ -258,6 +258,26 @@ dev.token:
 		--from-literal=token="$$NETBOX_TOKEN" \
 		--dry-run=client -o yaml | $(KUBECTL) apply -f - && \
 	echo "Token stored in secret '$(NETBOX_TOKEN_SECRET)' in namespaces: $(NETBOX_NAMESPACE), $(HELM_NAMESPACE)"
+
+# N26 scale drill — seed devices at production shape (devices dominate the
+# record set in production; see docs/scale.md). SEED_DEVICES defaults to 25k.
+dev.seed.scale:
+	@echo "Seeding Netbox with $${SEED_DEVICES:-25000} devices (production-shaped scale drill)..."
+	@SCRIPT=$$(cat dev/seed-scale.py) && \
+	$(KUBECTL) exec -n $(NETBOX_NAMESPACE) deploy/netbox -c netbox -- \
+		env SEED_DEVICES=$${SEED_DEVICES:-25000} python /opt/netbox/netbox/manage.py shell \
+		--no-startup --no-imports -c "$$SCRIPT"
+
+# N26 scale drill — report cycle timings, zone counts and memory. Run after
+# dev.seed.scale and at least one poll interval.
+dev.scale.report:
+	@echo "=== poll cycle (fetch + merge + write) vs POLL_INTERVAL ==="
+	@$(KUBECTL) exec -n $(HELM_NAMESPACE) deploy/coredns-netbox-sidecar -- \
+		wget -qO- http://127.0.0.1:8082/metrics 2>/dev/null | \
+		grep -E '^netbox_sidecar_(poll_cycle_duration_seconds_(sum|count)|netbox_fetch_duration_seconds_(sum|count)|poll_duration_seconds_(sum|count)|netbox_records_fetched|zones_active) ' || \
+		echo "(scrape failed — port-forward 8082 and curl /metrics instead)"
+	@echo "=== memory vs limits ==="
+	@$(KUBECTL) top pods -n $(HELM_NAMESPACE) || true
 
 dev.seed:
 	@echo "Seeding Netbox with 18,000 IP addresses via Django ORM..."
