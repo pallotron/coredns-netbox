@@ -149,6 +149,16 @@ test.helm:
 		--set 'transfer.notify[0]=10.0.1.6' 2>&1 | grep -q "notify" && \
 		(echo "FAIL: notify directive rendered in transfer block" && exit 1) || \
 		echo "PASS: no notify directive in transfer block"
+	# CoreDNS drains on shutdown: without lameduck a rolling restart drops
+	# the queries that land between SIGTERM and endpoint removal (G11/N24)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | \
+		grep -q "lameduck 5s" && \
+		echo "PASS: health lameduck rendered by default" || \
+		(echo "FAIL: health lameduck missing — rolling restarts will drop queries" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set coredns.lameduck=12s 2>&1 | grep -q "lameduck 12s" && \
+		echo "PASS: coredns.lameduck override rendered" || \
+		(echo "FAIL: coredns.lameduck override not rendered" && exit 1)
 	# soa values render as sidecar env vars
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \
 		--set soa.refresh=300 2>&1 | grep -A1 "SOA_REFRESH" | grep -q '"300"' && \

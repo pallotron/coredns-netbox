@@ -83,6 +83,12 @@ coredns:
   pullPolicy: IfNotPresent
   reloadGRPCPort: ":8054"          # gRPC port for ZoneReloadService
   reloadPollInterval: "60s"        # Fallback poll interval (0s to disable)
+  # On SIGTERM, keep answering for this long while reporting unhealthy, so
+  # the endpoints controller removes the pod from the Service BEFORE it stops
+  # serving. Without it a rolling restart (every helm upgrade, node drain or
+  # reschedule) drops the queries that land on a pod between its SIGTERM and
+  # kube-proxy noticing. Must stay below terminationGracePeriodSeconds.
+  lameduck: 5s
   # Extra CoreDNS plugin directives appended to the primary server block.
   # Use this to inject additional plugins (e.g. rewrite, acl, metadata) without
   # forking the chart. Each directive must be valid Corefile syntax.
