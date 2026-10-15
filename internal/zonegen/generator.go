@@ -62,6 +62,10 @@ type Generator struct {
 	config   ZoneConfig
 	lastHash string
 	serial   uint32
+	// hashFromFile marks lastHash as read from a zone file rather than
+	// written by this process, which is the only case where the file's
+	// integrity has to be taken on trust.
+	hashFromFile bool
 }
 
 // NewGenerator creates a new zone file generator.
@@ -81,8 +85,13 @@ func NewGenerator(cfg ZoneConfig, zonePath string) *Generator {
 		if serial, err := readSerialFromZoneFile(zonePath); err == nil && serial > 0 {
 			g.serial = serial
 		}
-		if hash, err := readContentHashFromZoneFile(zonePath); err == nil && hash != "" {
+		// Trust the persisted record fingerprint only if the file still
+		// hashes to its own recorded body fingerprint. A damaged file
+		// (truncated write, bad restore, hand edit) must be rewritten, not
+		// skipped — otherwise the damage survives every restart.
+		if hash, err := readVerifiedContentHash(zonePath); err == nil && hash != "" {
 			g.lastHash = hash
+			g.hashFromFile = true
 		}
 	}
 
@@ -179,12 +188,6 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int
 	// SOA record
 	fmt.Fprintf(&b, "$ORIGIN %s\n", origin)
 	fmt.Fprintf(&b, "$TTL %d\n", g.config.TTL)
-	// The record-set fingerprint, persisted with the data it fingerprints.
-	// A replacement sidecar seeds lastHash from this comment and skips the
-	// rewrite when nothing changed (G5). A hand-edited or regenerated-by-
-	// other-means file carries a stale hash, which fails open: mismatch →
-	// rewrite. Zone-file comments are ignored by every parser.
-	fmt.Fprintf(&b, "; content-hash: %s\n", hash)
 	fmt.Fprintf(&b, "@ IN SOA %s %s (\n", g.config.PrimaryNS, g.config.AdminEmail)
 	fmt.Fprintf(&b, "    %d   ; serial\n", g.serial)
 	fmt.Fprintf(&b, "    %-9d ; refresh\n", g.config.SOA.Refresh)
@@ -248,7 +251,50 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int
 	}
 
 	g.lastHash = hash
-	return b.String(), true, len(records), nil
+	g.hashFromFile = false
+	return withFingerprints(b.String(), hash), true, len(records), nil
+}
+
+// withFingerprints inserts the two fingerprint comments after the $TTL line:
+//
+//	; content-hash: <hash of the record set this file represents>
+//	; body-hash:    <hash of this file's own bytes, minus these two lines>
+//
+// content-hash answers "have the records changed?" across a restart (G5 — a
+// fresh process used to rewrite every zone with serial+1 and force a full
+// AXFR re-transfer to every secondary). body-hash answers "is this file
+// still what we wrote?", which content-hash alone cannot: a tail-truncated
+// file keeps its header, so without this the restarted process would trust
+// the stale content-hash, skip the repair, and leave CoreDNS serving a
+// silently incomplete zone (it parses — there is simply less of it).
+// Comments are ignored by every zone parser.
+func withFingerprints(content, contentHash string) string {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "$TTL ") {
+			continue
+		}
+		plain := strings.Join(lines[:i+1], "") + strings.Join(lines[i+1:], "")
+		stamped := strings.Join(lines[:i+1], "") +
+			fmt.Sprintf("; content-hash: %s\n; body-hash: %s\n", contentHash, hashBody(plain)) +
+			strings.Join(lines[i+1:], "")
+		return stamped
+	}
+	return content
+}
+
+// hashBody fingerprints zone content with the fingerprint comments removed,
+// so the value is stable across writing and reading the same file back.
+func hashBody(content string) string {
+	h := sha256.New()
+	for _, line := range strings.SplitAfter(content, "\n") {
+		if contentHashRE.MatchString(strings.TrimSuffix(line, "\n")) ||
+			bodyHashRE.MatchString(strings.TrimSuffix(line, "\n")) {
+			continue
+		}
+		_, _ = h.Write([]byte(line))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // WriteFile atomically writes the zone content to the specified path.
@@ -361,27 +407,46 @@ func hashRecords(records []netboxclient.IPRecord) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// contentHashRE matches the persisted record-set fingerprint comment that
-// Generate writes near the top of every zone file.
-var contentHashRE = regexp.MustCompile(`^; content-hash: ([0-9a-f]{64})$`)
+// contentHashRE and bodyHashRE match the fingerprint comments that
+// withFingerprints writes near the top of every generated zone file.
+var (
+	contentHashRE = regexp.MustCompile(`^; content-hash: ([0-9a-f]{64})$`)
+	bodyHashRE    = regexp.MustCompile(`^; body-hash: ([0-9a-f]{64})$`)
+)
 
-// readContentHashFromZoneFile reads the persisted content hash from an
-// existing zone file, "" when the file has none (pre-G5 files, hand-written
-// zones). Scans only the leading lines — the comment sits right after $TTL.
-func readContentHashFromZoneFile(path string) (string, error) {
-	file, err := os.Open(path)
+// readVerifiedContentHash returns the persisted record-set fingerprint of a
+// zone file, but only when the file still matches its own body fingerprint.
+// Returns "" for a file with no fingerprints (pre-fix files, hand-written
+// zones) and for a file whose body no longer matches — in both cases the
+// caller must regenerate rather than trust what is on disk.
+func readVerifiedContentHash(path string) (string, error) {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = file.Close() }()
+	content := string(raw)
 
-	scanner := bufio.NewScanner(file)
-	for i := 0; scanner.Scan() && i < 10; i++ {
-		if m := contentHashRE.FindStringSubmatch(scanner.Text()); len(m) == 2 {
-			return m[1], nil
+	var contentHash, bodyHash string
+	for _, line := range strings.Split(content, "\n") {
+		if m := contentHashRE.FindStringSubmatch(line); len(m) == 2 {
+			contentHash = m[1]
+		}
+		if m := bodyHashRE.FindStringSubmatch(line); len(m) == 2 {
+			bodyHash = m[1]
+		}
+		if contentHash != "" && bodyHash != "" {
+			break
 		}
 	}
-	return "", nil
+	if contentHash == "" || bodyHash == "" {
+		return "", nil
+	}
+	if got := hashBody(content); got != bodyHash {
+		slog.Warn("zone file does not match its recorded fingerprint; regenerating",
+			"path", path, "recorded", bodyHash[:8], "actual", got[:8])
+		return "", nil
+	}
+	return contentHash, nil
 }
 
 // readSerialFromZoneFile attempts to read the SOA serial from an existing zone file.

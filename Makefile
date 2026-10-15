@@ -1,4 +1,4 @@
-.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.e2e.chaos test.helm proto dev.seed.scale dev.scale.report \
+.PHONY: build build.sidecar build.analyzer test.unit test.e2e test.e2e.local test.e2e.chaos test.helm proto dev.seed.scale dev.scale.report dev.chaos.corrupt-zone \
        dev dev.cluster dev.netbox dev.netbox.down dev.netbox.up dev.chaos.kill-sidecar dev.token dev.seed dev.images dev.pod-services dev.deploy dev.wait dev.teardown \
        dev.shell dev.shell.sidecar \
        lint clean
@@ -74,6 +74,23 @@ dev.netbox.down:
 dev.netbox.up:
 	$(KUBECTL) -n $(NETBOX_NAMESPACE) scale deploy/netbox --replicas=1
 	$(KUBECTL) -n $(NETBOX_NAMESPACE) rollout status deploy/netbox --timeout=10m
+
+# N25 chaos helper — damage a zone file on the sidecar's volume to verify the
+# damage is repaired rather than served. The sidecar image is distroless (no
+# shell), so the write goes through a short-lived busybox pod mounting the
+# same PVC; the sidecar is scaled down first because the claim is RWO.
+# Tail truncation is the dangerous shape: it leaves the fingerprint header
+# intact, so only the body fingerprint catches it.
+dev.chaos.corrupt-zone:
+	@ZONE=$${ZONE:-db.mycompany.com}; \
+	echo "Truncating /zones/$$ZONE on the sidecar PVC"; \
+	$(KUBECTL) -n $(HELM_NAMESPACE) scale deploy/coredns-netbox-sidecar --replicas=0; \
+	$(KUBECTL) -n $(HELM_NAMESPACE) wait --for=delete pod -l app.kubernetes.io/component=sidecar --timeout=5m; \
+	$(KUBECTL) -n $(HELM_NAMESPACE) run zone-corrupter --rm -i --restart=Never --image=busybox:1.36 \
+		--overrides='{"spec":{"containers":[{"name":"zone-corrupter","image":"busybox:1.36","command":["sh","-c","head -n -3 /zones/'"$$ZONE"' > /tmp/z && cp /tmp/z /zones/'"$$ZONE"' && echo truncated"],"volumeMounts":[{"name":"zones","mountPath":"/zones"}]}],"volumes":[{"name":"zones","persistentVolumeClaim":{"claimName":"coredns-netbox-sidecar-data"}}]}}'; \
+	$(KUBECTL) -n $(HELM_NAMESPACE) scale deploy/coredns-netbox-sidecar --replicas=1; \
+	$(KUBECTL) -n $(HELM_NAMESPACE) rollout status deploy/coredns-netbox-sidecar --timeout=5m; \
+	echo "Sidecar back up — expect a 'does not match its recorded fingerprint' warning and a rewrite"
 
 dev.chaos.kill-sidecar:
 	$(KUBECTL) -n $(HELM_NAMESPACE) delete pod -l app.kubernetes.io/component=sidecar

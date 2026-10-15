@@ -809,3 +809,85 @@ func TestGeneratorPersistsContentHashAcrossRestart(t *testing.T) {
 		assert.True(t, changed, "no persisted fingerprint: first generation writes, as pre-G5")
 	})
 }
+
+// G10 (acceptance matrix N25, and a regression the G5 fix introduced): a
+// zone file damaged on disk must be repaired by the next generation. The
+// dangerous shape is a TAIL TRUNCATION — it leaves the header, and so the
+// record fingerprint, intact. With only that fingerprint to go on, a
+// restarted process concludes "these records are already written", skips
+// the repair, and CoreDNS keeps serving a file that parses perfectly and is
+// simply missing records: a silent partial outage that survives restarts.
+// The body fingerprint is what makes the file self-validating.
+func TestGeneratorRepairsDamagedZoneFile(t *testing.T) {
+	cfg := ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+	}
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "192.0.2.1", Family: 4},
+		{DNSName: "host2.example.org", Address: "192.0.2.2", Family: 4},
+		{DNSName: "host3.example.org", Address: "192.0.2.3", Family: 4},
+	}
+
+	write := func(t *testing.T) (string, string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "db.example.org")
+		content, changed, _, err := NewGenerator(cfg, path).Generate(records)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.NoError(t, WriteFile(path, content))
+		return path, content
+	}
+
+	t.Run("intact file is still skipped across a restart", func(t *testing.T) {
+		path, _ := write(t)
+		_, changed, _, err := NewGenerator(cfg, path).Generate(records)
+		require.NoError(t, err)
+		assert.False(t, changed, "an undamaged, unchanged zone must not be rewritten (G5)")
+	})
+
+	t.Run("tail truncation is repaired", func(t *testing.T) {
+		path, content := write(t)
+		lines := strings.Split(content, "\n")
+		truncated := strings.Join(lines[:len(lines)-3], "\n") + "\n"
+		require.NotContains(t, truncated, "host3", "truncation must drop a record")
+		require.Contains(t, truncated, "; content-hash: ", "and must leave the header intact")
+		require.NoError(t, os.WriteFile(path, []byte(truncated), 0o644))
+
+		_, changed, _, err := NewGenerator(cfg, path).Generate(records)
+		require.NoError(t, err)
+		assert.True(t, changed, "a truncated zone file must be rewritten, not trusted")
+	})
+
+	t.Run("mid-file edit is repaired", func(t *testing.T) {
+		path, content := write(t)
+		edited := strings.Replace(content, "192.0.2.2", "198.51.100.9", 1)
+		require.NotEqual(t, content, edited)
+		require.NoError(t, os.WriteFile(path, []byte(edited), 0o644))
+
+		_, changed, _, err := NewGenerator(cfg, path).Generate(records)
+		require.NoError(t, err)
+		assert.True(t, changed, "an edited zone file must be rewritten, not trusted")
+	})
+
+	t.Run("damaged file keeps serial continuity", func(t *testing.T) {
+		path, content := write(t)
+		serialBefore, err := readSerialFromZoneFile(path)
+		require.NoError(t, err)
+		lines := strings.Split(content, "\n")
+		require.NoError(t, os.WriteFile(path,
+			[]byte(strings.Join(lines[:len(lines)-3], "\n")+"\n"), 0o644))
+
+		repaired, changed, _, err := NewGenerator(cfg, path).Generate(records)
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.NoError(t, WriteFile(path, repaired))
+		serialAfter, err := readSerialFromZoneFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, serialBefore+1, serialAfter,
+			"the repair is a normal write: the serial advances once, so secondaries pick it up")
+	})
+}
