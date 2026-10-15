@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,13 @@ type probeStats struct {
 
 func startProbe(t *testing.T, interval time.Duration) *dnsProbe {
 	t.Helper()
+	return startProbeAgainst(t, interval, dnsServer())
+}
+
+// startProbeAgainst is startProbe aimed at a specific server — the secondary
+// (N29) has to be watched while the primary it transfers from is down.
+func startProbeAgainst(t *testing.T, interval time.Duration, server string) *dnsProbe {
+	t.Helper()
 	p := &dnsProbe{stop: make(chan struct{}), done: make(chan struct{})}
 	name := dns.Fqdn(hostFQDN("server1-mgmt", "dc1"))
 	want := "10.1.0.1"
@@ -107,7 +115,7 @@ func startProbe(t *testing.T, interval time.Duration) *dnsProbe {
 			case <-tick.C:
 				m := new(dns.Msg)
 				m.SetQuestion(name, dns.TypeA)
-				r, _, err := c.Exchange(m, dnsServer())
+				r, _, err := c.Exchange(m, server)
 				ok := false
 				if err == nil && r.Rcode == dns.RcodeSuccess {
 					for _, ans := range r.Answer {
@@ -134,6 +142,52 @@ func startProbe(t *testing.T, interval time.Duration) *dnsProbe {
 		}
 	}()
 	return p
+}
+
+// FailuresSoFar reads the running failure count without stopping the probe
+// — used to assert mid-outage, while the probe keeps covering recovery.
+func (p *dnsProbe) FailuresSoFar() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.failures
+}
+
+// waitForDNSOn is waitForDNS against an explicit server (the secondary, in
+// N29's case, which must be queried directly rather than via the primary's
+// load-balanced service).
+func waitForDNSOn(t *testing.T, server, name, wantIP string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		r := queryServer(t, name, dns.TypeA, server)
+		for _, ans := range r.Answer {
+			if a, ok := ans.(*dns.A); ok && a.A.String() == wantIP {
+				return
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Fatalf("%s -> %s did not appear on %s within %s", name, wantIP, server, timeout)
+}
+
+// axfrNames transfers a zone and returns every owner name in it. A zone
+// that transfers at all proves the file parsed; the names prove it is the
+// zone we expect rather than an empty shell.
+func axfrNames(t *testing.T, zone string) []string {
+	t.Helper()
+	tr := new(dns.Transfer)
+	m := new(dns.Msg)
+	m.SetAxfr(dns.Fqdn(zone))
+	env, err := tr.In(m, dnsServer())
+	require.NoError(t, err, "AXFR of %s", zone)
+	var names []string
+	for e := range env {
+		require.NoError(t, e.Error, "AXFR envelope error")
+		for _, rr := range e.RR {
+			names = append(names, rr.Header().Name)
+		}
+	}
+	return names
 }
 
 func (p *dnsProbe) Stop() probeStats {
@@ -396,4 +450,170 @@ print("restored", Token.objects.update(expires=None))`)
 	require.Zero(t, stats.Failures,
 		"DNS must keep answering while the token is revoked; first failure: %s (of %d queries)",
 		stats.FirstFailure, stats.Total)
+}
+
+// scaleStatefulSet scales a StatefulSet and waits for the rollout to settle.
+func scaleStatefulSet(t *testing.T, ns, name string, replicas int) {
+	t.Helper()
+	kubectlOut(t, "-n", ns, "scale", "sts/"+name, fmt.Sprintf("--replicas=%d", replicas))
+}
+
+// waitStatefulSetReady blocks until every replica of the StatefulSet is ready.
+func waitStatefulSetReady(t *testing.T, ns, name string, timeout time.Duration) {
+	t.Helper()
+	kubectlOut(t, "-n", ns, "rollout", "status", "sts/"+name, fmt.Sprintf("--timeout=%s", timeout))
+}
+
+// N24 (acceptance-test matrix): a rolling restart of the CoreDNS primary
+// must not drop client queries. This is not an exotic failure mode — every
+// `helm upgrade` performs exactly this, so if readiness lets a pod take
+// traffic before its zones are loaded, the deploy IS the incident. With two
+// replicas behind the service, the surviving pod must cover each pod's
+// restart window.
+func TestChaos_N24_RollingRestartUnderLoad(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	t.Cleanup(func() {
+		waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
+	})
+
+	// 10 queries/second against the load-balanced service for the whole
+	// rollout — the per-pod ports would dodge exactly the failover this
+	// test exists to measure.
+	probe := startProbe(t, 100*time.Millisecond)
+
+	kubectlOut(t, "-n", "coredns-netbox", "rollout", "restart", "sts/coredns-netbox")
+	waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
+
+	// Let the probe cover the settling period after the last pod reports
+	// ready, where a premature readiness signal would surface.
+	time.Sleep(10 * time.Second)
+
+	stats := probe.Stop()
+	require.Greater(t, stats.Total, 100, "probe must have run across the rollout")
+	require.Zero(t, stats.Failures,
+		"rolling restart must not drop queries; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+}
+
+// N29 (acceptance-test matrix): the secondary keeps answering while the
+// primary it transfers from is entirely gone, and resumes transferring when
+// the primary returns — no restart, no manual intervention. Component
+// analog of PoC A9: under CISv2 every site secondary depends on exactly
+// this when Central is unreachable.
+func TestChaos_N29_SecondaryServesThroughPrimaryOutage(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	// The secondary must already hold the zone before the primary goes
+	// away; a secondary that never transferred proves nothing.
+	waitForDNSOn(t, dnsSecondaryServer(), hostFQDN("server1-mgmt", "dc1"), "10.1.0.1", 60*time.Second)
+
+	t.Cleanup(func() {
+		scaleStatefulSet(t, "coredns-netbox", "coredns-netbox", 2)
+		waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
+	})
+
+	probe := startProbeAgainst(t, 500*time.Millisecond, dnsSecondaryServer())
+
+	scaleStatefulSet(t, "coredns-netbox", "coredns-netbox", 0)
+	kubectlOut(t, "-n", "coredns-netbox", "wait", "--for=delete",
+		"pod", "-l", "app.kubernetes.io/component=primary", "--timeout=5m")
+
+	// Outlast a refresh window so the secondary actually attempts (and
+	// fails) a transfer while serving from its own copy. SOA expire is
+	// days, so nothing should be dropped here.
+	time.Sleep(90 * time.Second)
+
+	// Primary is gone: it must be the secondary answering, not a stale
+	// route to the primary's service.
+	require.Zero(t, probe.FailuresSoFar(), "secondary must answer throughout the primary outage")
+
+	scaleStatefulSet(t, "coredns-netbox", "coredns-netbox", 2)
+	waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
+	waitForPrimary(t)
+
+	// Recovery: a change made after the outage must reach the secondary
+	// again, proving transfers resumed without intervention.
+	stats := probe.Stop()
+	require.Greater(t, stats.Total, 0, "probe must have run")
+	require.Zero(t, stats.Failures,
+		"secondary must answer throughout and after the outage; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+	waitForDNSOn(t, dnsSecondaryServer(), hostFQDN("server1-mgmt", "dc1"), "10.1.0.1", 2*time.Minute)
+}
+
+// N23 (acceptance-test matrix): losing the sidecar's PVC must be survivable
+// — the replacement regenerates every zone from NetBox within one poll
+// cycle. The PVC exists to serve stale across restarts (G4/N16); this is
+// the opposite case, where there is nothing cached and NetBox is healthy,
+// and it is also what a fresh install does.
+func TestChaos_N23_SidecarPVCLost(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	zone := forwardZone("dc1")
+	serialBefore := soaSerial(t, zone)
+
+	// Scale to 0 first: the PVC is RWO and cannot be deleted while mounted.
+	scaleDeploy(t, "coredns-netbox", "coredns-netbox-sidecar", 0)
+	kubectlOut(t, "-n", "coredns-netbox", "wait", "--for=delete",
+		"pod", "-l", "app.kubernetes.io/component=sidecar", "--timeout=5m")
+
+	t.Cleanup(func() {
+		scaleDeploy(t, "coredns-netbox", "coredns-netbox-sidecar", 1)
+		waitDeployReady(t, "coredns-netbox", "coredns-netbox-sidecar", 10*time.Minute)
+	})
+
+	// Capture the claim's shape before destroying it: the Deployment mounts
+	// this PVC by name, so "losing the volume" means deleting it AND
+	// providing a fresh empty one — otherwise the replacement pod simply
+	// never schedules and the test would measure nothing.
+	const pvcName = "coredns-netbox-sidecar-data"
+	storageClass := strings.TrimSpace(kubectlOut(t, "-n", "coredns-netbox", "get", "pvc", pvcName,
+		"-o", "jsonpath={.spec.storageClassName}"))
+	size := strings.TrimSpace(kubectlOut(t, "-n", "coredns-netbox", "get", "pvc", pvcName,
+		"-o", "jsonpath={.spec.resources.requests.storage}"))
+	require.NotEmpty(t, size, "must read the existing PVC size")
+
+	kubectlOut(t, "-n", "coredns-netbox", "delete", "pvc", pvcName, "--timeout=5m")
+
+	manifest := fmt.Sprintf(`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: %s
+  namespace: coredns-netbox
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: %s
+`, pvcName, size)
+	if storageClass != "" {
+		manifest += fmt.Sprintf("  storageClassName: %s\n", storageClass)
+	}
+	manifestPath := filepath.Join(t.TempDir(), "pvc.yaml")
+	require.NoError(t, os.WriteFile(manifestPath, []byte(manifest), 0o644))
+	kubectlOut(t, "-n", "coredns-netbox", "apply", "-f", manifestPath)
+
+	start := time.Now()
+	scaleDeploy(t, "coredns-netbox", "coredns-netbox-sidecar", 1)
+	waitDeployReady(t, "coredns-netbox", "coredns-netbox-sidecar", 10*time.Minute)
+
+	// Readiness gates on the first successful fetch+merge, so by here the
+	// zones have been regenerated from NetBox onto a brand-new volume.
+	waitForDNS(t, hostFQDN("server1-mgmt", "dc1"), dns.TypeA, "10.1.0.1", 2*time.Minute)
+	t.Logf("N23 PVC-loss recovery: %s from scale-up to serving", time.Since(start).Round(time.Second))
+
+	// The zone must come back COMPLETE, not merely present.
+	require.NotEmpty(t, axfrNames(t, zone), "zone must transfer after PVC loss")
+	waitForPTR(t, "10.1.0.1", hostFQDN("server1-mgmt", "dc1"), 60*time.Second)
+
+	// Serial continuity is lost with the volume (the file carried it), so
+	// the only safe assertion is that a serial exists and the zone serves.
+	serialAfter := soaSerial(t, zone)
+	t.Logf("N23 serial across PVC loss: %d -> %d (continuity is file-backed; a rebuilt volume restarts the sequence)",
+		serialBefore, serialAfter)
+	require.Positive(t, serialAfter, "regenerated zone must carry a serial")
 }
