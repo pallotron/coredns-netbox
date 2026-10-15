@@ -427,6 +427,10 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 			return nil
 
 		case <-ticker.C:
+			// The periodic cycle is what has to fit inside POLL_INTERVAL;
+			// time the whole thing (fetch + merge + write), not just the
+			// merge phase that PollDurationSeconds covers.
+			cycleStart := time.Now()
 			zones, err := doFetchNetbox()
 			if err != nil {
 				slog.Warn("poll error", "err", err)
@@ -460,6 +464,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 					rl.Reconcile(ctx)
 				}
 			}
+			m.PollCycleDurationSeconds.Observe(time.Since(cycleStart).Seconds())
 
 		case <-netboxSignal:
 			pollAndMerge()
