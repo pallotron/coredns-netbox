@@ -27,7 +27,9 @@ data:
         cache {{ .Values.cacheTTL }}
         log
         errors
-        health :8080
+        health :8080 {
+            lameduck {{ .Values.coredns.lameduck | default "5s" }}
+        }
         ready :8181
         {{- if .Values.metrics.enabled }}
         prometheus :{{ .Values.metrics.port }}
@@ -52,7 +54,9 @@ data:
         cache {{ .Values.cacheTTL }}
         log
         errors
-        health :8080
+        health :8080 {
+            lameduck {{ .Values.coredns.lameduck | default "5s" }}
+        }
         ready :8181
     }
 {{- end }}
