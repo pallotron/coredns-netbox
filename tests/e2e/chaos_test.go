@@ -617,3 +617,88 @@ spec:
 		serialBefore, serialAfter)
 	require.Positive(t, serialAfter, "regenerated zone must carry a serial")
 }
+
+// helmDeploy re-runs the dev deployment command, optionally with extra
+// --set overrides. The chart path is relative to tests/e2e (go test runs
+// with the package directory as its working directory).
+func helmDeploy(t *testing.T, extra ...string) {
+	t.Helper()
+	args := []string{
+		"upgrade", "--install", "coredns-netbox", "../../helm/coredns-netbox",
+		"-n", "coredns-netbox",
+		"-f", "../../dev/coredns-netbox-values.yaml",
+		"--set", "netbox.existingSecret=netbox-api-token",
+		"--kube-context", kubeContext(),
+		"--wait", "--timeout", "5m",
+	}
+	args = append(args, extra...)
+	out, err := exec.Command("helm", args...).CombinedOutput()
+	require.NoError(t, err, "helm %s: %s", strings.Join(args, " "), string(out))
+}
+
+// axfrSucceeds reports whether a full zone transfer completes from this
+// host. A refused transfer surfaces either as an error from the transfer
+// itself or as a failing envelope, depending on how the server declines —
+// both count as denied.
+func axfrSucceeds(t *testing.T, zone string) bool {
+	t.Helper()
+	tr := new(dns.Transfer)
+	m := new(dns.Msg)
+	m.SetAxfr(dns.Fqdn(zone))
+	env, err := tr.In(m, dnsServer())
+	if err != nil {
+		t.Logf("N30 AXFR of %s: transfer setup failed: %v", zone, err)
+		return false
+	}
+	records := 0
+	for e := range env {
+		if e.Error != nil {
+			t.Logf("N30 AXFR of %s: envelope error: %v", zone, e.Error)
+			return false
+		}
+		records += len(e.RR)
+	}
+	return records > 0
+}
+
+// N30 (acceptance-test matrix): a restricted transfer ACL must actually
+// refuse unlisted clients. Dev and CI run transfer.to: ['*'], so the deny
+// path has never once executed here — yet CISv2 relies on it to keep zone
+// data from transferring to anything that asks. This restricts the ACL to
+// the secondary alone, confirms an unlisted client is refused while the
+// listed one still works, and restores the open ACL afterwards.
+func TestChaos_N30_TransferACLEnforced(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	zone := forwardZone("dc1")
+	require.True(t, axfrSucceeds(t, zone), "baseline: AXFR must work with the open dev ACL")
+
+	// The primary sees the secondary's AXFR arrive from its pod IP, so that
+	// is what has to be allow-listed.
+	secondaryIP := strings.TrimSpace(kubectlOut(t, "-n", "coredns-netbox", "get", "pod",
+		"-l", "app.kubernetes.io/component=secondary",
+		"-o", "jsonpath={.items[0].status.podIP}"))
+	require.NotEmpty(t, secondaryIP, "secondary pod IP must be readable")
+
+	// Restore the open ACL no matter how this exits — later tests and reruns
+	// depend on transfers working.
+	t.Cleanup(func() {
+		helmDeploy(t)
+		waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
+		waitForPrimary(t)
+	})
+
+	helmDeploy(t, "--set", "transfer.to[0]="+secondaryIP)
+	waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
+	waitForPrimary(t)
+
+	// This host is not the secondary, so its transfer must be refused —
+	// while ordinary queries keep working (the ACL governs transfers only).
+	require.False(t, axfrSucceeds(t, zone),
+		"an unlisted client must not be able to transfer the zone")
+	waitForDNS(t, hostFQDN("server1-mgmt", "dc1"), dns.TypeA, "10.1.0.1", 25*time.Second)
+
+	// The allow-listed secondary still serves the zone it transferred.
+	waitForDNSOn(t, dnsSecondaryServer(), hostFQDN("server1-mgmt", "dc1"), "10.1.0.1", 60*time.Second)
+}

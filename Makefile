@@ -159,6 +159,13 @@ test.helm:
 		--set coredns.lameduck=12s 2>&1 | grep -q "lameduck 12s" && \
 		echo "PASS: coredns.lameduck override rendered" || \
 		(echo "FAIL: coredns.lameduck override not rendered" && exit 1)
+	# a restricted transfer.to renders ONLY the listed peers — shipping '*'
+	# to production by accident is the realistic misconfiguration (N30)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set 'transfer.to[0]=10.0.1.5' --set 'transfer.to[1]=10.0.1.6' 2>&1 | \
+		grep -A4 "transfer {" | grep -q "to \*" && \
+		(echo "FAIL: restricted transfer.to still allows everyone" && exit 1) || \
+		echo "PASS: restricted transfer.to lists only the named peers"
 	# soa values render as sidecar env vars
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \
 		--set soa.refresh=300 2>&1 | grep -A1 "SOA_REFRESH" | grep -q '"300"' && \
