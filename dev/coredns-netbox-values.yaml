@@ -102,3 +102,17 @@ secondary:
   # Transfer zones from primary (using static ClusterIP above)
   transferFrom:
     - 10.43.100.53
+
+# Shrink guard (G1/N21): the dev fixture is a fraction of a production set,
+# so the same absolute churn is a much larger percentage of it — N13 alone
+# creates and deletes 1,000 records, ~5% of the seed, which trips the chart
+# default of 5% and then (by design) refuses every later publish until an
+# operator overrides, wedging the rest of the suite.
+#
+# Production keeps the chart default: there the same 1,000-record batch is a
+# small fraction of the published set and never trips. Here the trigger is
+# raised to sit above routine test churn while still well below the 90%
+# removal N21 performs deliberately.
+shrinkGuard:
+  globalDropPercent: 25
+  zoneDropPercent: 60

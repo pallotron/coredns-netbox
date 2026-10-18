@@ -159,6 +159,22 @@ test.helm:
 		--set coredns.lameduck=12s 2>&1 | grep -q "lameduck 12s" && \
 		echo "PASS: coredns.lameduck override rendered" || \
 		(echo "FAIL: coredns.lameduck override not rendered" && exit 1)
+	# the shrink guard ships on, and an explicit false really switches it off
+	# — helm's `default` treats false as empty, so this is easy to get wrong
+	@helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | \
+		grep -A1 "SHRINK_GUARD_ENABLED" | grep -q '"true"' && \
+		echo "PASS: shrink guard enabled by default" || \
+		(echo "FAIL: shrink guard not enabled by default (G1/N21)" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set shrinkGuard.enabled=false 2>&1 | \
+		grep -A1 "SHRINK_GUARD_ENABLED" | grep -q '"false"' && \
+		echo "PASS: shrinkGuard.enabled=false renders as false" || \
+		(echo "FAIL: shrinkGuard.enabled=false did not render" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set shrinkGuard.globalDropPercent=12 2>&1 | \
+		grep -A1 "SHRINK_GUARD_GLOBAL_DROP_PERCENT" | grep -q '"12"' && \
+		echo "PASS: shrink guard threshold override rendered" || \
+		(echo "FAIL: shrink guard threshold override not rendered" && exit 1)
 	# a restricted transfer.to renders ONLY the listed peers — shipping '*'
 	# to production by accident is the realistic misconfiguration (N30)
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \

@@ -47,6 +47,11 @@ var allEnvKeys = []string{
 	"NAME_FORMAT_ZONE",
 	"NETBOX_WEBHOOK_SECRET",
 	"WEBHOOK_POLL_MIN_INTERVAL",
+	"SHRINK_GUARD_ENABLED",
+	"SHRINK_GUARD_GLOBAL_DROP_PERCENT",
+	"SHRINK_GUARD_GLOBAL_MIN_RECORDS",
+	"SHRINK_GUARD_ZONE_DROP_PERCENT",
+	"SHRINK_GUARD_ZONE_MIN_RECORDS",
 }
 
 // clearEnv unsets all config-related env vars to ensure test isolation.
@@ -343,6 +348,62 @@ func TestParsePublishStatuses(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// G1/N21: the guard ships on with thresholds that cleared a month of
+// production churn, and percentages are given as percent so values.yaml and
+// the log line read the way an operator says them.
+func TestLoad_ShrinkGuardDefaults(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+
+	c, err := Load()
+	require.NoError(t, err)
+	assert.True(t, c.ShrinkGuard.Enabled, "the shrink guard must be on by default")
+	assert.InDelta(t, 0.05, c.ShrinkGuard.GlobalDropFraction, 1e-9)
+	assert.Equal(t, 100, c.ShrinkGuard.GlobalMinRecords)
+	assert.InDelta(t, 0.5, c.ShrinkGuard.ZoneDropFraction, 1e-9)
+	assert.Equal(t, 100, c.ShrinkGuard.ZoneMinRecords)
+}
+
+func TestLoad_ShrinkGuardOverrides(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+	t.Setenv("SHRINK_GUARD_ENABLED", "false")
+	t.Setenv("SHRINK_GUARD_GLOBAL_DROP_PERCENT", "12.5")
+	t.Setenv("SHRINK_GUARD_GLOBAL_MIN_RECORDS", "2000")
+	t.Setenv("SHRINK_GUARD_ZONE_DROP_PERCENT", "80")
+	t.Setenv("SHRINK_GUARD_ZONE_MIN_RECORDS", "50")
+
+	c, err := Load()
+	require.NoError(t, err)
+	assert.False(t, c.ShrinkGuard.Enabled)
+	assert.InDelta(t, 0.125, c.ShrinkGuard.GlobalDropFraction, 1e-9, "percent is converted to a fraction")
+	assert.Equal(t, 2000, c.ShrinkGuard.GlobalMinRecords)
+	assert.InDelta(t, 0.8, c.ShrinkGuard.ZoneDropFraction, 1e-9)
+	assert.Equal(t, 50, c.ShrinkGuard.ZoneMinRecords)
+}
+
+func TestLoad_ShrinkGuardRejectsNonsense(t *testing.T) {
+	tests := []struct {
+		name, key, value, wantErr string
+	}{
+		{"percent above 100", "SHRINK_GUARD_GLOBAL_DROP_PERCENT", "150", "must be between 0 and 100"},
+		{"negative percent", "SHRINK_GUARD_ZONE_DROP_PERCENT", "-1", "must be between 0 and 100"},
+		{"not a number", "SHRINK_GUARD_GLOBAL_DROP_PERCENT", "lots", "invalid SHRINK_GUARD_GLOBAL_DROP_PERCENT"},
+		{"negative record floor", "SHRINK_GUARD_ZONE_MIN_RECORDS", "-5", "must not be negative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("NETBOX_TOKEN", "test-token")
+			t.Setenv(tt.key, tt.value)
+
+			_, err := Load()
+			require.Error(t, err, "a misconfigured guard must fail at startup, not silently")
+			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }
