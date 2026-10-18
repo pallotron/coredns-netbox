@@ -42,12 +42,18 @@ func TestMetricsEndpointReachable(t *testing.T) {
 	fetchMetrics(t) // fatals on any error
 }
 
-// TestMetricsContainExpectedSeries verifies that all 11 netbox_sidecar_* metric
-// families appear in the scrape output.
+// TestMetricsContainExpectedSeries verifies that the netbox_sidecar_* metric
+// families a dashboard or alert depends on appear in the scrape output.
 func TestMetricsContainExpectedSeries(t *testing.T) {
 	body := fetchMetrics(t)
 
 	want := []string{
+		// The shrink guard's series exist from startup (the refusal counter
+		// is pre-created for every scope), so an alert reads 0 rather than
+		// a missing series until something goes wrong.
+		"netbox_sidecar_shrink_guard_blocked",
+		"netbox_sidecar_shrink_guard_refusals_total",
+		"netbox_sidecar_shrink_guard_overrides_total",
 		"netbox_sidecar_poll_total",
 		"netbox_sidecar_poll_duration_seconds",
 		"netbox_sidecar_last_successful_poll_timestamp_seconds",

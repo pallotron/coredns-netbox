@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
+	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"google.golang.org/grpc"
@@ -31,6 +32,7 @@ func New(
 	mergeSignal chan<- struct{},
 	netboxSignal chan<- struct{},
 	mgr *zonemanager.Manager,
+	shrinkOverride *shrinkguard.Override,
 ) *Server {
 	interceptor := authInterceptor(token)
 	gs := grpc.NewServer(grpc.UnaryInterceptor(interceptor))
@@ -41,11 +43,12 @@ func New(
 		mergeSignal: mergeSignal,
 	})
 	pb.RegisterControlServiceServer(gs, &controlService{
-		st:           st,
-		store:        store,
-		mgr:          mgr,
-		mergeSignal:  mergeSignal,
-		netboxSignal: netboxSignal,
+		st:             st,
+		store:          store,
+		mgr:            mgr,
+		mergeSignal:    mergeSignal,
+		netboxSignal:   netboxSignal,
+		shrinkOverride: shrinkOverride,
 	})
 	reflection.Register(gs)
 

@@ -172,6 +172,11 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `primaryNS` | `ns1.example.org.` | SOA primary nameserver |
 | `primaryNSIP` | `""` | Optional address (A/AAAA) record for the `primaryNS` name, emitted in the zone that contains it — typically this service's LoadBalancer or ClusterIP. Empty disables the record, in which case the SOA/NS name does not resolve (it has no Netbox object behind it). A Netbox-managed record for the same name takes precedence. |
 | `publishStatuses` | `""` | Comma-separated NetBox IP statuses published to DNS (valid: `active`, `reserved`, `deprecated`, `dhcp`, `slaac`); empty means `active` only. One policy for both ingestion paths: the poll fetch filters server-side (`status=` params) and the webhook treats an event whose status is outside the set as a delete. |
+| `shrinkGuard.enabled` | `true` | Refuse to publish a record set that lost implausibly many records versus the one being served, and keep serving the existing zones until an operator clears it. Disabling it leaves the unconditional empty-result refusal in place. |
+| `shrinkGuard.globalDropPercent` | `5` | Refuse when the total record count drops by more than this percentage (and by more than `globalMinRecords`). A percentage, not a count, because churn scales with the fleet. |
+| `shrinkGuard.globalMinRecords` | `100` | Absolute noise gate for the global rule: a drop no larger than this never refuses, whatever the percentage. |
+| `shrinkGuard.zoneDropPercent` | `50` | Same rule applied to each zone individually — catches one site's records vanishing while the fleet total barely moves. |
+| `shrinkGuard.zoneMinRecords` | `100` | Absolute noise gate for the per-zone rule. |
 | `adminEmail` | `admin.example.org.` | SOA admin email (dot notation) |
 | `domainSuffix` | `example.org` | DNS domain suffix for device-based record generation (zone extraction from device names) |
 | `stripDCLabel` | `false` | Strip the DC label (immediately before `domainSuffix`) from all Netbox DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
@@ -195,6 +200,46 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `metrics.port` | `9153` | CoreDNS prometheus plugin port |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator `ServiceMonitor` |
 | `metrics.serviceMonitor.interval` | `30s` | Scrape interval |
+
+## Shrink guard
+
+A NetBox fetch that succeeds but returns far fewer records than are currently
+served is refused rather than published: the sidecar keeps serving the zones it
+has, `netbox_sidecar_shrink_guard_blocked` goes to 1, and
+`netbox_sidecar_zone_staleness_seconds` climbs (a refused publish is not a
+successful poll), so the existing staleness alert fires on a guard left stuck.
+
+Two rules, both needing a percentage **and** a record count to be exceeded:
+
+* **Global** — the whole set shrank. Catches the NetBox-wide cases: a token or
+  filter whose scope narrowed, a bulk status change, a mass deletion.
+* **Per zone** — one zone collapsed while the total barely moved. Catches one
+  site's records vanishing, which the global rule cannot see.
+
+A truncated fetch is *not* among the cases to worry about here: any page error
+aborts the whole fetch, so a partial result never reaches zone generation.
+
+The percentage is the trigger and the record count only a noise gate. Churn
+scales with the fleet, so a fixed count tuned for today starts firing on
+routine churn as the fleet grows (and then gets switched off), while a
+percentage needs no maintenance; the floor exists because percentages are
+meaningless on a handful of records.
+
+### Clearing a refusal
+
+A genuine mass-removal — a site decommission, a deliberate re-scope — is
+cleared with a single-use override on the control plane:
+
+```sh
+grpcurl -plaintext -H "authorization: Bearer $GRPC_AUTH_TOKEN" \
+  -d '{"allow_shrink": true}' \
+  localhost:8083 coredns_netbox.v1.ControlService/ForceNetboxPoll
+```
+
+The consent is consumed by the poll it triggers, whether or not that poll was
+actually refused, so it can never sit waiting to wave through an unrelated
+change later. It does not clear an entirely empty NetBox result: that is never
+a state to publish on purpose.
 
 ## Interface Categorization Patterns
 

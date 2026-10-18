@@ -161,6 +161,31 @@ primaryNSIP: ""
 # delete). Example: "active,reserved" to also publish reserved IPs (e.g.
 # pre-provisioned device addresses).
 publishStatuses: ""
+
+# Shrink guard (G1/N21): refuse to publish a record set that lost implausibly
+# many records versus the one currently being served, and keep serving the old
+# zones until an operator clears it with
+#   grpcurl ... ControlService/ForceNetboxPoll -d '{"allow_shrink": true}'
+# (single-use: consumed by the poll it triggers).
+#
+# The trigger is a percentage because churn scales with the fleet; the record
+# counts are a noise gate so small deployments do not trip on ordinary
+# changes. Both must be exceeded for a refusal. An entirely empty NetBox
+# result is refused regardless of these settings and cannot be overridden.
+#
+# Alert on netbox_sidecar_shrink_guard_blocked == 1 (and the existing
+# netbox_sidecar_zone_staleness_seconds, which climbs while blocked).
+shrinkGuard:
+  enabled: true
+  # Refuse when the total record count drops by more than this percentage...
+  globalDropPercent: 5
+  # ...and by more than this many records.
+  globalMinRecords: 100
+  # Same pair applied per zone, which catches one site's records vanishing
+  # while the fleet total barely moves.
+  zoneDropPercent: 50
+  zoneMinRecords: 100
+
 adminEmail: admin.example.org.
 
 # SOA timers (seconds) for generated zones. refresh/retry control how often

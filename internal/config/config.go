@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pallotron/coredns-netbox/internal/nameformat"
+	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 )
 
 // Config holds the sidecar configuration populated from environment variables.
@@ -40,6 +41,13 @@ type Config struct {
 	// webhook fast path treats an event whose object is outside the set as
 	// a delete. Default: active only.
 	PublishStatuses []string
+
+	// ShrinkGuard refuses to publish a record set that lost implausibly many
+	// records versus the one currently served (G1/N21). Thresholds are a
+	// percentage with an absolute floor; see internal/shrinkguard for why
+	// the percentage is the trigger and the floor only a noise gate. The
+	// empty-response refusal is unconditional and survives Enabled=false.
+	ShrinkGuard shrinkguard.Config
 
 	// Interface categorization patterns (regex)
 	BMCInterfacePattern       string
@@ -147,6 +155,18 @@ func Load() (*Config, error) {
 
 		CoreDNSReloadAddrs: parseZoneList(os.Getenv("COREDNS_RELOAD_ADDRS")),
 		CoreDNSReloadToken: os.Getenv("COREDNS_RELOAD_TOKEN"),
+
+		// Shrink-guard defaults. The largest real shrink measured over a
+		// month of production was well under 2% of the published set, so a
+		// 5% trigger leaves routine churn alone; 50% per zone is the "this
+		// site's records vanished" case the global rule cannot see.
+		ShrinkGuard: shrinkguard.Config{
+			Enabled:            envOrDefault("SHRINK_GUARD_ENABLED", "true") == "true",
+			GlobalDropFraction: 0.05,
+			GlobalMinRecords:   100,
+			ZoneDropFraction:   0.5,
+			ZoneMinRecords:     100,
+		},
 	}
 
 	if c.NetboxToken == "" {
@@ -255,7 +275,59 @@ func Load() (*Config, error) {
 		c.NetboxRetryMaxDelay = d
 	}
 
+	if err := loadShrinkGuard(c); err != nil {
+		return nil, err
+	}
+
 	return c, nil
+}
+
+// loadShrinkGuard reads the shrink-guard threshold overrides. Percentages are
+// given as percent (SHRINK_GUARD_GLOBAL_DROP_PERCENT=5), not fractions, so
+// helm values and log lines read the same way an operator says them.
+func loadShrinkGuard(c *Config) error {
+	pct := func(name string, dst *float64) error {
+		v := os.Getenv(name)
+		if v == "" {
+			return nil
+		}
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		// 0 switches the rule off; 100 would mean "only a total wipe", which
+		// the unconditional empty check already covers.
+		if f < 0 || f > 100 {
+			return fmt.Errorf("invalid %s %q: must be between 0 and 100", name, v)
+		}
+		*dst = f / 100
+		return nil
+	}
+	count := func(name string, dst *int) error {
+		v := os.Getenv(name)
+		if v == "" {
+			return nil
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", name, err)
+		}
+		if n < 0 {
+			return fmt.Errorf("invalid %s %q: must not be negative", name, v)
+		}
+		*dst = n
+		return nil
+	}
+	if err := pct("SHRINK_GUARD_GLOBAL_DROP_PERCENT", &c.ShrinkGuard.GlobalDropFraction); err != nil {
+		return err
+	}
+	if err := pct("SHRINK_GUARD_ZONE_DROP_PERCENT", &c.ShrinkGuard.ZoneDropFraction); err != nil {
+		return err
+	}
+	if err := count("SHRINK_GUARD_GLOBAL_MIN_RECORDS", &c.ShrinkGuard.GlobalMinRecords); err != nil {
+		return err
+	}
+	return count("SHRINK_GUARD_ZONE_MIN_RECORDS", &c.ShrinkGuard.ZoneMinRecords)
 }
 
 // validPublishStatuses are the NetBox IPAddress status values the sidecar

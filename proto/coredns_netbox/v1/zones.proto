@@ -51,7 +51,12 @@ message BatchUpsertResponse  {}
 message BatchDeleteRequest   { string zone = 1; repeated string dns_names = 2; }
 message BatchDeleteResponse  {}
 
-message ForceNetboxPollRequest  {}
+// allow_shrink is single-use operator consent for the shrink guard
+// (internal/shrinkguard): the poll it triggers may publish a record set that
+// shrank past the configured thresholds. Consent is consumed by that poll
+// whether or not the guard would have refused, and never waives the refusal
+// of an entirely empty NetBox result.
+message ForceNetboxPollRequest  { bool allow_shrink = 1; }
 message ForceNetboxPollResponse {}
 message ForceMergeWriteRequest  {}
 message ForceMergeWriteResponse {}

@@ -11,6 +11,10 @@ Ops (env vars):
   OP=del        DNS_NAME=<fqdn>
   OP=bulk-add   PREFIX=<name-prefix> ZONE=<zone> COUNT=<n> NET=<10.x>
   OP=bulk-del   PREFIX=<name-prefix>
+  OP=mass-deprecate PERCENT=<n>  (flips that share of the seeded server*
+                     records to deprecated — a reversible stand-in for a mass
+                     deletion, used to trip the shrink guard in N21)
+  OP=mass-restore   (flips every deprecated server* record back to active)
   OP=revoke-token   (expires every API token; v2 tokens are HMAC-hashed at
                      rest so deletion would be unrecoverable — expiry is the
                      reversible form of revocation)
@@ -58,6 +62,23 @@ elif op == "bulk-del":
         dns_name__startswith=os.environ["PREFIX"]
     ).delete()
     print(f"deleted {deleted}")
+elif op == "mass-deprecate":
+    # Scoped to the seeded server* records so it cannot disturb the
+    # status-policy fixtures other tests create (N1 uses 10.77.x).
+    percent = int(os.environ.get("PERCENT", "90"))
+    ids = list(
+        IPAddress.objects.filter(dns_name__startswith="server", status="active")
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    cut = len(ids) * percent // 100
+    n = IPAddress.objects.filter(id__in=ids[:cut]).update(status="deprecated")
+    print(f"deprecated {n} of {len(ids)} active server records")
+elif op == "mass-restore":
+    n = IPAddress.objects.filter(
+        dns_name__startswith="server", status="deprecated"
+    ).update(status="active")
+    print(f"restored {n} server records to active")
 elif op == "revoke-token":
     import datetime
 

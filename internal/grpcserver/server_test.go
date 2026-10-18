@@ -10,6 +10,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
 	"github.com/pallotron/coredns-netbox/internal/grpcserver"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +35,7 @@ func newTestConn(t *testing.T, token string) (*grpc.ClientConn, *grpcserver.Netb
 	netboxSignal := make(chan struct{}, 1)
 
 	lis := bufconn.Listen(bufSize)
-	srv := grpcserver.New(token, store, cache, st, mergeSignal, netboxSignal, nil)
+	srv := grpcserver.New(token, store, cache, st, mergeSignal, netboxSignal, nil, nil)
 	go srv.Serve(lis)
 	t.Cleanup(func() { srv.Stop(); _ = lis.Close() })
 
@@ -201,7 +202,7 @@ func TestUpsertRecord_SignalsSent(t *testing.T) {
 	netboxSignal := make(chan struct{}, 1)
 
 	lis := bufconn.Listen(bufSize)
-	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil)
+	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil, nil)
 	go srv.Serve(lis)
 	defer srv.Stop()
 
@@ -253,7 +254,7 @@ func TestForceNetboxPoll_SendsSignal(t *testing.T) {
 	netboxSignal := make(chan struct{}, 1)
 
 	lis := bufconn.Listen(bufSize)
-	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil)
+	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil, nil)
 	go srv.Serve(lis)
 	defer srv.Stop()
 
@@ -274,6 +275,37 @@ func TestForceNetboxPoll_SendsSignal(t *testing.T) {
 	}
 }
 
+// N21: the shrink guard only yields to an explicit operator call, so the
+// allow_shrink flag must reach the guard — and a plain poll must never arm it.
+func TestForceNetboxPoll_ArmsShrinkOverrideOnlyWhenAsked(t *testing.T) {
+	store, _ := dynamicstore.NewFileStore(filepath.Join(t.TempDir(), "dynamic.json"))
+	cache := &grpcserver.NetboxCache{}
+	st := &grpcserver.StatusTracker{}
+	mergeSignal := make(chan struct{}, 1)
+	netboxSignal := make(chan struct{}, 1)
+	override := &shrinkguard.Override{}
+
+	lis := bufconn.Listen(bufSize)
+	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil, override)
+	go srv.Serve(lis)
+	defer srv.Stop()
+
+	conn, _ := grpc.NewClient("passthrough://bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.Dial() }),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	defer func() { _ = conn.Close() }()
+	client := pb.NewControlServiceClient(conn)
+
+	_, err := client.ForceNetboxPoll(context.Background(), &pb.ForceNetboxPollRequest{})
+	require.NoError(t, err)
+	assert.False(t, override.Armed(), "an ordinary forced poll must not waive the shrink guard")
+
+	_, err = client.ForceNetboxPoll(context.Background(), &pb.ForceNetboxPollRequest{AllowShrink: true})
+	require.NoError(t, err)
+	assert.True(t, override.Armed(), "allow_shrink must arm the override")
+}
+
 func TestForceMergeWrite_SendsSignal(t *testing.T) {
 	store, _ := dynamicstore.NewFileStore(filepath.Join(t.TempDir(), "dynamic.json"))
 	cache := &grpcserver.NetboxCache{}
@@ -282,7 +314,7 @@ func TestForceMergeWrite_SendsSignal(t *testing.T) {
 	netboxSignal := make(chan struct{}, 1)
 
 	lis := bufconn.Listen(bufSize)
-	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil)
+	srv := grpcserver.New("", store, cache, st, mergeSignal, netboxSignal, nil, nil)
 	go srv.Serve(lis)
 	defer srv.Stop()
 

@@ -11,6 +11,9 @@ type Sidecar struct {
 	NetboxFetchDurationSeconds  prometheus.Histogram
 	NetboxRecordsFetched        prometheus.Gauge
 	NetboxEmptyResponseTotal    prometheus.Counter
+	ShrinkGuardRefusalsTotal    *prometheus.CounterVec
+	ShrinkGuardBlocked          prometheus.Gauge
+	ShrinkGuardOverridesTotal   prometheus.Counter
 	ZonesActive                 prometheus.Gauge
 	ZoneWritesTotal             *prometheus.CounterVec
 	ZoneWriteErrorsTotal        prometheus.Counter
@@ -71,6 +74,25 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Help: "Total number of polls where Netbox returned zero records.",
 		}),
 
+		ShrinkGuardRefusalsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "netbox_sidecar_shrink_guard_refusals_total",
+			Help: "Total number of publishes refused because the record set shrank implausibly, partitioned by which rule refused (empty, global, zone).",
+		}, []string{"scope"}),
+
+		ShrinkGuardBlocked: prometheus.NewGauge(prometheus.GaugeOpts{
+			// 1 for as long as the guard keeps refusing: the served zones are
+			// frozen and need an operator. Alert on this together with
+			// netbox_sidecar_zone_staleness_seconds, which also climbs since
+			// a refused publish is not a successful poll.
+			Name: "netbox_sidecar_shrink_guard_blocked",
+			Help: "1 while the shrink guard is refusing to publish, 0 otherwise.",
+		}),
+
+		ShrinkGuardOverridesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "netbox_sidecar_shrink_guard_overrides_total",
+			Help: "Total number of shrink-guard refusals suppressed by an operator override.",
+		}),
+
 		ZonesActive: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "netbox_sidecar_zones_active",
 			Help: "Number of DNS zones currently managed by the sidecar.",
@@ -122,6 +144,14 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		}),
 	}
 
+	// Pre-create the refusal series for every scope (see
+	// internal/shrinkguard) so a dashboard or alert reads 0 from the first
+	// scrape instead of a missing series that only appears once something
+	// has already gone wrong.
+	for _, scope := range []string{"empty", "global", "zone"} {
+		m.ShrinkGuardRefusalsTotal.WithLabelValues(scope)
+	}
+
 	reg.MustRegister(
 		m.PollTotal,
 		m.PollDurationSeconds,
@@ -130,6 +160,9 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.NetboxFetchDurationSeconds,
 		m.NetboxRecordsFetched,
 		m.NetboxEmptyResponseTotal,
+		m.ShrinkGuardRefusalsTotal,
+		m.ShrinkGuardBlocked,
+		m.ShrinkGuardOverridesTotal,
 		m.ZonesActive,
 		m.ZoneWritesTotal,
 		m.ZoneWriteErrorsTotal,

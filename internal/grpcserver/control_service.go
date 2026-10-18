@@ -2,8 +2,10 @@ package grpcserver
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/pallotron/coredns-netbox/internal/dynamicstore"
+	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 )
@@ -15,9 +17,18 @@ type controlService struct {
 	mgr          *zonemanager.Manager // may be nil in tests
 	mergeSignal  chan<- struct{}
 	netboxSignal chan<- struct{}
+	// shrinkOverride is armed by ForceNetboxPoll(allow_shrink=true); may be
+	// nil in tests.
+	shrinkOverride *shrinkguard.Override
 }
 
-func (s *controlService) ForceNetboxPoll(_ context.Context, _ *pb.ForceNetboxPollRequest) (*pb.ForceNetboxPollResponse, error) {
+func (s *controlService) ForceNetboxPoll(_ context.Context, req *pb.ForceNetboxPollRequest) (*pb.ForceNetboxPollResponse, error) {
+	// Arm before signalling: the poll this call triggers must be the one
+	// that sees the consent.
+	if req.GetAllowShrink() && s.shrinkOverride != nil {
+		slog.Warn("operator armed a single-use shrink-guard override via ForceNetboxPoll")
+		s.shrinkOverride.Arm()
+	}
 	select {
 	case s.netboxSignal <- struct{}{}:
 	default:

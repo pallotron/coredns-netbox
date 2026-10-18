@@ -85,6 +85,18 @@ spec:
             - name: NETBOX_PUBLISH_STATUSES
               value: {{ .Values.publishStatuses | quote }}
             {{- end }}
+            {{- with .Values.shrinkGuard }}
+            - name: SHRINK_GUARD_ENABLED
+              value: {{ .enabled | quote }}
+            - name: SHRINK_GUARD_GLOBAL_DROP_PERCENT
+              value: {{ .globalDropPercent | quote }}
+            - name: SHRINK_GUARD_GLOBAL_MIN_RECORDS
+              value: {{ .globalMinRecords | quote }}
+            - name: SHRINK_GUARD_ZONE_DROP_PERCENT
+              value: {{ .zoneDropPercent | quote }}
+            - name: SHRINK_GUARD_ZONE_MIN_RECORDS
+              value: {{ .zoneMinRecords | quote }}
+            {{- end }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}
             - name: SOA_REFRESH
@@ -230,6 +242,18 @@ spec:
             {{- if .Values.publishStatuses }}
             - name: NETBOX_PUBLISH_STATUSES
               value: {{ .Values.publishStatuses | quote }}
+            {{- end }}
+            {{- with .Values.shrinkGuard }}
+            - name: SHRINK_GUARD_ENABLED
+              value: {{ .enabled | quote }}
+            - name: SHRINK_GUARD_GLOBAL_DROP_PERCENT
+              value: {{ .globalDropPercent | quote }}
+            - name: SHRINK_GUARD_GLOBAL_MIN_RECORDS
+              value: {{ .globalMinRecords | quote }}
+            - name: SHRINK_GUARD_ZONE_DROP_PERCENT
+              value: {{ .zoneDropPercent | quote }}
+            - name: SHRINK_GUARD_ZONE_MIN_RECORDS
+              value: {{ .zoneMinRecords | quote }}
             {{- end }}
             - name: ADMIN_EMAIL
               value: {{ .Values.adminEmail | quote }}

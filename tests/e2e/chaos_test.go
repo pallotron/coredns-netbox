@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 )
 
 // Chaos tests mutate cluster state (scale NetBox to zero, delete the sidecar
@@ -701,4 +704,177 @@ func TestChaos_N30_TransferACLEnforced(t *testing.T) {
 
 	// The allow-listed secondary still serves the zone it transferred.
 	waitForDNSOn(t, dnsSecondaryServer(), hostFQDN("server1-mgmt", "dc1"), "10.1.0.1", 60*time.Second)
+}
+
+// waitMetric polls the sidecar's /metrics until the named series reaches
+// want, or fails at the deadline. Used for state the guard exposes rather
+// than for counters, which are compared before/after instead.
+func waitMetric(t *testing.T, seriesPrefix string, want float64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last float64
+	var seen bool
+	for time.Now().Before(deadline) {
+		if v, ok := metricValue(fetchMetrics(t), seriesPrefix); ok {
+			last, seen = v, true
+			if v == want {
+				return
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("%s did not reach %v within %s (last seen: %v, present: %v)",
+		seriesPrefix, want, timeout, last, seen)
+}
+
+// forcePollAllowShrink triggers a NetBox poll carrying single-use operator
+// consent for the shrink guard — the documented way to clear a refusal.
+func forcePollAllowShrink(t *testing.T) {
+	t.Helper()
+	cc := pb.NewControlServiceClient(grpcConn(t))
+	_, err := cc.ForceNetboxPoll(authCtx(t), &pb.ForceNetboxPollRequest{AllowShrink: true})
+	require.NoError(t, err, "ForceNetboxPoll(allow_shrink)")
+}
+
+// massDeprecate flips the given share of the seeded server* records to
+// deprecated. With the default publish policy (active only) the sidecar's
+// next fetch sees them gone — a reversible stand-in for a mass deletion
+// that leaves no chance of losing dev data.
+func massDeprecate(t *testing.T, percent int) {
+	t.Helper()
+	out := netboxORM(t, fmt.Sprintf(`
+from ipam.models import IPAddress
+ids = list(IPAddress.objects.filter(dns_name__startswith="server", status="active").order_by("id").values_list("id", flat=True))
+cut = len(ids) * %d // 100
+print("deprecated", IPAddress.objects.filter(id__in=ids[:cut]).update(status="deprecated"), "of", len(ids))
+`, percent))
+	t.Logf("mass-deprecate: %s", strings.TrimSpace(out))
+}
+
+func massRestore(t *testing.T) {
+	t.Helper()
+	out := netboxORM(t, `
+from ipam.models import IPAddress
+print("restored", IPAddress.objects.filter(dns_name__startswith="server", status="deprecated").update(status="active"))
+`)
+	t.Logf("mass-restore: %s", strings.TrimSpace(out))
+}
+
+// waitZoneAnswering waits until the zone answers an SOA at all. The bare
+// query helpers fail the test on a transport error, and the first query
+// after a helm redeploy (N30's cleanup runs one immediately before N21) can
+// still hit a closed connection through the k3d load balancer even after the
+// StatefulSet reports ready — the endpoint is reachable a moment before it
+// serves.
+func waitZoneAnswering(t *testing.T, zone string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
+		m := new(dns.Msg)
+		m.SetQuestion(dns.Fqdn(zone), dns.TypeSOA)
+		r, _, err := c.Exchange(m, dnsServer())
+		if err == nil && r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0 {
+			return
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("zone %s did not answer SOA within %s (last error: %v)", zone, timeout, lastErr)
+}
+
+// answersTolerant reports whether server answers name, treating a transport
+// error as "not yet" instead of failing the test. The hard-failing query
+// helpers are wrong inside a convergence wait: a pod being replaced closes
+// connections, which is a state to wait through, not to fail on.
+func answersTolerant(server, name string) bool {
+	c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
+	r, _, err := c.Exchange(m, server)
+	return err == nil && r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
+}
+
+// N21 (acceptance-test matrix) / gap G1: a NetBox fetch that succeeds but
+// returns far fewer records than are being served must not publish. The
+// zones stay exactly as they are — same SOA serial, same answers, no NOTIFY
+// to the secondaries — until an operator consents, and that consent is one
+// gRPC call rather than a redeploy.
+//
+// The shrink here is a bulk status flip rather than a delete: with the
+// default active-only publish policy the sidecar cannot tell the difference
+// (both are "NetBox returned fewer records"), and it is reversible.
+func TestChaos_N21_MassRemovalRefusedUntilOverride(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	const zone = "mycompany.com"
+	canary := hostFQDN("server1-mgmt", "dc1")
+
+	waitZoneAnswering(t, zone, 60*time.Second)
+	waitForDNS(t, canary, dns.TypeA, "10.1.0.1", 25*time.Second)
+	serialBefore := stableSerial(t, zone)
+	namesBefore := len(axfrNames(t, zone))
+	require.Greater(t, namesBefore, 100,
+		"precondition: the seeded zone must be big enough to pass the guard's absolute floor")
+
+	// Restore the records no matter how this exits: everything after this
+	// point leaves NetBox altered.
+	t.Cleanup(func() {
+		massRestore(t)
+		forcePoll(t)
+		// Hand the environment back fully converged. This test moves most of
+		// the seed twice (removal, then restore), and each move is a whole-
+		// zone rewrite plus a CoreDNS reload on every replica; the tests that
+		// follow budget ~25s for their own small changes to land and will
+		// fail on the tail of this one. Waiting on the load-balanced endpoint
+		// alone is not enough — it proves only that the faster replica
+		// caught up.
+		waitAllServers(t, 3*time.Minute, func(server string) bool {
+			return answersTolerant(server, canary)
+		}, "every replica must serve the restored records before the next test runs")
+		// Both replicas agreeing on a serial means the restore write has
+		// landed everywhere, not just the canary's zone.
+		stableSerial(t, zone)
+		// Never hand over a blocked guard: the restore is growth, so the poll
+		// above must have cleared it.
+		waitMetric(t, "netbox_sidecar_shrink_guard_blocked", 0, 60*time.Second)
+	})
+
+	massDeprecate(t, 90)
+	forcePoll(t)
+
+	// The guard must refuse, and say so where an alert can see it.
+	waitMetric(t, "netbox_sidecar_shrink_guard_blocked", 1, 90*time.Second)
+	refusals, ok := metricValue(fetchMetrics(t), `netbox_sidecar_shrink_guard_refusals_total{scope="global"}`)
+	require.True(t, ok, "a refusal must be counted by scope")
+	require.GreaterOrEqual(t, refusals, 1.0)
+
+	// Nothing about what is served may have changed.
+	assert.Equal(t, serialBefore, stableSerial(t, zone),
+		"a refused publish must not advance the serial (it would NOTIFY every secondary)")
+	assert.Len(t, axfrNames(t, zone), namesBefore, "the zone must still hold every name")
+	for _, server := range dnsProbeServers() {
+		r := queryServer(t, canary, dns.TypeA, server)
+		assert.NotEmpty(t, r.Answer,
+			"%s must keep answering %s from the zones it already has", server, canary)
+	}
+
+	// A second poll without consent stays refused: the shrink does not
+	// become the new normal just because it persisted.
+	forcePoll(t)
+	time.Sleep(10 * time.Second)
+	assert.Equal(t, serialBefore, stableSerial(t, zone), "still refused on the next poll")
+
+	// One gRPC call later, the operator's intent is honoured.
+	forcePollAllowShrink(t)
+	waitNameGone(t, canary, dns.TypeA, 90*time.Second)
+	waitMetric(t, "netbox_sidecar_shrink_guard_blocked", 0, 60*time.Second)
+
+	after := fetchMetrics(t)
+	overrides, ok := metricValue(after, "netbox_sidecar_shrink_guard_overrides_total")
+	require.True(t, ok, "overrides must be counted")
+	assert.GreaterOrEqual(t, overrides, 1.0)
+	assert.Less(t, len(axfrNames(t, zone)), namesBefore/2, "the zone must have actually shrunk")
 }

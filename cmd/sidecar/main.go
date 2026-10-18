@@ -28,6 +28,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/netboxwebhook"
 	"github.com/pallotron/coredns-netbox/internal/reloader"
+	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/pallotron/coredns-netbox/internal/zonefetch"
 	"github.com/pallotron/coredns-netbox/internal/zonegen"
@@ -202,6 +203,10 @@ func main() {
 		cancel()
 	}()
 
+	// shrinkOverride carries single-use operator consent from the
+	// ForceNetboxPoll RPC to the poll loop's shrink guard (G1/N21).
+	shrinkOverride := &shrinkguard.Override{}
+
 	// Start health check server (unless run-once mode)
 	var markReady func()
 	if !cfg.RunOnce {
@@ -225,7 +230,7 @@ func main() {
 		}()
 		markReady = func() { healthy.Store(true) }
 
-		grpcSrv := grpcserver.New(cfg.GRPCAuthToken, store, netboxCache, statusTracker, mergeSignal, netboxSignal, mgr)
+		grpcSrv := grpcserver.New(cfg.GRPCAuthToken, store, netboxCache, statusTracker, mergeSignal, netboxSignal, mgr, shrinkOverride)
 		lis, err := net.Listen("tcp", cfg.GRPCAddr)
 		if err != nil {
 			slog.Error("failed to listen for gRPC", "addr", cfg.GRPCAddr, "err", err)
@@ -246,7 +251,7 @@ func main() {
 
 	// Run the poll loop
 	if err := run(ctx, cfg, client, categorizer, formatter, forwardDisc, reverseDisc, mgr, m, markReady,
-		store, netboxCache, statusTracker, mergeSignal, netboxSignal, webhookPollSignal, rl); err != nil {
+		store, netboxCache, statusTracker, mergeSignal, netboxSignal, webhookPollSignal, rl, shrinkOverride); err != nil {
 		slog.Error("fatal error", "err", err)
 		os.Exit(1)
 	}
@@ -299,26 +304,35 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	store dynamicstore.DynamicStore, netboxCache *grpcserver.NetboxCache,
 	statusTracker *grpcserver.StatusTracker,
 	mergeSignal, netboxSignal, webhookPollSignal <-chan struct{},
-	rl *reloader.Reloader,
+	rl *reloader.Reloader, shrinkOverride *shrinkguard.Override,
 ) error {
 	lastSuccessTime := time.Now()
 	firstSuccess := false
 
-	// lastRecordCount is the record count behind the currently published
-	// zones, fed back into fetchNetbox's publishAllowed guard (G1). Zero
-	// means nothing published yet, so a fresh install against an empty
-	// Netbox still bootstraps.
-	lastRecordCount := 0
+	// lastBaseline is the record set behind the currently published zones,
+	// globally and per zone, fed back into fetchNetbox's shrink guard
+	// (G1/N21). A zero Total means nothing published yet, so a fresh install
+	// against an empty Netbox still bootstraps. A refused publish leaves it
+	// untouched on purpose: the next cycle compares against the same served
+	// set, so a sustained shrink stays refused until an operator overrides
+	// rather than quietly becoming the new normal.
+	//
+	// After a restart there are no counts but there may well be zones: the
+	// PVC cache this pod just picked up. ZonesOnDisk keeps the empty-result
+	// refusal armed across that window — the likeliest moment for one, since
+	// a bad token or filter arrives with the rollout that restarts the pod.
+	lastBaseline := shrinkguard.Baseline{ZonesOnDisk: mgr.HasExistingZones()}
 	// fetchSucceededOnce flips when any Netbox fetch of this process
 	// succeeds; until then merges are gated by mergeAllowed (G4).
 	fetchSucceededOnce := false
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
 		fetchStart := time.Now()
-		zm, count, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc, m, cfg.DomainSuffix, lastRecordCount)
+		zm, baseline, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc,
+			m, cfg.DomainSuffix, cfg.ShrinkGuard, lastBaseline, shrinkOverride)
 		if err != nil {
 			return zm, err
 		}
-		lastRecordCount = count
+		lastBaseline = baseline
 		fetchSucceededOnce = true
 		if cfg.StripDCLabel {
 			for zone, recs := range zm {
@@ -507,17 +521,6 @@ func webhookPollAllowed(last, now time.Time, min time.Duration) bool {
 	return now.Sub(last) >= min
 }
 
-// publishAllowed reports whether a successful Netbox fetch that yielded
-// newCount records may replace the previously published set of prevCount
-// records. Minimal G1 policy: never replace a non-empty set with an empty
-// one — an empty-but-HTTP-200 result must not wipe the zones and fan out
-// to every secondary. Empty is fine while nothing has been published yet.
-// A percentage-based shrink guard (matrix N21) is a separate, still-open
-// product decision and deliberately not implemented here.
-func publishAllowed(prevCount, newCount int) bool {
-	return newCount > 0 || prevCount == 0
-}
-
 // mergeAllowed reports whether a merge/write cycle may run. Before the first
 // successful Netbox fetch of this process, lastNetboxZones is nil, so a merge
 // would feed removeOrphans an empty Netbox set and delete every cached zone
@@ -531,15 +534,16 @@ func mergeAllowed(fetchSucceededOnce, hasExistingZones bool) bool {
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	categorizer *ipcategorizer.Categorizer, formatter *nameformat.Formatter,
 	forwardDisc, reverseDisc zonediscovery.Discoverer,
-	m *metrics.Sidecar, domainSuffix string, prevCount int,
-) (zonediscovery.ZoneMap, int, error) {
+	m *metrics.Sidecar, domainSuffix string,
+	guard shrinkguard.Config, prev shrinkguard.Baseline, override *shrinkguard.Override,
+) (zonediscovery.ZoneMap, shrinkguard.Baseline, error) {
 	slog.Info("fetching IP addresses from netbox")
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
 	m.NetboxFetchDurationSeconds.Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
-		return nil, 0, fmt.Errorf("fetch IP addresses: %w", err)
+		return nil, shrinkguard.Baseline{}, fmt.Errorf("fetch IP addresses: %w", err)
 	}
 
 	slog.Info("fetched IP addresses from netbox", "count", len(records))
@@ -547,18 +551,24 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	if len(records) == 0 {
 		m.NetboxEmptyResponseTotal.Inc()
 	}
-	if !publishAllowed(prevCount, len(records)) {
-		m.PollTotal.WithLabelValues("error").Inc()
-		slog.Error("netbox returned zero records while zones are published; refusing to publish and serving existing zones",
-			"previous_count", prevCount)
-		return nil, 0, fmt.Errorf("netbox returned 0 records but %d were previously published; refusing to publish an empty zone set", prevCount)
+	// Refuse an empty result before spending enrichment and discovery on it.
+	// The remaining shrink rules need per-zone counts and run below.
+	if v := shrinkguard.EmptyResult(prev, len(records)); v.Refuse {
+		// Consent is spent here too, without being honoured: an empty result
+		// is not overridable, and consent that survived this poll could wave
+		// through a different change later.
+		if override != nil && override.ConsumeIfArmed() {
+			slog.Warn("discarding shrink-guard override: an empty Netbox result is never published on purpose")
+		}
+		refuseShrink(m, v)
+		return nil, shrinkguard.Baseline{}, fmt.Errorf("refusing to publish: %s", v.Reason())
 	}
 
 	enriched := enrichRecordsWithDeviceNames(records, categorizer, domainSuffix, formatter)
 
 	forwardZones, err := forwardDisc.Discover(enriched)
 	if err != nil {
-		return nil, 0, fmt.Errorf("discover forward zones: %w", err)
+		return nil, shrinkguard.Baseline{}, fmt.Errorf("discover forward zones: %w", err)
 	}
 	slog.Info("discovered forward zones", "count", len(forwardZones))
 	for _, zone := range zonediscovery.CNAMEOnlyZones(forwardZones) {
@@ -570,12 +580,60 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	if reverseDisc != nil {
 		reverseZones, err := reverseDisc.Discover(enriched)
 		if err != nil {
-			return nil, 0, fmt.Errorf("discover reverse zones: %w", err)
+			return nil, shrinkguard.Baseline{}, fmt.Errorf("discover reverse zones: %w", err)
 		}
 		slog.Info("discovered reverse zones", "count", len(reverseZones))
 		maps.Copy(combined, reverseZones)
 	}
-	return combined, len(records), nil
+
+	// The shrink rules compare what is about to be published, not what
+	// NetBox returned: enrichment adds device-derived names and CNAME
+	// aliases, so zone records are the set an operator would actually miss.
+	now := shrinkguard.FromZoneCounts(countZoneRecords(combined))
+	verdict := shrinkguard.Evaluate(guard, prev, now)
+	// Consent is consumed by the first evaluation after it was given,
+	// refusal or not, so an override armed for one change cannot sit waiting
+	// to wave through an unrelated one later.
+	if override != nil && override.ConsumeIfArmed() {
+		if verdict.Refuse {
+			slog.Warn("publishing a shrinking record set on operator override",
+				"scope", verdict.Scope, "reason", verdict.Reason())
+			m.ShrinkGuardOverridesTotal.Inc()
+			verdict = shrinkguard.Verdict{}
+		} else {
+			slog.Info("shrink-guard override went unused: this poll was within the thresholds")
+		}
+	}
+	if verdict.Refuse {
+		refuseShrink(m, verdict)
+		return nil, shrinkguard.Baseline{}, fmt.Errorf("refusing to publish: %s", verdict.Reason())
+	}
+	m.ShrinkGuardBlocked.Set(0)
+
+	return combined, now, nil
+}
+
+// refuseShrink records a refused publish. The zones on disk are left exactly
+// as they are, and because fetchNetbox returns an error the caller does not
+// advance lastSuccessTime — so netbox_sidecar_zone_staleness_seconds climbs
+// and the existing staleness alert fires on a guard that stays stuck (G6).
+func refuseShrink(m *metrics.Sidecar, v shrinkguard.Verdict) {
+	m.PollTotal.WithLabelValues("error").Inc()
+	m.ShrinkGuardRefusalsTotal.WithLabelValues(v.Scope).Inc()
+	m.ShrinkGuardBlocked.Set(1)
+	slog.Error("refusing to publish a shrinking record set; serving existing zones until an operator overrides",
+		"scope", v.Scope, "zone", v.Zone, "previous", v.Prev, "now", v.Now,
+		"dropped", v.Dropped, "reason", v.Reason())
+}
+
+// countZoneRecords counts the records discovered for each zone, the input to
+// the per-zone shrink rule.
+func countZoneRecords(zm zonediscovery.ZoneMap) map[string]int {
+	counts := make(map[string]int, len(zm))
+	for zone, recs := range zm {
+		counts[zone] = len(recs)
+	}
+	return counts
 }
 
 // enrichRecordsWithDeviceNames implements a hybrid approach:
