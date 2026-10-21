@@ -56,8 +56,8 @@ func waitForPrimary(t *testing.T) {
 	wantIP := net.ParseIP("10.1.0.1")
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		r := queryServer(t, probe, dns.TypeA, dnsServer())
-		if r.Rcode == dns.RcodeSuccess {
+		r, ok := tryQueryServer(probe, dns.TypeA, dnsServer())
+		if ok && r.Rcode == dns.RcodeSuccess {
 			for _, ans := range r.Answer {
 				if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
 					return
@@ -73,12 +73,12 @@ func query(t *testing.T, name string, qtype uint16) *dns.Msg {
 	return queryServer(t, name, qtype, dnsServer())
 }
 
-func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Msg {
-	t.Helper()
-
+// exchange performs one DNS query over TCP (UDP is blocked in some setups)
+// and hands back whatever happened. The two callers below decide what a
+// transport error means, because the answer differs by context.
+func exchange(name string, qtype uint16, server string) (*dns.Msg, error) {
 	c := new(dns.Client)
 	c.Timeout = 5 * time.Second
-	// Use TCP instead of UDP for better compatibility (some setups might block UDP)
 	c.Net = "tcp"
 
 	m := new(dns.Msg)
@@ -86,8 +86,34 @@ func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Ms
 	m.RecursionDesired = true
 
 	r, _, err := c.Exchange(m, server)
+	return r, err
+}
+
+// queryServer is the assertion primitive: at an assertion site a query that
+// cannot be completed is a real failure, so it fails the test.
+func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Msg {
+	t.Helper()
+	r, err := exchange(name, qtype, server)
 	require.NoError(t, err, "DNS query for %s failed", name)
 	return r
+}
+
+// tryQueryServer is the wait-loop primitive: it reports not-ok rather than
+// failing the test. A connection can be closed under us at any moment — a
+// pod being replaced, the k3d load balancer re-pointing with no ready
+// backend after a redeploy — and inside a wait that is a state to retry
+// through, not a verdict.
+//
+// Every polling helper must build on this one. A retry loop around
+// queryServer is not a retry loop at all: it gives up on the first flap,
+// while looking resilient. N28 failed in CI that way, and waitNameGone had
+// the same defect waiting to be hit.
+func tryQueryServer(name string, qtype uint16, server string) (*dns.Msg, bool) {
+	r, err := exchange(name, qtype, server)
+	if err != nil {
+		return nil, false
+	}
+	return r, true
 }
 
 func TestARecordLookup(t *testing.T) {
@@ -321,38 +347,38 @@ func TestMultipleReplicasConsistentDNS(t *testing.T) {
 // Requires the cluster to expose per-pod ports (see dev/coredns-per-pod-services.yaml
 // and the corresponding k3d port forwards in dev/k3d-config.yaml).
 func TestEachReplicaServesCorrectly(t *testing.T) {
-    pod0 := os.Getenv("DNS_POD0")
-    pod1 := os.Getenv("DNS_POD1")
-    if pod0 == "" || pod1 == "" {
-        t.Skip("DNS_POD0 or DNS_POD1 not set — skipping per-replica test")
-    }
+	pod0 := os.Getenv("DNS_POD0")
+	pod1 := os.Getenv("DNS_POD1")
+	if pod0 == "" || pod1 == "" {
+		t.Skip("DNS_POD0 or DNS_POD1 not set — skipping per-replica test")
+	}
 
-    waitForPrimary(t)
+	waitForPrimary(t)
 
-    probe := hostFQDN("server1-mgmt", "dc1")
-    wantIP := net.ParseIP("10.1.0.1")
+	probe := hostFQDN("server1-mgmt", "dc1")
+	wantIP := net.ParseIP("10.1.0.1")
 
-    for _, tc := range []struct {
-        name string
-        addr string
-    }{
-        {"pod-0", pod0},
-        {"pod-1", pod1},
-    } {
-        t.Run(tc.name, func(t *testing.T) {
-            r := queryServer(t, probe, dns.TypeA, tc.addr)
-            require.Equalf(t, dns.RcodeSuccess, r.Rcode,
-                "%s: expected NOERROR", tc.name)
-            var found bool
-            for _, ans := range r.Answer {
-                if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
-                    found = true
-                }
-            }
-            require.Truef(t, found,
-                "%s: expected %s in answer, got %v", tc.name, wantIP, r.Answer)
-        })
-    }
+	for _, tc := range []struct {
+		name string
+		addr string
+	}{
+		{"pod-0", pod0},
+		{"pod-1", pod1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := queryServer(t, probe, dns.TypeA, tc.addr)
+			require.Equalf(t, dns.RcodeSuccess, r.Rcode,
+				"%s: expected NOERROR", tc.name)
+			var found bool
+			for _, ans := range r.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
+					found = true
+				}
+			}
+			require.Truef(t, found,
+				"%s: expected %s in answer, got %v", tc.name, wantIP, r.Answer)
+		})
+	}
 }
 
 // --- Name template / CNAME alias tests (issue #60) ---

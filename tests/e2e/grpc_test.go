@@ -28,6 +28,24 @@ import (
 // expired before we query, making DNS checks deterministic.
 const coreDNSReloadWait = 11 * time.Second
 
+// publishVisible is the budget for a dynamic-store change to become
+// resolvable after forceMerge has confirmed a write.
+//
+// It covers two reload cycles rather than one. ForceMergeWrite is a
+// coalescing signal, and forceMerge only waits for the merge-write
+// timestamp to advance -- which an already-in-flight merge satisfies, even
+// though that merge snapshotted the dynamic store BEFORE our change. The
+// change is still published by the merge our own signal triggers, but a
+// cycle later. Nothing is lost: a signal the debounce drops is only ever
+// dropped while an earlier one is pending, and that pending merge runs
+// after our mutation.
+//
+// With coredns.reloadPollInterval pinned to 10s in dev values, one cycle
+// is reload (10s) + cache (5s), so this is generous margin rather than a
+// tight fit. It was the chart's 60s default silently applying -- see that
+// value's comment -- that made the old 25s budgets fail in CI.
+const publishVisible = 45 * time.Second
+
 // forceMerge triggers a zone merge, waits for the zone file to be written,
 // then sleeps for coreDNSReloadWait so CoreDNS has time to reload and any
 // cached DNS answers have expired. Call it before any DNS assertion that
@@ -93,10 +111,11 @@ func waitForDNS(t *testing.T, name string, qtype uint16, wantIP string, timeout 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		r := queryServer(t, name, qtype, dnsServer())
-		for _, ans := range r.Answer {
-			if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP(wantIP)) {
-				return
+		if r, ok := tryQueryServer(name, qtype, dnsServer()); ok {
+			for _, ans := range r.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP(wantIP)) {
+					return
+				}
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -112,10 +131,11 @@ func waitForPTR(t *testing.T, addr, wantFQDN string, timeout time.Duration) {
 	want := dns.Fqdn(wantFQDN)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		r := queryServer(t, ptrName, dns.TypePTR, dnsServer())
-		for _, ans := range r.Answer {
-			if ptr, ok := ans.(*dns.PTR); ok && ptr.Ptr == want {
-				return
+		if r, ok := tryQueryServer(ptrName, dns.TypePTR, dnsServer()); ok {
+			for _, ans := range r.Answer {
+				if ptr, ok := ans.(*dns.PTR); ok && ptr.Ptr == want {
+					return
+				}
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -160,7 +180,7 @@ func TestDynamicRecordUpsertAndResolve(t *testing.T) {
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
 
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.1", 25*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.1", publishVisible)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
@@ -182,7 +202,7 @@ func TestDynamicRecordDelete(t *testing.T) {
 	})
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.2", 25*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.99.2", publishVisible)
 
 	_, err = zc.DeleteRecord(ctx, &pb.DeleteRecordRequest{
 		Zone: zone, DnsName: fqdn,
@@ -190,10 +210,15 @@ func TestDynamicRecordDelete(t *testing.T) {
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
 
+	// tryQueryServer, not queryServer: require.Eventually runs this
+	// condition on its own goroutine, and the fatal helper would call
+	// t.FailNow() from a non-test goroutine, which the testing package
+	// does not support -- the run misbehaves instead of reporting a
+	// clean failure.
 	require.Eventually(t, func() bool {
-		r := queryServer(t, fqdn, dns.TypeA, dnsServer())
-		return r.Rcode == dns.RcodeNameError || len(r.Answer) == 0
-	}, 25*time.Second, 200*time.Millisecond, "expected NXDOMAIN after delete")
+		r, ok := tryQueryServer(fqdn, dns.TypeA, dnsServer())
+		return ok && (r.Rcode == dns.RcodeNameError || len(r.Answer) == 0)
+	}, publishVisible, 200*time.Millisecond, "expected NXDOMAIN after delete")
 }
 
 func TestBatchUpsert(t *testing.T) {
@@ -214,7 +239,7 @@ func TestBatchUpsert(t *testing.T) {
 	forceMerge(t, conn, ctx)
 
 	for _, r := range records {
-		waitForDNS(t, r.DnsName, dns.TypeA, r.Address, 25*time.Second)
+		waitForDNS(t, r.DnsName, dns.TypeA, r.Address, publishVisible)
 	}
 
 	t.Cleanup(func() {
@@ -242,7 +267,7 @@ func TestDynamicRecordSurvivesNetboxPoll(t *testing.T) {
 	})
 	require.NoError(t, err)
 	forceMerge(t, conn, ctx)
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", 25*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", publishVisible)
 
 	// ForceNetboxPoll rewrites the zone merging Netbox + dynamic records.
 	// The dynamic record must survive (remain in DNS after the poll).
@@ -250,7 +275,7 @@ func TestDynamicRecordSurvivesNetboxPoll(t *testing.T) {
 	// 5s (Netbox fetch) + 10s (CoreDNS reload) + 5s (cache expiry) + buffer.
 	_, err = cc.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
 	require.NoError(t, err)
-	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", 25*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", publishVisible)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{
@@ -366,9 +391,9 @@ func TestDynamicRecordGetsPTR(t *testing.T) {
 	forceMerge(t, conn, ctx)
 
 	// Forward lookup must resolve first.
-	waitForDNS(t, fqdn, dns.TypeA, ip, 25*time.Second)
+	waitForDNS(t, fqdn, dns.TypeA, ip, publishVisible)
 	// Reverse lookup must return the FQDN.
-	waitForPTR(t, ip, fqdn, 25*time.Second)
+	waitForPTR(t, ip, fqdn, publishVisible)
 
 	t.Cleanup(func() {
 		_, _ = zc.DeleteRecord(authCtx(t), &pb.DeleteRecordRequest{

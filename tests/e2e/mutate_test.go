@@ -47,6 +47,50 @@ func forcePoll(t *testing.T) {
 	require.NoError(t, err, "ForceNetboxPoll")
 }
 
+// forcePollAndWait triggers a NetBox poll and returns only once the
+// resulting zone write has completed, so a caller's own DNS budget has to
+// cover just the CoreDNS reload and cache TTL rather than the whole fetch.
+//
+// ForceNetboxPoll is a signal, not a synchronous call. A full poll
+// re-fetches the entire record set (~19k in dev), enriches it and rewrites
+// the zones, and on a slow runner that alone can outlast a 25s DNS wait.
+// N13 failed exactly that way in CI while the identical commit passed
+// elsewhere; the giveaway was N11's own measurement moving from 10.7s to
+// 15.6s between the two runs, i.e. the runner was ~45% slower, not the code
+// different.
+//
+// LastMergeWrite is the signal to watch rather than LastNetboxPoll: the
+// poll loop sets it after the write, and it still advances when the fetch
+// failed or was refused (the merge then simply rewrites the previous
+// zones). So this cannot wedge on a shrink-guard refusal -- though the
+// failure-mode tests keep using the raw forcePoll anyway, since there a
+// cycle legitimately may not land at all.
+//
+// Tests that MEASURE the poll path (N11) must also keep forcePoll: the
+// fetch is precisely what they are timing.
+func forcePollAndWait(t *testing.T) {
+	t.Helper()
+	conn := grpcConn(t)
+	ctx := authCtx(t)
+	cc := pb.NewControlServiceClient(conn)
+
+	before, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+	require.NoError(t, err, "GetStatus before ForceNetboxPoll")
+
+	_, err = cc.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
+	require.NoError(t, err, "ForceNetboxPoll")
+
+	// Both timestamps come from the sidecar's own clock, so comparing them
+	// to each other is safe where comparing to the test host's would not
+	// be. A scheduled poll landing in the same window can satisfy this
+	// early, which just degrades to the unsynchronised behaviour.
+	require.Eventually(t, func() bool {
+		s, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+		return err == nil && s.LastMergeWriteUnix > before.LastMergeWriteUnix
+	}, 90*time.Second, 200*time.Millisecond,
+		"poll cycle did not complete a zone write within 90s")
+}
+
 // dnsProbeServers returns every DNS endpoint an absence check must agree
 // on: both per-pod addresses when exposed (DNS_POD0/DNS_POD1, set by the
 // make targets and CI), else the load-balanced service. The two CoreDNS
@@ -97,23 +141,22 @@ const cleanupConverge = 40 * time.Second
 func waitNameGone(t *testing.T, name string, qtype uint16, timeout time.Duration) {
 	t.Helper()
 	waitAllServers(t, timeout, func(server string) bool {
-		r := queryServer(t, name, qtype, server)
+		r, ok := tryQueryServer(name, qtype, server)
+		if !ok {
+			// Unreachable is not "gone": a replica being replaced would
+			// otherwise look like a converged deletion.
+			return false
+		}
 		return r.Rcode == dns.RcodeNameError || len(r.Answer) == 0
 	}, "%s (type %d) still served after deletion", name, qtype)
 }
 
 // soaSerialOn reads one server's SOA serial, reporting not-ok instead of
-// failing the test when the query cannot be completed. A connection can be
-// closed under us at any moment — a pod being replaced, the k3d load
-// balancer re-pointing after a redeploy — and inside a convergence wait
-// that is a state to retry through, not a verdict. The hard-failing query
-// helpers are right for assertions, wrong here.
+// failing the test when the query cannot be completed or the zone is not
+// (yet) served.
 func soaSerialOn(server, zone string) (uint32, bool) {
-	c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(zone), dns.TypeSOA)
-	r, _, err := c.Exchange(m, server)
-	if err != nil || r.Rcode != dns.RcodeSuccess {
+	r, ok := tryQueryServer(zone, dns.TypeSOA, server)
+	if !ok || r.Rcode != dns.RcodeSuccess {
 		return 0, false
 	}
 	for _, ans := range r.Answer {
@@ -167,7 +210,7 @@ func TestMutate_N12_ChangeAndDelete(t *testing.T) {
 		netboxORM(t, `from ipam.models import IPAddress
 deleted, _ = IPAddress.objects.filter(dns_name="server-n12.dc1.mycompany.com").delete()
 print(deleted)`)
-		forcePoll(t)
+		forcePollAndWait(t)
 		waitNameGone(t, fqdn, dns.TypeA, cleanupConverge)
 	})
 
@@ -175,7 +218,7 @@ print(deleted)`)
 	netboxORM(t, fmt.Sprintf(`from ipam.models import IPAddress
 IPAddress.objects.create(address="10.77.0.1/24", dns_name=%q, status="active")
 print("created")`, dnsName))
-	forcePoll(t)
+	forcePollAndWait(t)
 	waitForDNS(t, fqdn, dns.TypeA, "10.77.0.1", 25*time.Second)
 	waitForPTR(t, "10.77.0.1", fqdn, 25*time.Second)
 
@@ -185,7 +228,7 @@ ip = IPAddress.objects.get(dns_name=%q)
 ip.address = "10.77.0.2/24"
 ip.save()
 print("changed")`, dnsName))
-	forcePoll(t)
+	forcePollAndWait(t)
 	waitForDNS(t, fqdn, dns.TypeA, "10.77.0.2", 25*time.Second)
 	waitForPTR(t, "10.77.0.2", fqdn, 25*time.Second)
 
@@ -193,7 +236,10 @@ print("changed")`, dnsName))
 	// stale). waitForDNS above is satisfied by whichever replica reloaded
 	// first; the other may serve the old zone for up to reload + cache.
 	waitAllServers(t, 25*time.Second, func(server string) bool {
-		r := queryServer(t, fqdn, dns.TypeA, server)
+		r, ok := tryQueryServer(fqdn, dns.TypeA, server)
+		if !ok {
+			return false
+		}
 		for _, ans := range r.Answer {
 			if a, ok := ans.(*dns.A); ok && a.A.String() == "10.77.0.1" {
 				return false
@@ -209,7 +255,7 @@ print("changed")`, dnsName))
 	netboxORM(t, fmt.Sprintf(`from ipam.models import IPAddress
 deleted, _ = IPAddress.objects.filter(dns_name=%q).delete()
 print(deleted)`, dnsName))
-	forcePoll(t)
+	forcePollAndWait(t)
 	waitNameGone(t, fqdn, dns.TypeA, 25*time.Second)
 	newPTR, err := dns.ReverseAddr("10.77.0.2")
 	require.NoError(t, err)
@@ -229,7 +275,7 @@ func TestMutate_N13_BatchChange(t *testing.T) {
 		netboxORM(t, `from ipam.models import IPAddress
 deleted, _ = IPAddress.objects.filter(dns_name__startswith="bulk-n13-").delete()
 print(deleted)`)
-		forcePoll(t)
+		forcePollAndWait(t)
 		waitNameGone(t, hostFQDN("bulk-n13-1", "dc3"), dns.TypeA, cleanupConverge)
 	})
 
@@ -245,15 +291,25 @@ records = [IPAddress(address=f"10.33.{i // 250}.{i % 250 + 1}/24",
            for i in range(1000)]
 IPAddress.objects.bulk_create(records, batch_size=1000)
 print("bulk created", len(records))`)
-	forcePoll(t)
+	forcePollAndWait(t)
 
 	// First and last record resolvable…
 	waitForDNS(t, hostFQDN("bulk-n13-1", "dc3"), dns.TypeA, "10.33.0.1", 25*time.Second)
 	waitForDNS(t, hostFQDN("bulk-n13-1000", "dc3"), dns.TypeA, "10.33.3.250", 25*time.Second)
 
-	// …then wait for BOTH replicas to converge before the AXFR and serial
-	// checks — the load-balanced query can otherwise hit the replica that
-	// has not reloaded yet.
+	// …then wait for BOTH replicas to actually serve the batch before the
+	// AXFR and serial checks. The waits above go through the load-balanced
+	// service, so one reloaded replica satisfies them while the other is
+	// still on the old zone.
+	//
+	// This has to be an explicit check for the new content: stableSerial
+	// returns the first serial every replica AGREES on, and before any of
+	// them has reloaded that agreement is on the OLD serial. It would then
+	// hand back serialBefore and the assertion below would read as "no
+	// zone write happened" when in fact one had, just not everywhere yet.
+	waitAllServers(t, 25*time.Second, func(server string) bool {
+		return answersTolerant(server, hostFQDN("bulk-n13-1", "dc3"))
+	}, "every replica must serve the batch before its serial is read")
 	serialAfter := stableSerial(t, zone)
 
 	// ALL 1000 present via AXFR.
@@ -296,7 +352,7 @@ func TestMutate_N11_PollPathCreateTiming(t *testing.T) {
 		netboxORM(t, `from ipam.models import IPAddress
 deleted, _ = IPAddress.objects.filter(dns_name="server-n11.dc1.mycompany.com").delete()
 print(deleted)`)
-		forcePoll(t)
+		forcePollAndWait(t)
 		waitNameGone(t, fqdn, dns.TypeA, cleanupConverge)
 	})
 
@@ -329,7 +385,7 @@ func TestMutate_N1_OnlyActivePublished(t *testing.T) {
 		netboxORM(t, `from ipam.models import IPAddress
 deleted, _ = IPAddress.objects.filter(dns_name__startswith="server-n1-").delete()
 print(deleted)`)
-		forcePoll(t)
+		forcePollAndWait(t)
 		waitNameGone(t, fqdnFor("active"), dns.TypeA, cleanupConverge)
 	})
 
@@ -339,7 +395,7 @@ for i, status in enumerate(["active", "reserved", "deprecated", "dhcp"]):
                              dns_name=f"server-n1-{status}.dc1.mycompany.com",
                              status=status)
 print("created 4")`)
-	forcePoll(t)
+	forcePollAndWait(t)
 
 	// All four rows landed before the same poll, so the zone version that
 	// serves the active record is the exact zone that would contain the
@@ -348,8 +404,8 @@ print("created 4")`)
 	waitForDNS(t, fqdnFor("active"), dns.TypeA, "10.77.1.1", 25*time.Second)
 	waitForPTR(t, "10.77.1.1", fqdnFor("active"), 25*time.Second)
 	waitAllServers(t, 25*time.Second, func(server string) bool {
-		r := queryServer(t, fqdnFor("active"), dns.TypeA, server)
-		return r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
+		r, ok := tryQueryServer(fqdnFor("active"), dns.TypeA, server)
+		return ok && r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
 	}, "active record must be served by every replica before the negative checks")
 
 	for i, status := range statuses[1:] {
@@ -385,7 +441,7 @@ func TestMutate_N6_HostileDNSNames(t *testing.T) {
 addrs = [f"10.77.2.{i}/24" for i in range(1, 6)]
 deleted, _ = IPAddress.objects.filter(address__in=addrs).delete()
 print(deleted)`)
-		forcePoll(t)
+		forcePollAndWait(t)
 		waitNameGone(t, canary, dns.TypeA, cleanupConverge)
 	})
 
@@ -405,7 +461,7 @@ IPAddress.objects.create(address="10.77.2.1/24",
 for i, name in enumerate(hostile):
     IPAddress.objects.create(address=f"10.77.2.{i + 2}/24", dns_name=name, status="active")
 print("created", 1 + len(hostile))`)
-	forcePoll(t)
+	forcePollAndWait(t)
 
 	// The zone must still load: the canary from the same batch resolves. If
 	// a hostile name wedges the reload, this is where it shows.
