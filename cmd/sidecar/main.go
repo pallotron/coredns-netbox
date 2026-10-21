@@ -373,6 +373,16 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 		return nil
 	}
 
+	// Zones left by a previous process are servable right now, so say so
+	// before the first fetch rather than after it. If Netbox is down, that
+	// fetch will fail and the G4 guard will refuse the merge, and waiting
+	// for a success that cannot come is what used to strand CoreDNS's
+	// zone-init against an unroutable Service (G13).
+	if !cfg.RunOnce && markReady != nil && readyToServe(false, mgr.HasExistingZones()) {
+		slog.Info("ready before first fetch: serving cached zone files from the previous run")
+		markReady()
+	}
+
 	// Initial full poll
 	netboxZones, fetchErr := doFetchNetbox()
 	if fetchErr != nil {
@@ -519,6 +529,28 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 // coverage.
 func webhookPollAllowed(last, now time.Time, min time.Duration) bool {
 	return now.Sub(last) >= min
+}
+
+// readyToServe reports whether the sidecar can answer a zone-file fetch,
+// which is what its readiness probe is actually being asked.
+//
+// Readiness means "I can serve zones", not "I have fresh data" — different
+// questions, and conflating them let a NetBox outage take DNS down
+// entirely (G13). The G4 guard above deliberately refuses to merge over a
+// cached zone set until a fetch has succeeded. On a restart during an
+// outage that refusal meant readiness never flipped, so Kubernetes pulled
+// the pod out of the sidecar Service, and CoreDNS's zone-init could not
+// fetch the very zones sitting on the PVC. The protection blocked the
+// recovery: good data on disk, unreachable.
+//
+// Serving cached zones while Netbox is down is not hidden by this —
+// netbox_sidecar_zone_staleness_seconds reports their age continuously,
+// and only a successful fetch resets it (G6).
+//
+// A pod with no zones at all stays NotReady: there is genuinely nothing to
+// serve, and answering from an empty zone is worse than not answering.
+func readyToServe(publishedThisProcess, hasExistingZones bool) bool {
+	return publishedThisProcess || hasExistingZones
 }
 
 // mergeAllowed reports whether a merge/write cycle may run. Before the first

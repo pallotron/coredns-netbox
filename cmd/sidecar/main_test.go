@@ -227,6 +227,50 @@ func TestFetchNetboxRefusesEmptyWhileServingCachedZones(t *testing.T) {
 // every cached zone file — the PVC cache that serve-stale across sidecar
 // restarts (matrix N16/N22) depends on. Merging is only safe once NetBox
 // data exists in memory, or when there is nothing on disk to destroy.
+// G13: the readiness probe gates the sidecar Service, which CoreDNS's
+// zone-init fetches through. Tying it to a successful fetch meant a Netbox
+// outage plus a restart left CoreDNS unable to reach zones that were
+// sitting on the PVC the whole time.
+func TestReadyToServe(t *testing.T) {
+	tests := []struct {
+		name                 string
+		publishedThisProcess bool
+		hasExistingZones     bool
+		want                 bool
+		why                  string
+	}{
+		{
+			name:                 "published this process",
+			publishedThisProcess: true,
+			want:                 true,
+			why:                  "a successful fetch+merge is the ordinary ready path",
+		},
+		{
+			name:             "cached zones, Netbox unreachable",
+			hasExistingZones: true,
+			want:             true,
+			why:              "this is G13: the PVC holds servable zones, so the pod must stay in the Service and let zone-init fetch them",
+		},
+		{
+			name:                 "cached zones and a fresh publish",
+			publishedThisProcess: true,
+			hasExistingZones:     true,
+			want:                 true,
+		},
+		{
+			name: "nothing published and nothing on disk",
+			want: false,
+			why:  "a fresh install with Netbox down has nothing to serve; answering from an empty zone is worse than not answering",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, readyToServe(tt.publishedThisProcess, tt.hasExistingZones), tt.why)
+		})
+	}
+}
+
 func TestMergeAllowed(t *testing.T) {
 	tests := []struct {
 		name               string

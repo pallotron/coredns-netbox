@@ -358,6 +358,90 @@ func TestChaos_N22_SidecarKilled(t *testing.T) {
 		"sidecar restart must not rewrite an unchanged zone (G5): serial %d -> %d", serialBefore, serialAfter)
 }
 
+// N38 (acceptance-test matrix) / gap G13: a cold start during a NetBox
+// outage must still serve. N16 covers restarting the sidecar alone, which
+// leaves the running CoreDNS pods holding their zones in memory; this row
+// covers the harsher and entirely realistic case where CoreDNS restarts
+// too -- a node-pool upgrade, a cluster restart, an eviction -- while
+// NetBox is unreachable.
+//
+// That case used to deadlock, and the protection was what caused it. In
+// standalone mode CoreDNS pods use emptyDir, so a replacement pod has no
+// zones and its zone-init container fetches them from the sidecar's
+// Service. The sidecar's readiness only flipped after a successful
+// fetch+merge, and during an outage the G4 guard deliberately refuses that
+// merge to avoid destroying the cache -- so the sidecar never became
+// Ready, Kubernetes removed it from the Service, and zone-init blocked
+// against an endpoint-less Service while valid zones sat on the PVC.
+//
+// It was easy to miss because DNS appeared to survive: a StatefulSet
+// rolling update will not proceed past a pod that never becomes Ready, so
+// the untouched replica kept answering. Anything that takes both pods at
+// once removes that accident. Hence the assertion here is that the
+// rollout COMPLETES, not merely that DNS answered.
+func TestChaos_N38_ColdStartDuringNetboxOutage(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	const ns = "coredns-netbox"
+
+	t.Cleanup(func() {
+		scaleDeploy(t, "netbox", "netbox", 1)
+		waitDeployReady(t, "netbox", "netbox", 10*time.Minute)
+		waitDeployReady(t, ns, "coredns-netbox-sidecar", 10*time.Minute)
+		waitStatefulSetReady(t, ns, "coredns-netbox", 10*time.Minute)
+		waitForPrimary(t)
+	})
+
+	probe := startProbe(t, 500*time.Millisecond)
+
+	// NetBox gone first, so every fetch from here on fails and the only
+	// zone data in the system is what is already on the sidecar's PVC.
+	scaleDeploy(t, "netbox", "netbox", 0)
+	time.Sleep(10 * time.Second)
+
+	// Restart BOTH: the sidecar loses its in-process state and CoreDNS
+	// loses its in-memory zones, so every zone has to come back off the
+	// PVC through the sidecar's HTTP endpoint.
+	kubectlOut(t, "-n", ns, "rollout", "restart",
+		"deployment/coredns-netbox-sidecar", "statefulset/coredns-netbox")
+
+	// The sidecar must report Ready without a successful fetch, because it
+	// can serve the cached zones. This is the G13 fix: readiness answers
+	// "can I serve?", not "is my data fresh?" -- staleness is reported
+	// separately by zone_staleness_seconds, which only a successful fetch
+	// resets.
+	waitDeployReady(t, ns, "coredns-netbox-sidecar", 5*time.Minute)
+
+	// The assertion that actually pins the bug. rollout status returns
+	// only when every replica is updated AND ready, so it cannot be
+	// satisfied by a rollout that stalled on a pod stuck in zone-init.
+	kubectlOut(t, "-n", ns, "rollout", "status", "statefulset/coredns-netbox", "--timeout=5m")
+
+	// With the Service routable again, zone-init must have been able to
+	// fetch -- confirm by serving real answers from EVERY replica while
+	// NetBox is still down.
+	//
+	// A wait rather than a one-shot query: rollout status returns when the
+	// pods report Ready, which is not the same instant their per-pod
+	// NodePort endpoints become reachable. Asserting immediately tests
+	// endpoint propagation, not the thing this row is about.
+	for _, server := range dnsProbeServers() {
+		waitForDNSOn(t, server, hostFQDN("server1-mgmt", "dc1"), "10.1.0.1", 60*time.Second)
+	}
+
+	// Recovery: NetBox back, and a poll succeeds without anyone restarting.
+	scaleDeploy(t, "netbox", "netbox", 1)
+	waitDeployReady(t, "netbox", "netbox", 10*time.Minute)
+	waitDeployReady(t, ns, "coredns-netbox-sidecar", 10*time.Minute)
+
+	stats := probe.Stop()
+	require.Greater(t, stats.Total, 0, "probe must have run")
+	require.Zero(t, stats.Failures,
+		"DNS must answer through a full restart of both components while NetBox is down; first failure: %s (of %d queries)",
+		stats.FirstFailure, stats.Total)
+}
+
 // N16 (acceptance-test matrix): NetBox down when the sidecar starts. The
 // replacement sidecar must come up Running (not CrashLoopBackOff), must NOT
 // destroy the cached zone files (gap G4 — pre-fix it merged an empty NetBox
