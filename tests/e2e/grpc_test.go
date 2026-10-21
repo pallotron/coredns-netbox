@@ -109,9 +109,11 @@ func authCtx(t *testing.T) context.Context {
 // budget documented in mutate_test.go.
 func waitForDNS(t *testing.T, name string, qtype uint16, wantIP string, timeout time.Duration) {
 	t.Helper()
+	var probe dnsProbeStats
+	server := dnsServer()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if r, ok := tryQueryServer(name, qtype, dnsServer()); ok {
+		if r, ok := probe.query(name, qtype, server); ok {
 			for _, ans := range r.Answer {
 				if a, ok := ans.(*dns.A); ok && a.A.Equal(net.ParseIP(wantIP)) {
 					return
@@ -120,7 +122,8 @@ func waitForDNS(t *testing.T, name string, qtype uint16, wantIP string, timeout 
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("DNS record %s -> %s did not appear within %s", name, wantIP, timeout)
+	t.Fatalf("DNS record %s -> %s did not appear within %s%s",
+		name, wantIP, timeout, probe.diagnose(server))
 }
 
 // waitForPTR polls until the PTR query for addr returns wantFQDN or times out.
@@ -129,9 +132,11 @@ func waitForPTR(t *testing.T, addr, wantFQDN string, timeout time.Duration) {
 	ptrName, err := dns.ReverseAddr(addr)
 	require.NoError(t, err)
 	want := dns.Fqdn(wantFQDN)
+	var probe dnsProbeStats
+	server := dnsServer()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if r, ok := tryQueryServer(ptrName, dns.TypePTR, dnsServer()); ok {
+		if r, ok := probe.query(ptrName, dns.TypePTR, server); ok {
 			for _, ans := range r.Answer {
 				if ptr, ok := ans.(*dns.PTR); ok && ptr.Ptr == want {
 					return
@@ -140,7 +145,8 @@ func waitForPTR(t *testing.T, addr, wantFQDN string, timeout time.Duration) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatalf("PTR %s -> %s did not appear within %s", addr, wantFQDN, timeout)
+	t.Fatalf("PTR %s -> %s did not appear within %s%s",
+		addr, wantFQDN, timeout, probe.diagnose(server))
 }
 
 // dynamicFQDN returns a test FQDN for a dynamic record, using the correct zone.
@@ -257,7 +263,6 @@ func TestDynamicRecordSurvivesNetboxPoll(t *testing.T) {
 	conn := grpcConn(t)
 	ctx := authCtx(t)
 	zc := pb.NewDynamicZoneServiceClient(conn)
-	cc := pb.NewControlServiceClient(conn)
 
 	zone := forwardZone("dc1")
 	fqdn := dynamicFQDN("e2e-survives")
@@ -271,10 +276,16 @@ func TestDynamicRecordSurvivesNetboxPoll(t *testing.T) {
 
 	// ForceNetboxPoll rewrites the zone merging Netbox + dynamic records.
 	// The dynamic record must survive (remain in DNS after the poll).
-	// No forceMerge here — the poll drives its own zone write. Allow up to
-	// 5s (Netbox fetch) + 10s (CoreDNS reload) + 5s (cache expiry) + buffer.
-	_, err = cc.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
-	require.NoError(t, err)
+	//
+	// forcePollAndWait, not a raw ForceNetboxPoll, for two reasons. The
+	// record is already in DNS when the poll is fired, so a DNS check that
+	// runs before the poll's merge lands passes without testing anything —
+	// the assertion has to come after the write it is supposed to survive.
+	// And a merge still in flight when this test returns rewrites the zones
+	// underneath whatever runs next, from live Netbox contents: that is what
+	// was breaking TestWebhook_CreatedEventUpdatesDNSWithoutPoll, whose
+	// record is synthetic and therefore absent from Netbox.
+	forcePollAndWait(t)
 	waitForDNS(t, fqdn, dns.TypeA, "10.99.97.1", publishVisible)
 
 	t.Cleanup(func() {
@@ -300,6 +311,14 @@ func TestForceNetboxPollUpdatesStatus(t *testing.T) {
 		after, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
 		return err == nil && after.LastNetboxPollUnix > before.LastNetboxPollUnix
 	}, 30*time.Second, 500*time.Millisecond, "LastNetboxPollUnix not updated after force poll")
+
+	// LastNetboxPoll advances at the fetch, so the merge it feeds is still
+	// in flight here. Leaving it running rewrites the zones under the next
+	// test; wait for the write before returning.
+	require.Eventually(t, func() bool {
+		after, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
+		return err == nil && after.LastMergeWriteUnix > before.LastMergeWriteUnix
+	}, 90*time.Second, 200*time.Millisecond, "zone write did not complete after force poll")
 }
 
 func TestForceMergeWriteUpdatesStatus(t *testing.T) {
@@ -352,14 +371,20 @@ func TestZoneReloadService(t *testing.T) {
 
 	// Force sidecar to rewrite zones via a Netbox poll.
 	ctrl := pb.NewControlServiceClient(conn)
-	_, err := ctrl.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
+	beforeReload, err := ctrl.GetStatus(ctx, &pb.GetStatusRequest{})
+	require.NoError(t, err)
+	_, err = ctrl.ForceNetboxPoll(ctx, &pb.ForceNetboxPollRequest{})
 	require.NoError(t, err)
 
-	// Wait for zone write to complete (staleness < 5s).
+	// Wait for the zone write to complete. Staleness alone is reset by a
+	// successful fetch, which can be true while the merge is still being
+	// written, so gate on the write timestamp too — a merge left in flight
+	// here rewrites the zones under the next test.
 	require.Eventually(t, func() bool {
 		s, err := ctrl.GetStatus(authCtx(t), &pb.GetStatusRequest{})
-		return err == nil && s.ZoneStalenessSeconds < 5
-	}, 30*time.Second, 500*time.Millisecond, "zone write did not complete")
+		return err == nil && s.ZoneStalenessSeconds < 5 &&
+			s.LastMergeWriteUnix > beforeReload.LastMergeWriteUnix
+	}, 90*time.Second, 200*time.Millisecond, "zone write did not complete")
 
 	// Call Reload directly on CoreDNS.
 	reloadAddr := os.Getenv("COREDNS_RELOAD_ADDR")

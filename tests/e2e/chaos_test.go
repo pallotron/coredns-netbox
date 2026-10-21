@@ -168,14 +168,20 @@ func (p *dnsProbe) FailuresSoFar() int {
 // being waited through. Only the deadline fails the test.
 func waitForDNSOn(t *testing.T, server, name, wantIP string, timeout time.Duration) {
 	t.Helper()
+	var probe dnsProbeStats
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if answerHasIP(server, name, wantIP) {
-			return
+		if r, ok := probe.query(name, dns.TypeA, server); ok && r.Rcode == dns.RcodeSuccess {
+			for _, ans := range r.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A.String() == wantIP {
+					return
+				}
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("%s -> %s did not appear on %s within %s", name, wantIP, server, timeout)
+	t.Fatalf("%s -> %s did not appear on %s within %s%s",
+		name, wantIP, server, timeout, probe.diagnose(server))
 }
 
 // answerHasIP reports whether server answers name with wantIP, reporting
