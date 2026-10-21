@@ -104,6 +104,42 @@ helm upgrade coredns-netbox ./helm/coredns-netbox \
   --set zoneStorage.persistent=true
 ```
 
+## Surviving a NetBox outage
+
+The sidecar keeps the generated zone files on its own volume, and that
+cache is what lets DNS keep answering when NetBox is unreachable. Two
+behaviours make it work, and they are easy to mistake for each other:
+
+**The sidecar will not overwrite the cache with nothing.** Until a fetch
+has succeeded in the current process, merges are refused rather than run
+against an empty record set — otherwise a restart during an outage would
+delete every cached zone. You will see this in the log as
+`skipping merge/write: no successful Netbox fetch yet and cached zone
+files exist`.
+
+**Readiness means "I can serve zones", not "my data is fresh".** A sidecar
+holding cached zones reports Ready even when NetBox is down and the merge
+above is being refused. This matters because the readiness probe gates the
+sidecar's Service, and in standalone mode a restarting CoreDNS pod fetches
+its zones from that Service — its own volume is an `emptyDir` and starts
+empty. If readiness waited for a successful fetch, a NetBox outage plus a
+CoreDNS restart would leave the new pod unable to reach zones that were
+sitting on the sidecar's volume the whole time.
+
+A sidecar with no zones at all stays NotReady: a fresh install during an
+outage has genuinely nothing to serve, and answering from an empty zone is
+worse than not answering.
+
+Because readiness no longer implies freshness, **staleness is what you
+alert on**:
+
+```promql
+netbox_sidecar_zone_staleness_seconds > 900
+```
+
+Only a successful fetch resets it, so it climbs for the whole outage and
+is unaffected by merges of cached data.
+
 ## Zone Transfers (AXFR)
 
 The primary CoreDNS can serve zone transfers to secondary DNS servers (CoreDNS, BIND, NSD, etc.) in remote data centers.
