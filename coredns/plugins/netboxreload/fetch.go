@@ -14,8 +14,8 @@ var httpFetchClient = &http.Client{Timeout: 30 * time.Second}
 
 // fetchZonesFromURL fetches zone files from baseURL/zones/ and parses them.
 // Files with an entry in prev (keyed by filename) are fetched conditionally
-// via If-Modified-Since; on 304 the already-parsed zone is reused. Returns
-// the zones keyed by origin plus the cache to pass as prev on the next fetch.
+// via If-None-Match; on 304 the already-parsed zone is reused. Returns the
+// zones keyed by origin plus the cache to pass as prev on the next fetch.
 func fetchZonesFromURL(baseURL string, prev map[string]cachedZone) (map[string]*zone, map[string]cachedZone, error) {
 	resp, err := httpFetchClient.Get(baseURL + "/zones/") //nolint:noctx
 	if err != nil {
@@ -48,16 +48,25 @@ func fetchZonesFromURL(baseURL string, prev map[string]cachedZone) (map[string]*
 }
 
 // fetchZoneFile fetches and parses one zone file. When prev holds a parsed
-// zone and a Last-Modified validator, the request is conditional and a 304
-// response returns prev unchanged. A server that sends no Last-Modified
-// yields an empty validator, which degrades to unconditional full fetches.
+// zone and an ETag validator, the request is conditional and a 304 response
+// returns prev unchanged.
+//
+// The validator is an ETag, not Last-Modified, and deliberately so. HTTP
+// dates carry whole seconds, so two zone writes inside one second share a
+// Last-Modified value and the second one was answered 304 -- the plugin
+// then kept serving the previous zone indefinitely, until some unrelated
+// later write happened to fall in a different second. An ETag is compared
+// for equality, so there is no granularity to get wrong.
+//
+// A server that sends no ETag yields an empty validator, which degrades to
+// unconditional full fetches: slower, never stale.
 func fetchZoneFile(url, filename string, prev cachedZone) (cachedZone, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
 	if err != nil {
 		return cachedZone{}, err
 	}
 	if prev.z != nil && prev.validator != "" {
-		req.Header.Set("If-Modified-Since", prev.validator)
+		req.Header.Set("If-None-Match", prev.validator)
 	}
 	resp, err := httpFetchClient.Do(req)
 	if err != nil {
@@ -78,5 +87,5 @@ func fetchZoneFile(url, filename string, prev cachedZone) (cachedZone, error) {
 	if err != nil {
 		return cachedZone{}, err
 	}
-	return cachedZone{validator: resp.Header.Get("Last-Modified"), z: z}, nil
+	return cachedZone{validator: resp.Header.Get("ETag"), z: z}, nil
 }

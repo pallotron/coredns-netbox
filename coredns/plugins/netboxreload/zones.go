@@ -81,10 +81,15 @@ func loadZoneFile(path string) (*zone, error) {
 }
 
 // cachedZone pairs a parsed zone with the validator that identified the
-// source content it was parsed from: the Last-Modified header for HTTP
-// fetches, mtime+size for directory loads. When the validator still matches
-// on the next reload, the parsed zone is reused instead of re-parsed —
-// safe because zones are immutable after construction.
+// source content it was parsed from: the ETag for HTTP fetches, mtime+size
+// for directory loads. When the validator still matches on the next reload,
+// the parsed zone is reused instead of re-parsed — safe because zones are
+// immutable after construction.
+//
+// Both validators are compared for exact equality. That matters: the HTTP
+// path previously used Last-Modified, whose one-second resolution combined
+// with a <= comparison to hide any zone rewritten twice within the same
+// second. Equality comparison has no such failure mode.
 type cachedZone struct {
 	validator string
 	z         *zone
