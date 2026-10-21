@@ -67,8 +67,8 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 		// We reuse IPRecord but with DNSName as the PTR target (FQDN)
 		// and the ptrName (reverse notation) stored for the zone file generation
 		ptrRecord := netboxclient.IPRecord{
-			DNSName:       rec.DNSName,       // PTR target (forward FQDN)
-			Address:       ptrName,           // Reverse notation (e.g., "3.2.1")
+			DNSName:       rec.DNSName, // PTR target (forward FQDN)
+			Address:       ptrName,     // Reverse notation (e.g., "3.2.1")
 			Family:        rec.Family,
 			DeviceName:    rec.DeviceName,
 			InterfaceName: rec.InterfaceName,
@@ -85,6 +85,7 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 // Finds the matching static zone and generates the PTR name within that zone.
 // For example, with zone "10.in-addr.arpa":
 //   - 10.1.2.3 → zone "10.in-addr.arpa", PTR name "3.2.1"
+//
 // With zone "1.10.in-addr.arpa":
 //   - 10.1.2.3 → zone "1.10.in-addr.arpa", PTR name "3.2"
 func (d *ReverseZoneDiscoverer) reverseIPv4(ip net.IP) (zone, ptrName string, err error) {
@@ -158,11 +159,17 @@ func (d *ReverseZoneDiscoverer) reverseIPv6(ip net.IP) (zone, ptrName string, er
 		return "", "", fmt.Errorf("not an IPv6 address")
 	}
 
-	// Convert to nibbles (32 hex digits)
+	// Nibbles in PTR order: least significant first, each byte contributing
+	// its HIGH nibble before its low one before the whole sequence is
+	// reversed (RFC 3596 §2.5). Emitting low-then-high and reversing swaps
+	// every pair, which is what this used to do: 2001:db8::1 came out under
+	// b.8.0.d.0.1.2.0.ip6.arpa instead of 8.b.d.0.1.0.0.2.ip6.arpa, so the
+	// names never matched what a resolver asks for — and a correctly
+	// configured zone matched nothing, dropping the record entirely.
 	var nibbles []string
 	for _, b := range ip {
-		nibbles = append(nibbles, fmt.Sprintf("%x", b&0x0f))
 		nibbles = append(nibbles, fmt.Sprintf("%x", (b>>4)&0x0f))
+		nibbles = append(nibbles, fmt.Sprintf("%x", b&0x0f))
 	}
 
 	// Reverse for PTR notation
@@ -186,7 +193,7 @@ func (d *ReverseZoneDiscoverer) reverseIPv6(ip net.IP) (zone, ptrName string, er
 
 		// Check if this IP matches this zone
 		// Zone nibbles are in reverse order, matching the end of reversed IP nibbles
-		// e.g., zone "b.8.0.d.0.1.2.0.ip6.arpa" for 2001:db8::/32
+		// e.g., zone "8.b.d.0.1.0.0.2.ip6.arpa" for 2001:db8::/32
 		// should match nibbles[24:32] = [b 8 0 d 0 1 2 0]
 		matches := true
 		for i := 0; i < depth; i++ {

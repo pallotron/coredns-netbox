@@ -97,4 +97,15 @@ if catchall_ip is None:
     catchall_ip.assigned_object = catchall_mgmt
     catchall_ip.save()
 
+# N7: one IPv6 assignment, in the RFC 3849 documentation prefix. Forward
+# gives an AAAA; reverse exercises ip6.arpa, which dev enables via
+# reverseZones.ipv6 (8.b.d.0.1.0.0.2.ip6.arpa covers 2001:db8::/32).
+v6 = IPAddress.objects.filter(address="2001:db8::1/64").first()
+if v6 is None:
+    IPAddress.objects.create(
+        address="2001:db8::1/64",
+        dns_name="server-v6.dc1.mycompany.com",
+        status="active",
+    )
+
 print(f"Device seed complete: {Device.objects.count()} devices")

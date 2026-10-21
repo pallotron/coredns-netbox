@@ -101,6 +101,10 @@ reverseZones:
   enabled: true
   ipv4:
     - 10.in-addr.arpa
+  # 2001:db8::/32 (RFC 3849 documentation prefix) so the e2e suite can
+  # exercise the ip6.arpa path (N7). Production enables IPv4 reverse only.
+  ipv6:
+    - 8.b.d.0.1.0.0.2.ip6.arpa
 
 # Secondary DNS server
 secondary:

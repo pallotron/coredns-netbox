@@ -640,3 +640,53 @@ func TestCatchAllDeviceGetsFlatCanonicalWithoutAliases(t *testing.T) {
 		}
 	}
 }
+
+// N7 (acceptance-test matrix): IPv6, both legs.
+//
+// The row sat NOT RUN on the assumption that IPv6 was out of scope, but the
+// generator emits AAAA from Family == 6 and zonediscovery builds ip6.arpa
+// PTRs — it was untested, not unsupported. Running it found G12: the
+// reverse names had their nibble pairs swapped, so every IPv6 PTR was
+// generated under a name no resolver would ask for, while a correctly
+// configured zone matched nothing and dropped the record entirely.
+//
+// The fixture uses the RFC 3849 documentation prefix (2001:db8::/32), and
+// dev enables the matching ip6.arpa zone; production serves IPv4 reverse
+// only, so this leg exists to keep the code path honest rather than to
+// mirror production.
+func TestIPv6ForwardAAAA(t *testing.T) {
+	name := hostFQDN("server-v6", "dc1")
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		r := queryServer(t, name, dns.TypeAAAA, dnsServer())
+		for _, ans := range r.Answer {
+			if aaaa, ok := ans.(*dns.AAAA); ok && aaaa.AAAA.Equal(net.ParseIP("2001:db8::1")) {
+				return
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("AAAA for %s did not appear within 60s", name)
+}
+
+func TestIPv6ReversePTR(t *testing.T) {
+	// dns.ReverseAddr is the resolver's view: if the generated owner name
+	// does not match this exactly, the record is unreachable however well
+	// formed it looks in the zone file.
+	ptr, err := dns.ReverseAddr("2001:db8::1")
+	require.NoError(t, err)
+
+	want := dns.Fqdn(hostFQDN("server-v6", "dc1"))
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		r := queryServer(t, ptr, dns.TypePTR, dnsServer())
+		for _, ans := range r.Answer {
+			if p, ok := ans.(*dns.PTR); ok && p.Ptr == want {
+				return
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("PTR %s -> %s did not appear within 60s", ptr, want)
+}
