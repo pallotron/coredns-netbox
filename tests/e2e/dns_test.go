@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -533,4 +534,83 @@ func TestPrimaryNSHasARecord(t *testing.T) {
 		}
 	}
 	require.True(t, found, "expected 192.0.2.53 in A answers for ns1.mycompany.com")
+}
+
+// axfrRecords returns every RR in the zone, for assertions that need rdata
+// rather than just owner names.
+func axfrRecords(t *testing.T, zone string) []dns.RR {
+	t.Helper()
+	tr := new(dns.Transfer)
+	m := new(dns.Msg)
+	m.SetAxfr(dns.Fqdn(zone))
+	env, err := tr.In(m, dnsServer())
+	require.NoError(t, err, "AXFR of %s", zone)
+	var out []dns.RR
+	for e := range env {
+		require.NoError(t, e.Error, "AXFR envelope error")
+		out = append(out, e.RR...)
+	}
+	return out
+}
+
+// N2 (acceptance-test matrix), negative half: an interface matching none of
+// the categorization patterns must produce no DNS record. The positive half
+// — a management interface becoming the canonical record and a BMC
+// interface the -bmc one — is TestDeviceCanonicalRecords above.
+//
+// The fixture hangs swp1 (10.9.16.1) off a device that already has mgmt0 and
+// bmc0, so the device still resolves; what is under test is that this extra
+// address appears nowhere. Only mgmt-VRF, mgmt-interface and BMC categories
+// are ever selected (internal/ipcategorizer.SelectDeviceIPs) with no
+// "any interface" fallback, so this pins that a fallback is never added by
+// accident — it would publish front-panel addresses fleet-wide.
+func TestUnmatchedInterfaceYieldsNoRecord(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDeviceRecords(t)
+
+	const swpIP = "10.9.16.1"
+
+	for _, rr := range axfrRecords(t, forwardZone("dc1")) {
+		if a, ok := rr.(*dns.A); ok {
+			assert.NotEqual(t, swpIP, a.A.String(),
+				"%s is on an uncategorized interface and must not be published (owner %s)",
+				swpIP, rr.Header().Name)
+		}
+	}
+
+	// And no reverse record either: PTRs are generated from the same
+	// selected set, so one here would mean the address slipped through.
+	ptr, err := dns.ReverseAddr(swpIP)
+	require.NoError(t, err)
+	r := queryServer(t, ptr, dns.TypePTR, dnsServer())
+	assert.Empty(t, r.Answer, "uncategorized interface address must have no PTR")
+}
+
+// N3 (acceptance-test matrix), catch-all half: a device whose name matches
+// none of the configured deviceNameParsers still gets a record — the flat
+// <device>.<zone> canonical — but no CNAME aliases, since aliases only come
+// from a matched parser (internal/ipcategorizer.DeviceDNSToRecords).
+//
+// This is the case that silently loses records if the fallback regresses:
+// gear outside the naming convention is exactly what nobody notices missing
+// until they try to reach it.
+func TestCatchAllDeviceGetsFlatCanonicalWithoutAliases(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDeviceRecords(t)
+
+	const (
+		catchAllName = "oob-sw-01.mycompany.com"
+		catchAllIP   = "10.9.24.1"
+	)
+
+	waitForDNS(t, catchAllName, dns.TypeA, catchAllIP, 60*time.Second)
+
+	// No alias points at it: a CNAME whose target is the canonical would
+	// mean the formatter matched a device it should not have.
+	for _, rr := range axfrRecords(t, forwardZone("dc1")) {
+		if cname, ok := rr.(*dns.CNAME); ok {
+			assert.NotEqual(t, dns.Fqdn(catchAllName), cname.Target,
+				"catch-all device must have no aliases, found CNAME %s", rr.Header().Name)
+		}
+	}
 }

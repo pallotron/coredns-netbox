@@ -67,4 +67,34 @@ for i in (1, 2):
         bmc_ip.assigned_object = bmc
         bmc_ip.save()
 
+# N2 negative leg: an interface that matches none of the categorization
+# patterns (swp1 is a front-panel/dataplane port, not mgmt/BMC/loopback)
+# must yield no DNS record at all. It hangs off a device that already has
+# mgmt0 and bmc0, so the device itself still resolves — what is under test
+# is that this extra address appears nowhere in the zone.
+dev1 = Device.objects.get(name="dc1-h1a-r101-prod-hv-01")
+swp, _ = Interface.objects.get_or_create(device=dev1, name="swp1", defaults={"type": "1000base-t"})
+swp_ip = IPAddress.objects.filter(address="10.9.16.1/24").first()
+if swp_ip is None:
+    swp_ip = IPAddress(address="10.9.16.1/24", status="active")
+    swp_ip.assigned_object = swp
+    swp_ip.save()
+
+# N3 catch-all leg: a device whose name matches none of the configured
+# deviceNameParsers falls back to <device>.<extracted zone> with no CNAME
+# aliases. "oob-sw-01" is deliberately outside the dc-hall-rack-env-role-idx
+# convention the dev parser expects.
+catchall, _ = Device.objects.get_or_create(
+    name="oob-sw-01",
+    defaults={"device_type": dtype, "role": role, "site": site},
+)
+catchall_mgmt, _ = Interface.objects.get_or_create(
+    device=catchall, name="mgmt0", defaults={"type": "1000base-t"}
+)
+catchall_ip = IPAddress.objects.filter(address="10.9.24.1/24").first()
+if catchall_ip is None:
+    catchall_ip = IPAddress(address="10.9.24.1/24", status="active")
+    catchall_ip.assigned_object = catchall_mgmt
+    catchall_ip.save()
+
 print(f"Device seed complete: {Device.objects.count()} devices")

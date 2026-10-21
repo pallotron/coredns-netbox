@@ -116,3 +116,17 @@ secondary:
 shrinkGuard:
   globalDropPercent: 25
   zoneDropPercent: 60
+
+# The e2e fixture is 18k records, and the chaos legs (N20/N21) move the whole
+# set twice in a single test — fetch, enrich, render, write — which is the
+# sidecar's memory high-water mark. The chart default was not enough for that
+# and the sidecar was OOMKilled mid-restore, which fails the *following*
+# tests rather than the one that caused it.
+resources:
+  sidecar:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 384Mi
