@@ -57,7 +57,7 @@ row named at the end, so the fix stays fixed.
 | **G9** | `poll_duration_seconds` measured only merge+write while its help text claimed the whole poll, hiding the fetch that dominates the cycle. | Fixed (#83) — new `netbox_sidecar_poll_cycle_duration_seconds`. Pinned by **N26**. |
 | **G10** | A damaged zone file was trusted instead of repaired — a regression introduced by the G5 fix, since a truncated file kept its valid header. | Fixed (#84) — a body hash over the file's own bytes. Pinned by **N25**. |
 | **G11** | Every rolling restart dropped queries (4 of 354 measured): no lameduck, so a pod stopped serving before its endpoint was removed. | Fixed (#85) — health now carries `lameduck 5s`. Pinned by **N24**. |
-| **G12** | IPv6 reverse names had swapped nibble pairs, so generated `ip6.arpa` names were ones no resolver would ask for — and a correctly configured zone matched nothing. IPv6 reverse could never have worked. | Fixed (#93, in review) — nibbles are emitted high-then-low per byte. Pinned by **N7**. |
+| **G12** | IPv6 reverse names had swapped nibble pairs, so generated `ip6.arpa` names were ones no resolver would ask for — and a correctly configured zone matched nothing. IPv6 reverse could never have worked. | Fixed (#93) — nibbles are emitted high-then-low per byte. Pinned by **N7**. |
 
 Two notes on G1, because the thresholds are the interesting part. A
 percentage trigger with an absolute floor was chosen over a fixed count:
@@ -82,7 +82,7 @@ deployment before changing them.
 | **N4** | Plain `dns_name` passthrough | A manual `dns_name` resolves regardless of device assignment | Seeded fixture | k3d CI | ✅ `TestARecordLookup`, `TestMultipleHosts`, `TestPTRRecordLookup` |
 | **N5** | CNAME collision policy (RFC 1034) | Alias versus manual A: the CNAME is dropped and the A wins. Same alias, different targets: all dropped. Every drop is ERROR-logged and the zone always parses | ORM-create a `dns_name` equal to a known alias; two devices with colliding aliases; poll | unit | ✅ `TestResolveCNAMECollisions`, `TestGenerateDropsCollidingCNAME` |
 | **N6** | Data hygiene | Garbage `dns_name` values never corrupt the zone: only A/AAAA/PTR/CNAME are emitted, offenders dropped and logged | ORM-insert hostile `dns_name` values; poll; AXFR and parse | k3d CI + unit | ✅ `TestFormatRejectsInvalidRenderedNames` (unit) · `TestMutate_N6_HostileDNSNames` + `TestGenerateDropsUnsafeDNSNames`. Found **G8** |
-| **N7** | IPv6 forward and reverse | An active IPv6 assignment yields an AAAA record, and its PTR answers under the RFC 3596 nibble name | ORM-create an IPv6 IP with a `dns_name`; poll; dig AAAA and `dig -x` | k3d CI + unit | ✅ `TestIPv6ForwardAAAA` · `TestIPv6ReversePTR` (builds the query with `dns.ReverseAddr`) · unit conformance against the reference encoder (#93, in review). Found **G12** |
+| **N7** | IPv6 forward and reverse | An active IPv6 assignment yields an AAAA record, and its PTR answers under the RFC 3596 nibble name | ORM-create an IPv6 IP with a `dns_name`; poll; dig AAAA and `dig -x` | k3d CI + unit | ✅ `TestIPv6ForwardAAAA` · `TestIPv6ReversePTR` (builds the query with `dns.ReverseAddr`) · unit conformance against the reference encoder. Found **G12** |
 
 ## N2x — Zone generation and publication
 
@@ -123,9 +123,9 @@ deployment before changing them.
 | ID | Test | What it must do | How it's exercised | Where | Status |
 |---|---|---|---|---|---|
 | **N27** | Full AXFR correctness | AXFR yields the complete zone including CNAMEs, parseable, matching the primary's own answers | Covered by existing rows | k3d CI | ✅ `TestAXFRTransfer`, `TestAXFRIncludesCNAME` |
-| **N28** | Secondary convergence after a change | The secondary serves the new serial within the NOTIFY delay rather than waiting out the refresh timer | Force a zone write; poll the secondary's SOA; measure | k3d CI | 🟡 In review (#92). The gap was real: no NOTIFY was ever sent, so convergence was bounded by the SOA refresh. NOTIFY now ships and the refresh default is much shorter; `TestChaos_N28_SecondaryConvergesOnNotify` measures convergence in single-digit milliseconds |
+| **N28** | Secondary convergence after a change | The secondary serves the new serial within the NOTIFY delay rather than waiting out the refresh timer | Force a zone write; poll the secondary's SOA; measure | k3d CI | ✅ `TestChaos_N28_SecondaryConvergesOnNotify` (#92). The gap was real: no NOTIFY was ever sent, so convergence was bounded by the SOA refresh. NOTIFY now ships and the refresh default is much shorter; measured convergence is single-digit milliseconds |
 | **N29** | Secondary serves through a primary outage | With the primary scaled to 0 the secondary answers existing names until SOA expiry, and recovers automatically | Scale the primary to 0 across refresh intervals; dig the secondary; scale back | k3d CI | ✅ `TestChaos_N29_SecondaryServesThroughPrimaryOutage` — answers throughout, no restart. Proves continued serving only; post-recovery transfer is N28's subject |
-| **N30** | Transfer ACL enforced | A restricted `transfer.to` REFUSEs unlisted clients while listed ones still transfer | Helm-upgrade to a restricted ACL; AXFR from an unlisted pod and from the secondary | k3d CI | ✅ `TestChaos_N30_TransferACLEnforced` (#86) — an unlisted client is refused while the secondary still serves, plus a template assertion that a restricted list renders only the named peers |
+| **N30** | Transfer ACL enforced | A restricted `transfer.to` REFUSEs unlisted clients while listed ones still transfer | Helm-upgrade to a restricted ACL; AXFR from an unlisted pod and from the secondary | k3d CI | ✅ `TestChaos_N30_TransferACLEnforced` (#86) — an unlisted client is refused while the secondary still transfers. The ACL matches on the client's **source address**, so a peer behind a Service must be listed by the address it actually sends from, not its VIP. No template-level assertion on the rendered peer list: the behaviour is pinned end-to-end instead |
 | **N31** | CNAME-only zone flagged | A zone of only CNAMEs logs the "secondaries must enumerate it" warning | Craft devices whose aliases land in an A-less zone; poll | unit | ✅ `TestCNAMEOnlyZones` |
 
 ## N6x — Control plane, webhook and metrics
@@ -165,7 +165,15 @@ The rows above needed these, all now in the repo:
 3. A continuous-query probe — `startProbe` / `probeStats` in
    `tests/e2e/chaos_test.go`, which reports any failure window. Used by
    N16, N17, N22, N24 and N29.
-4. A restricted-transfer values variant for N30.
+4. Restricted-transfer config for N30 — no separate values variant was
+   needed: the test helm-upgrades with `--set transfer.to[0]=<secondary pod
+   IP>` and restores the open dev ACL in cleanup.
+5. `coredns.reloadPollInterval` pinned to `10s` in `dev/coredns-netbox-values.yaml`.
+   The sidecar pushes a reload over gRPC after each write, so the chart's
+   60s default is only a fallback — but the failure-mode rows restart
+   CoreDNS pods deliberately, and a push that does not land then leaves the
+   worst case at 60s plus the cache TTL. Every DNS budget in the suite is
+   written against a 10s reload, so dev pins it; production keeps 60s.
 
 ## What is not covered
 
