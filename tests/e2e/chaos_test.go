@@ -181,11 +181,8 @@ func waitForDNSOn(t *testing.T, server, name, wantIP string, timeout time.Durati
 // answerHasIP reports whether server answers name with wantIP, reporting
 // false rather than failing when the query cannot be completed.
 func answerHasIP(server, name, wantIP string) bool {
-	c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
-	r, _, err := c.Exchange(m, server)
-	if err != nil || r.Rcode != dns.RcodeSuccess {
+	r, ok := tryQueryServer(name, dns.TypeA, server)
+	if !ok || r.Rcode != dns.RcodeSuccess {
 		return false
 	}
 	for _, ans := range r.Answer {
@@ -839,11 +836,8 @@ func waitZoneAnswering(t *testing.T, zone string, timeout time.Duration) {
 // helpers are wrong inside a convergence wait: a pod being replaced closes
 // connections, which is a state to wait through, not to fail on.
 func answersTolerant(server, name string) bool {
-	c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
-	m := new(dns.Msg)
-	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
-	r, _, err := c.Exchange(m, server)
-	return err == nil && r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
+	r, ok := tryQueryServer(name, dns.TypeA, server)
+	return ok && r.Rcode == dns.RcodeSuccess && len(r.Answer) > 0
 }
 
 // N21 (acceptance-test matrix) / gap G1: a NetBox fetch that succeeds but

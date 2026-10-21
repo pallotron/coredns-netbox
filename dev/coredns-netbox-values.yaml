@@ -9,6 +9,18 @@ coredns:
   image: coredns-netbox
   tag: dev
   pullPolicy: IfNotPresent
+  # The sidecar PUSHES a reload over gRPC after each write, so this interval
+  # only matters when that push does not land — CoreDNS restarting, a
+  # connection reset, a pod being replaced. All of which the chaos tests
+  # cause deliberately.
+  #
+  # The chart default of 60s is right for production but makes the e2e
+  # suite's timing model a fiction: every DNS budget here, and
+  # coreDNSReloadWait, is written against a 10s reload. A missed push left
+  # the real worst case at 60s + cache, which no 25s budget can cover, and
+  # the suite then failed intermittently on whichever assertion happened to
+  # follow the missed push.
+  reloadPollInterval: "10s"
   # Rewrite DC-labelled queries to the flat zone so both
   # server1-mgmt.dc1.mycompany.com and server1-mgmt.mycompany.com resolve.
   extraConfig: |
@@ -74,9 +86,10 @@ primaryNS: ns1.mycompany.com.
 primaryNSIP: 192.0.2.53
 adminEmail: admin.mycompany.com.
 
-# Reduce cache TTL for dev/e2e: ensures CoreDNS reload (10s) outlasts any
+# Reduce cache TTL for dev/e2e: ensures the CoreDNS reload outlasts any
 # cached positive or negative answer, so DNS checks after forceMerge are fresh.
 cacheTTL: 5
+
 
 # Allow zone transfers to anyone in dev
 transfer:
