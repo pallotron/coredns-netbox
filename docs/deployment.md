@@ -108,9 +108,30 @@ helm upgrade coredns-netbox ./helm/coredns-netbox \
 
 The primary CoreDNS can serve zone transfers to secondary DNS servers (CoreDNS, BIND, NSD, etc.) in remote data centers.
 
-The primary does not send DNS NOTIFY on zone changes; secondaries pick up
-updates by polling the SOA serial on the zone's refresh interval (see the
-`soa` values to tune it).
+### Propagation to secondaries
+
+The primary sends DNS NOTIFY (RFC 1996) whenever a zone's SOA serial
+changes, so a secondary normally transfers within seconds of the change.
+SOA refresh (default 300s) is the fallback, not the expected path.
+
+Two deployment details decide whether a NOTIFY actually arrives, and both
+fail silently — the zone still converges on the refresh timer, just slower:
+
+1. **`transfer.to` must list concrete addresses.** It doubles as the NOTIFY
+   target list (upstream's transfer plugin has no separate notify setting)
+   and wildcards are skipped, so `transfer.to: ["*"]` notifies nobody.
+2. **The secondary must accept the primary's source address.** A secondary
+   compares the NOTIFY's source IP against its own `transfer from` list, so
+   listing the primary's Service VIP is not enough when the packet leaves
+   with a pod IP — the secondary logs `Dropping notify` and waits. List the
+   address the primary actually sends from, or keep refresh low enough that
+   the fallback is acceptable.
+
+A NOTIFY to a Service VIP fronting several secondary replicas reaches only
+one of them; the rest wait for refresh. Give each replica its own reachable
+address if prompt convergence matters for all of them.
+
+Watch `coredns_netboxreload_notify_total` to confirm sends are happening.
 
 ### Primary: Allow AXFR
 

@@ -47,6 +47,7 @@ The `netboxreload` plugin exports its own metrics through the standard CoreDNS `
 |---|---|---|---|
 | `coredns_netboxreload_reload_total` | Counter | `trigger=grpc\|poll\|startup`, `result=reloaded\|unchanged\|error` | Zone reload attempts; `unchanged` means all source content matched the previous load and nothing was re-parsed |
 | `coredns_netboxreload_last_reload_timestamp_seconds` | Gauge | — | Unix timestamp of the last successful reload check (including unchanged ones) |
+| `coredns_netboxreload_notify_total` | Counter | `result=success\|error` | DNS NOTIFY sends, one per zone whose SOA serial changed. `success` only means the transfer plugin reported no error — a wildcard-only `transfer.to` sends nothing and still counts as success, so confirm against a secondary's own transfer logs |
 | `coredns_netboxreload_zones_loaded` | Gauge | — | Zones currently loaded in memory |
 
 In steady state expect `result="unchanged"` on nearly every poll tick; a growing `result="error"` rate means the plugin cannot reach its zone source.
