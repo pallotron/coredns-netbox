@@ -7,6 +7,7 @@ import (
 	"github.com/coredns/caddy"
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/transfer"
 )
 
 func init() {
@@ -25,6 +26,14 @@ func setup(c *caddy.Controller) error {
 	})
 
 	c.OnStartup(func() error {
+		// Resolve the transfer plugin first: the startup reload notifies
+		// every zone it loads, which tells secondaries that have been
+		// serving through a primary restart to re-check their serial.
+		if h := dnsserver.GetConfig(c).Handler("transfer"); h != nil {
+			if t, ok := h.(*transfer.Transfer); ok {
+				p.transfer = t
+			}
+		}
 		if err := p.reloadZones("startup"); err != nil {
 			return plugin.Error(pluginName, err)
 		}

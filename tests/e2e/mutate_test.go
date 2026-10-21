@@ -102,6 +102,28 @@ func waitNameGone(t *testing.T, name string, qtype uint16, timeout time.Duration
 	}, "%s (type %d) still served after deletion", name, qtype)
 }
 
+// soaSerialOn reads one server's SOA serial, reporting not-ok instead of
+// failing the test when the query cannot be completed. A connection can be
+// closed under us at any moment — a pod being replaced, the k3d load
+// balancer re-pointing after a redeploy — and inside a convergence wait
+// that is a state to retry through, not a verdict. The hard-failing query
+// helpers are right for assertions, wrong here.
+func soaSerialOn(server, zone string) (uint32, bool) {
+	c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(zone), dns.TypeSOA)
+	r, _, err := c.Exchange(m, server)
+	if err != nil || r.Rcode != dns.RcodeSuccess {
+		return 0, false
+	}
+	for _, ans := range r.Answer {
+		if soa, ok := ans.(*dns.SOA); ok {
+			return soa.Serial, true
+		}
+	}
+	return 0, false
+}
+
 // stableSerial returns the zone's SOA serial once every replica agrees on
 // it. Right after a zone write the replicas can serve different serials
 // for up to a reload interval; reading just one risks a stale baseline.
@@ -112,20 +134,12 @@ func stableSerial(t *testing.T, zone string) uint32 {
 		serials := map[uint32]bool{}
 		complete := true
 		for _, server := range dnsProbeServers() {
-			r := queryServer(t, dns.Fqdn(zone), dns.TypeSOA, server)
-			found := false
-			if r.Rcode == dns.RcodeSuccess {
-				for _, ans := range r.Answer {
-					if soa, ok := ans.(*dns.SOA); ok {
-						serials[soa.Serial] = true
-						found = true
-					}
-				}
-			}
+			serial, found := soaSerialOn(server, zone)
 			if !found {
 				complete = false
 				break
 			}
+			serials[serial] = true
 		}
 		if complete && len(serials) == 1 {
 			for s := range serials {

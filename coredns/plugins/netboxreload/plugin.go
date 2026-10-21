@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/transfer"
 	"github.com/miekg/dns"
 	"google.golang.org/grpc"
 )
@@ -24,6 +25,11 @@ type Plugin struct {
 	Port         string        // gRPC listen port, e.g. ":8054"
 	PollInterval time.Duration // fallback poll interval; 0 disables polling
 	SourceURL    string        // HTTP base URL for zone source; overrides Dir when set
+
+	// transfer is CoreDNS's transfer plugin, looked up at startup so this
+	// plugin can send NOTIFY when a zone's serial changes (see notify.go).
+	// Nil when the Corefile has no transfer block.
+	transfer *transfer.Transfer
 
 	mu         sync.RWMutex
 	zones      map[string]*zone // origin (e.g. "mycompany.com.") -> loaded zone
@@ -162,8 +168,17 @@ func (p *Plugin) reloadZones(trigger string) error {
 	if changed {
 		result = "reloaded"
 		p.mu.Lock()
+		previous := p.zones
 		p.zones = newZones
 		p.mu.Unlock()
+
+		// Tell the secondaries rather than leaving them to discover it on
+		// their own SOA refresh (#59). Only zones whose serial actually
+		// moved are worth a notify, and the send runs in the background so
+		// an unreachable peer cannot stall the reload.
+		if origins := serialChangedZones(previous, newZones); len(origins) > 0 {
+			go p.sendNotifies(origins)
+		}
 	}
 	reloadTotal.WithLabelValues(trigger, result).Inc()
 	lastReloadTimestamp.SetToCurrentTime()

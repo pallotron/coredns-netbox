@@ -189,12 +189,24 @@ shrinkGuard:
 adminEmail: admin.example.org.
 
 # SOA timers (seconds) for generated zones. refresh/retry control how often
-# secondaries poll the primary for updates (no NOTIFY is sent, so refresh is
-# the worst-case propagation delay to secondaries); expire is how long a
-# secondary keeps serving the zone after the primary becomes unreachable.
+# secondaries poll the primary; expire is how long a secondary keeps serving
+# the zone after the primary becomes unreachable.
+#
+# The primary now sends DNS NOTIFY when a zone's serial changes, so in a
+# healthy deployment secondaries converge in seconds and never wait for the
+# refresh timer. Refresh is what they fall back to when a NOTIFY does not
+# arrive — a wildcard transfer.to, a secondary that does not accept the
+# primary's source address, or a blocked return path (see
+# docs/deployment.md) — so it is the worst-case propagation delay, not the
+# expected one.
+#
+# 300/120 rather than the traditional 3600/900: zone content changes a
+# handful of times a day here, and a secondary only transfers when the
+# serial actually moved, so a shorter refresh costs one extra SOA query per
+# interval per secondary and buys a 5-minute worst case instead of an hour.
 soa:
-  refresh: 3600
-  retry: 900
+  refresh: 300
+  retry: 120
   expire: 604800
   minimum: 86400
 
@@ -274,8 +286,11 @@ forwardServers:
 # Maximum TTL (seconds) for cached DNS responses (both positive and negative).
 cacheTTL: 30
 
-# Primary: who can pull zones via AXFR. Secondaries poll for updates on the
-# SOA refresh interval; DNS NOTIFY is not sent on zone changes.
+# Primary: who can pull zones via AXFR. This list is also the NOTIFY target
+# list — upstream's transfer plugin has no separate notify setting, and it
+# skips wildcards, so transfer.to: ["*"] serves AXFR to anyone while
+# notifying nobody. List concrete peers to get prompt convergence (and a
+# real ACL).
 transfer:
   to: []
   # Production: ["10.0.1.5", "10.0.1.6"]
