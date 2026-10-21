@@ -2,8 +2,10 @@ package zonediscovery
 
 import (
 	"net"
+	"strings"
 	"testing"
 
+	"github.com/miekg/dns"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,11 +13,11 @@ import (
 
 func TestReverseZoneDiscoverer_IPv4(t *testing.T) {
 	tests := []struct {
-		name       string
-		ipv4Zones  []string
-		records    []netboxclient.IPRecord
-		wantZones  map[string]int        // zone -> record count
-		wantPTRs   map[string]string     // zone -> first PTR name
+		name      string
+		ipv4Zones []string
+		records   []netboxclient.IPRecord
+		wantZones map[string]int    // zone -> record count
+		wantPTRs  map[string]string // zone -> first PTR name
 	}{
 		{
 			name:      "Single parent zone covers all",
@@ -115,8 +117,13 @@ func TestReverseZoneDiscoverer_IPv6(t *testing.T) {
 		wantZoneCount int
 	}{
 		{
+			// Was "b.8.0.d.0.1.2.0.ip6.arpa" — the pre-G12 nibble order,
+			// which is not the RFC 3596 name for this prefix. This test
+			// only counted zones and checked the suffix, so it passed on
+			// names no resolver would ever ask for; TestReverseIPv6*
+			// below assert the names themselves.
 			name:      "IPv6 single parent zone (2001:db8::/32)",
-			ipv6Zones: []string{"b.8.0.d.0.1.2.0.ip6.arpa"},
+			ipv6Zones: []string{"8.b.d.0.1.0.0.2.ip6.arpa"},
 			records: []netboxclient.IPRecord{
 				{DNSName: "server1.example.com", Address: "2001:db8::1", Family: 6},
 				{DNSName: "server2.example.com", Address: "2001:db8::2", Family: 6},
@@ -135,11 +142,14 @@ func TestReverseZoneDiscoverer_IPv6(t *testing.T) {
 				t.Errorf("got %d zones, want %d", len(zones), tt.wantZoneCount)
 			}
 
-			// Verify all zones end with .ip6.arpa
+			// Verify all zones end with .ip6.arpa, and are the zone that
+			// was actually configured rather than some other name that
+			// merely has the right suffix.
 			for zone := range zones {
 				if !hasIP6ArpaSuffix(zone) {
 					t.Errorf("zone %q doesn't end with .ip6.arpa", zone)
 				}
+				assert.Contains(t, tt.ipv6Zones, zone, "discovered zone must be a configured one")
 			}
 		})
 	}
@@ -147,11 +157,11 @@ func TestReverseZoneDiscoverer_IPv6(t *testing.T) {
 
 func TestReverseIPv4(t *testing.T) {
 	tests := []struct {
-		name      string
-		zones     []string
-		ip        string
-		wantZone  string
-		wantPTR   string
+		name     string
+		zones    []string
+		ip       string
+		wantZone string
+		wantPTR  string
 	}{
 		{
 			name:     "10.1.2.3 with /8 parent zone",
@@ -222,4 +232,46 @@ func TestReverseDiscoverSkipsCNAMEs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, zones["10.in-addr.arpa"], 1, "only the address record produces a PTR")
 	assert.Equal(t, "host1.example.org", zones["10.in-addr.arpa"][0].DNSName)
+}
+
+// G12: IPv6 reverse names must match RFC 3596 exactly, because a resolver
+// asks for the name the standard defines and nothing else. The previous
+// implementation emitted each byte's low nibble before its high one and
+// then reversed the sequence, which swaps every pair: 2001:db8::1 landed
+// under b.8.0.d.0.1.2.0.ip6.arpa instead of 8.b.d.0.1.0.0.2.ip6.arpa. Both
+// halves of that are broken — the generated name is unreachable, and a zone
+// configured with the correct RFC form matched nothing at all, so the
+// address was silently dropped.
+//
+// miekg/dns.ReverseAddr is the reference: it is what the resolver side of
+// the e2e suite uses to build the query.
+func TestReverseIPv6MatchesRFC3596(t *testing.T) {
+	const zone = "8.b.d.0.1.0.0.2.ip6.arpa" // 2001:db8::/32
+
+	for _, addr := range []string{
+		"2001:db8::1",
+		"2001:db8::dead:beef",
+		"2001:db8:0:1:2:3:4:5",
+	} {
+		t.Run(addr, func(t *testing.T) {
+			d := NewReverseZoneDiscoverer(nil, []string{zone})
+			gotZone, gotPTR, err := d.reverseIPv6(net.ParseIP(addr))
+			require.NoError(t, err)
+			assert.Equal(t, zone, gotZone)
+
+			want, err := dns.ReverseAddr(addr)
+			require.NoError(t, err)
+			assert.Equal(t, strings.TrimSuffix(want, "."), gotPTR+"."+gotZone,
+				"owner name must be the RFC 3596 form")
+		})
+	}
+}
+
+// A zone configured in the correct RFC form must match; the old swapped
+// form must not, so a stale config fails loudly rather than producing
+// unreachable names.
+func TestReverseIPv6RejectsSwappedZone(t *testing.T) {
+	d := NewReverseZoneDiscoverer(nil, []string{"b.8.0.d.0.1.2.0.ip6.arpa"})
+	_, _, err := d.reverseIPv6(net.ParseIP("2001:db8::1"))
+	assert.Error(t, err, "the pre-G12 nibble order must no longer match")
 }
