@@ -52,11 +52,13 @@ func forwardZone(dc string) string {
 // run's gRPC operations rewrote it with unexpected records.
 func waitForPrimary(t *testing.T) {
 	t.Helper()
-	probe := hostFQDN("server1-mgmt", "dc1")
+	name := hostFQDN("server1-mgmt", "dc1")
 	wantIP := net.ParseIP("10.1.0.1")
+	var probe dnsProbeStats
+	server := dnsServer()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		r, ok := tryQueryServer(probe, dns.TypeA, dnsServer())
+		r, ok := probe.query(name, dns.TypeA, server)
 		if ok && r.Rcode == dns.RcodeSuccess {
 			for _, ans := range r.Answer {
 				if a, ok := ans.(*dns.A); ok && a.A.Equal(wantIP) {
@@ -66,7 +68,7 @@ func waitForPrimary(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("primary DNS not ready: timed out waiting for 10.1.0.1")
+	t.Fatalf("primary DNS not ready: timed out waiting for 10.1.0.1%s", probe.diagnose(server))
 }
 
 func query(t *testing.T, name string, qtype uint16) *dns.Msg {
@@ -96,6 +98,57 @@ func queryServer(t *testing.T, name string, qtype uint16, server string) *dns.Ms
 	r, err := exchange(name, qtype, server)
 	require.NoError(t, err, "DNS query for %s failed", name)
 	return r
+}
+
+// dnsProbeStats records how a wait loop's queries actually fared, so that a
+// timeout can say which of two very different things went wrong.
+//
+// The tolerant query primitive swallows transport errors on purpose -- a
+// retry loop must not die on one refused connection. The cost is that
+// "the record was never published" and "nothing ever answered us" produce
+// the identical timeout message, and the second one sends you hunting
+// through the publish path for a bug that is not there. That happened: a
+// CI run reported a record missing for 45s while the sidecar log showed it
+// written and both CoreDNS replicas reloaded one second later. None of the
+// ~225 queries had reached the server at all.
+//
+// So count outcomes as the loop runs and let the failure say which it was.
+type dnsProbeStats struct {
+	attempts int
+	answered int
+	lastErr  error
+}
+
+// query is the counting form of tryQueryServer.
+func (s *dnsProbeStats) query(name string, qtype uint16, server string) (*dns.Msg, bool) {
+	r, err := exchange(name, qtype, server)
+	s.attempts++
+	if err != nil {
+		s.lastErr = err
+		return nil, false
+	}
+	s.answered++
+	return r, true
+}
+
+// diagnose returns a clause naming the transport outcome, for appending to
+// a wait loop's timeout message.
+func (s *dnsProbeStats) diagnose(server string) string {
+	switch {
+	case s.attempts == 0:
+		return fmt.Sprintf(" (no queries were attempted against %s)", server)
+	case s.answered == 0:
+		return fmt.Sprintf(" -- DNS UNREACHABLE: 0 of %d queries to %s were answered (last error: %v). "+
+			"The record may well have been published; this is a transport failure, not a publish failure",
+			s.attempts, server, s.lastErr)
+	case s.answered < s.attempts:
+		return fmt.Sprintf(" (%d of %d queries to %s were answered; last transport error: %v -- "+
+			"intermittent reachability, so treat the absence as unproven)",
+			s.answered, s.attempts, server, s.lastErr)
+	default:
+		return fmt.Sprintf(" (all %d queries to %s were answered, so the record was genuinely absent)",
+			s.attempts, server)
+	}
 }
 
 // tryQueryServer is the wait-loop primitive: it reports not-ok rather than
