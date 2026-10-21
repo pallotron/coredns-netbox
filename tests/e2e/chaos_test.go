@@ -537,8 +537,11 @@ func TestChaos_N29_SecondaryServesThroughPrimaryOutage(t *testing.T) {
 	waitStatefulSetReady(t, "coredns-netbox", "coredns-netbox", 10*time.Minute)
 	waitForPrimary(t)
 
-	// Recovery: a change made after the outage must reach the secondary
-	// again, proving transfers resumed without intervention.
+	// Recovery: the secondary must still be answering after the primary
+	// comes back. Note what this does NOT show — the name queried below
+	// was already in the secondary's copy before the outage, so nothing
+	// here proves a transfer resumed. Watching the secondary pick up a
+	// change made after recovery is N28's job.
 	stats := probe.Stop()
 	require.Greater(t, stats.Total, 0, "probe must have run")
 	require.Zero(t, stats.Failures,
