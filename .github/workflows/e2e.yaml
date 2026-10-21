@@ -59,30 +59,14 @@ jobs:
           make test.e2e
           make test.e2e.chaos
 
-      - name: Collect logs on failure
+      - name: Collect diagnostics on failure
         if: failure()
-        run: |
-          echo "=== Cluster Info ==="
-          kubectl cluster-info dump
+        run: ./dev/collect-diagnostics.sh "$RUNNER_TEMP/e2e-diag"
 
-          echo "=== Netbox Pods ==="
-          kubectl get pods -n netbox
-          kubectl describe pods -n netbox
-
-          echo "=== CoreDNS Pods ==="
-          kubectl get pods -n coredns-netbox
-          kubectl describe pods -n coredns-netbox
-
-          echo "=== Netbox Logs ==="
-          kubectl logs -n netbox deploy/netbox -c netbox --tail=100 || true
-
-          echo "=== CoreDNS Logs ==="
-          kubectl logs -n coredns-netbox -l app.kubernetes.io/component=primary --all-containers --tail=100 || true
-
-      - name: Upload logs as artifacts
+      - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-test-logs
-          path: /tmp/k3d-*.log
+          name: e2e-diagnostics
+          path: ${{ runner.temp }}/e2e-diag
           retention-days: 7
