@@ -359,13 +359,19 @@ resources:
     limits:
       cpu: 200m
       memory: 128Mi
+  # Sidecar memory scales with the record set: it holds the fetched records,
+  # the enriched copy and the rendered zones at once, and a whole-set change
+  # (a mass re-activation, a first fetch after an outage) is the high-water
+  # mark. 64Mi was not enough for even a modest NetBox — the e2e fixture
+  # OOMKilled the sidecar mid-restore — so the default now has headroom.
+  # Size it against netbox_sidecar_netbox_records_fetched for your own data.
   sidecar:
     requests:
       cpu: 50m
-      memory: 32Mi
+      memory: 64Mi
     limits:
       cpu: 100m
-      memory: 64Mi
+      memory: 256Mi
   zoneInit:
     requests:
       cpu: 50m

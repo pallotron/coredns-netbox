@@ -727,6 +727,30 @@ func waitMetric(t *testing.T, seriesPrefix string, want float64, timeout time.Du
 		seriesPrefix, want, timeout, last, seen)
 }
 
+// waitPollCycleIdle blocks until a complete poll cycle finishes, so the next
+// test starts on a sidecar that is not mid-fetch.
+//
+// ForceNetboxPoll only signals; the poll itself is asynchronous and the
+// signal channel coalesces. A test that changes NetBox and forces a poll
+// while a cycle is already in flight can therefore have its change land in
+// the cycle *after* that one — adding a whole poll interval to what the
+// test budgets for a reload. The tests that move the entire record set are
+// the ones that leave a cycle running, so they wait for a clean boundary
+// before handing over.
+func waitPollCycleIdle(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	const series = `netbox_sidecar_poll_total{result="success"}`
+	before, _ := metricValue(fetchMetrics(t), series)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if now, ok := metricValue(fetchMetrics(t), series); ok && now > before {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Logf("no poll cycle completed within %s; continuing anyway", timeout)
+}
+
 // forcePollAllowShrink triggers a NetBox poll carrying single-use operator
 // consent for the shrink guard — the documented way to clear a refusal.
 func forcePollAllowShrink(t *testing.T) {
@@ -840,6 +864,7 @@ func TestChaos_N21_MassRemovalRefusedUntilOverride(t *testing.T) {
 		// Never hand over a blocked guard: the restore is growth, so the poll
 		// above must have cleared it.
 		waitMetric(t, "netbox_sidecar_shrink_guard_blocked", 0, 60*time.Second)
+		waitPollCycleIdle(t, 90*time.Second)
 	})
 
 	massDeprecate(t, 90)
@@ -877,4 +902,85 @@ func TestChaos_N21_MassRemovalRefusedUntilOverride(t *testing.T) {
 	require.True(t, ok, "overrides must be counted")
 	assert.GreaterOrEqual(t, overrides, 1.0)
 	assert.Less(t, len(axfrNames(t, zone)), namesBefore/2, "the zone must have actually shrunk")
+}
+
+// N20 (acceptance-test matrix) / gap G1, the unconditional half: a NetBox
+// fetch that succeeds with HTTP 200 and zero records must never replace the
+// published zones. This is the catastrophic case — a token scoped to
+// nothing after a permissions change, a bad bulk edit — because under CISv2
+// the wipe would advance the serial, fire NOTIFY and fan an empty zone out
+// to every site secondary.
+//
+// Unlike the percentage rules exercised by N21, this one cannot be
+// overridden (shrinkguard.EmptyResult): there is no legitimate reason to
+// publish "NetBox returned nothing", so the only way out is for NetBox to
+// return records again.
+func TestChaos_N20_EmptyResultRefusedAndUnoverridable(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	const zone = "mycompany.com"
+	canary := hostFQDN("server1-mgmt", "dc1")
+
+	waitZoneAnswering(t, zone, 60*time.Second)
+	waitForDNS(t, canary, dns.TypeA, "10.1.0.1", 25*time.Second)
+	serialBefore := stableSerial(t, zone)
+	namesBefore := len(axfrNames(t, zone))
+
+	before := fetchMetrics(t)
+	emptyBefore, _ := metricValue(before, "netbox_sidecar_netbox_empty_response_total")
+
+	t.Cleanup(func() {
+		netboxORM(t, `
+from ipam.models import IPAddress
+print("reactivated", IPAddress.objects.exclude(status="active").update(status="active"))
+`)
+		forcePoll(t)
+		// Same convergence barrier as N21: this moves the entire record set
+		// twice, and the tests that follow budget seconds for their own
+		// changes.
+		waitAllServers(t, 3*time.Minute, func(server string) bool {
+			return answersTolerant(server, canary)
+		}, "every replica must serve the restored records before the next test runs")
+		stableSerial(t, zone)
+		waitMetric(t, "netbox_sidecar_shrink_guard_blocked", 0, 60*time.Second)
+		waitPollCycleIdle(t, 90*time.Second)
+	})
+
+	// Every address non-active: the publish filter is status=active, so the
+	// fetch succeeds and returns nothing at all.
+	out := netboxORM(t, `
+from ipam.models import IPAddress
+print("deprecated", IPAddress.objects.filter(status="active").update(status="deprecated"))
+`)
+	t.Logf("N20 deprecate-all: %s", strings.TrimSpace(out))
+	forcePoll(t)
+
+	waitMetric(t, "netbox_sidecar_shrink_guard_blocked", 1, 90*time.Second)
+	during := fetchMetrics(t)
+	emptyDuring, ok := metricValue(during, "netbox_sidecar_netbox_empty_response_total")
+	require.True(t, ok, "empty_response_total series must exist")
+	assert.Greater(t, emptyDuring, emptyBefore, "an empty fetch must be counted")
+	refusals, ok := metricValue(during, `netbox_sidecar_shrink_guard_refusals_total{scope="empty"}`)
+	require.True(t, ok, "refusals must be counted under the empty scope")
+	assert.GreaterOrEqual(t, refusals, 1.0)
+
+	// Nothing served may have changed.
+	assert.Equal(t, serialBefore, stableSerial(t, zone),
+		"an empty fetch must not advance the serial (it would NOTIFY every secondary)")
+	assert.Len(t, axfrNames(t, zone), namesBefore, "the zone must still hold every name")
+	for _, server := range dnsProbeServers() {
+		r := queryServer(t, canary, dns.TypeA, server)
+		assert.NotEmpty(t, r.Answer, "%s must keep answering %s", server, canary)
+	}
+
+	// Operator consent does not apply here, unlike N21's percentage rules.
+	forcePollAllowShrink(t)
+	time.Sleep(10 * time.Second)
+	assert.Equal(t, serialBefore, stableSerial(t, zone),
+		"an empty result must stay refused even with an override armed")
+	after := fetchMetrics(t)
+	assert.Len(t, axfrNames(t, zone), namesBefore, "and the zone must still be intact")
+	stillBlocked, _ := metricValue(after, "netbox_sidecar_shrink_guard_blocked")
+	assert.Equal(t, 1.0, stillBlocked, "the guard must still be refusing")
 }
