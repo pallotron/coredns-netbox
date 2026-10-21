@@ -172,7 +172,11 @@ dig @127.0.0.1 -p 15353 +tcp AXFR mycompany.com
 |---|---|
 | [Configuration](docs/configuration.md) | Interface categorization, reverse DNS, Helm values, env vars, zone discovery modes |
 | [Deployment](docs/deployment.md) | Production install, HA setup, zone transfers, external secondaries |
+| [NetBox webhook](docs/netbox-webhook.md) | Applying `ipam.ipaddress` changes immediately, without waiting for a poll |
+| [DC label stripping](docs/dc-label-stripping.md) | Collapsing per-DC zones into a single zone, and why |
 | [gRPC API](docs/grpc-api.md) | Dynamic record injection, force poll/merge, zone reload, conflict handling |
 | [Observability](docs/observability.md) | Prometheus metrics reference |
+| [Scale and capacity](docs/scale.md) | Where the poll cycle's time goes, which numbers to watch, how to re-measure for your deployment |
 | [Development](docs/development.md) | Prerequisites, quick start, project structure, Makefile targets |
+| [Acceptance tests](docs/acceptance-tests.md) | Behaviour matrix, failure modes, and the defects writing it surfaced |
 | [Analyzer CLI](cmd/analyzer/README.md) | Analyze Netbox data and preview DNS records before deploying |
