@@ -131,6 +131,24 @@ A NOTIFY to a Service VIP fronting several secondary replicas reaches only
 one of them; the rest wait for refresh. Give each replica its own reachable
 address if prompt convergence matters for all of them.
 
+Two more things that quietly cost you the NOTIFY and leave refresh as the
+only path:
+
+- **Include the port when it is not 53.** `transfer.to` entries accept
+  `host:port` and default to 53, so a secondary published on another port
+  must be named as `10.0.1.5:5354`. Sent to the wrong port the NOTIFY is
+  answered by whatever else is listening — in a Kubernetes cluster that is
+  typically a SERVFAIL from an unrelated service, with nothing in the
+  secondary's log to show for it.
+- **Several primary replicas can waste a NOTIFY.** Each replica notifies
+  after its own reload, but the secondary responds by querying the SOA of
+  whatever is first in its own `transfer from` list — which may be a
+  replica that has not reloaded yet. It logs `no SOA serial increase seen`
+  and waits for its refresh timer. The window is short (replicas reload
+  within seconds of each other) and the next change notifies again, but it
+  means prompt convergence is best-effort rather than guaranteed with a
+  multi-replica primary. Keeping `soa.refresh` low is what bounds it.
+
 Watch `coredns_netboxreload_notify_total` to confirm sends are happening.
 
 ### Primary: Allow AXFR

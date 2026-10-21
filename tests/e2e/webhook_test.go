@@ -58,7 +58,11 @@ func TestWebhook_CreatedEventUpdatesDNSWithoutPoll(t *testing.T) {
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(name), dns.TypeA)
 
-	deadline := time.Now().Add(15 * time.Second)
+	// 25s, not 15s: the worst case is a full CoreDNS reload interval (10s)
+	// plus the cache TTL (5s), so a 15s budget had no headroom at all and
+	// failed intermittently in CI. The claim being tested is that the
+	// webhook beats POLL_INTERVAL (60s), which 25s still demonstrates.
+	deadline := time.Now().Add(25 * time.Second)
 	var found bool
 	for time.Now().Before(deadline) {
 		r, _, err := c.Exchange(msg, dnsServer())

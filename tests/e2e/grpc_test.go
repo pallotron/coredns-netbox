@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"github.com/miekg/dns"
+	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -45,7 +45,10 @@ func forceMerge(t *testing.T, conn *grpc.ClientConn, ctx context.Context) {
 	require.Eventually(t, func() bool {
 		status, err := cc.GetStatus(ctx, &pb.GetStatusRequest{})
 		return err == nil && status.LastMergeWriteUnix > before.LastMergeWriteUnix
-	}, 15*time.Second, 100*time.Millisecond, "zone write not confirmed within 15s")
+		// A forced merge is a signal, not a synchronous call: it can queue
+		// behind a poll cycle that is already fetching the whole record set,
+		// so the confirmation budget has to cover that fetch as well.
+	}, 30*time.Second, 100*time.Millisecond, "zone write not confirmed within 30s")
 
 	time.Sleep(coreDNSReloadWait)
 }
