@@ -3,7 +3,9 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -158,19 +160,40 @@ func (p *dnsProbe) FailuresSoFar() int {
 // waitForDNSOn is waitForDNS against an explicit server (the secondary, in
 // N29's case, which must be queried directly rather than via the primary's
 // load-balanced service).
+// waitForDNSOn waits for a server to answer name with wantIP.
+//
+// Transport errors inside the loop are treated as "not yet", not as a
+// verdict: these waits routinely span a pod being replaced or a load
+// balancer re-pointing, where a closed connection is exactly the state
+// being waited through. Only the deadline fails the test.
 func waitForDNSOn(t *testing.T, server, name, wantIP string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		r := queryServer(t, name, dns.TypeA, server)
-		for _, ans := range r.Answer {
-			if a, ok := ans.(*dns.A); ok && a.A.String() == wantIP {
-				return
-			}
+		if answerHasIP(server, name, wantIP) {
+			return
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Fatalf("%s -> %s did not appear on %s within %s", name, wantIP, server, timeout)
+}
+
+// answerHasIP reports whether server answers name with wantIP, reporting
+// false rather than failing when the query cannot be completed.
+func answerHasIP(server, name, wantIP string) bool {
+	c := &dns.Client{Timeout: 5 * time.Second, Net: "tcp"}
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
+	r, _, err := c.Exchange(m, server)
+	if err != nil || r.Rcode != dns.RcodeSuccess {
+		return false
+	}
+	for _, ans := range r.Answer {
+		if a, ok := ans.(*dns.A); ok && a.A.String() == wantIP {
+			return true
+		}
+	}
+	return false
 }
 
 // axfrNames transfers a zone and returns every owner name in it. A zone
@@ -986,4 +1009,218 @@ print("deprecated", IPAddress.objects.filter(status="active").update(status="dep
 	assert.Len(t, axfrNames(t, zone), namesBefore, "and the zone must still be intact")
 	stillBlocked, _ := metricValue(after, "netbox_sidecar_shrink_guard_blocked")
 	assert.Equal(t, 1.0, stillBlocked, "the guard must still be refusing")
+}
+
+// podIPs returns the pod IPs matching a label selector.
+func podIPs(t *testing.T, ns, selector string) []string {
+	t.Helper()
+	out := strings.TrimSpace(kubectlOut(t, "-n", ns, "get", "pod", "-l", selector,
+		"-o", "jsonpath={range .items[*]}{.status.podIP}{\"\\n\"}{end}"))
+	var ips []string
+	for _, line := range strings.Split(out, "\n") {
+		if ip := strings.TrimSpace(line); ip != "" {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+// allowNotifyFrom adds the given addresses to every `secondary` block in the
+// rendered secondary Corefile and restarts the secondary alone.
+//
+// It edits the ConfigMap directly rather than going through Helm on purpose.
+// A secondary accepts a NOTIFY only from an address in its own transfer-from
+// list, matched against the packet's source IP, and in Kubernetes that
+// source is the primary's pod IP — not the Service VIP the chart configures.
+// Rendering this through Helm would rewrite the ConfigMap, which both
+// workloads checksum, restarting the primary and handing it fresh pod IPs
+// that are no longer the ones just written here. A direct ConfigMap edit
+// restarts nothing, so the primary keeps the addresses this list names.
+func allowNotifyFrom(t *testing.T, ns string, addrs []string) {
+	t.Helper()
+	require.NotEmpty(t, addrs, "no primary pod IPs to allow")
+
+	corefile := kubectlOut(t, "-n", ns, "get", "configmap", "coredns-netbox",
+		"-o", "jsonpath={.data.Corefile-secondary}")
+	require.Contains(t, corefile, "secondary {", "secondary Corefile must have a secondary block")
+
+	var extra strings.Builder
+	for _, ip := range addrs {
+		extra.WriteString("\n            transfer from " + ip + ":53")
+	}
+	patched := strings.ReplaceAll(corefile, "secondary {", "secondary {"+extra.String())
+
+	payload, err := json.Marshal(map[string]any{"data": map[string]string{"Corefile-secondary": patched}})
+	require.NoError(t, err)
+	kubectlOut(t, "-n", ns, "patch", "configmap", "coredns-netbox", "--type", "merge", "-p", string(payload))
+
+	kubectlOut(t, "-n", ns, "rollout", "restart", "deployment/coredns-netbox-secondary")
+	kubectlOut(t, "-n", ns, "rollout", "status", "deployment/coredns-netbox-secondary", "--timeout=5m")
+}
+
+// secondarySerial reads the secondary's SOA serial, tolerating a transport
+// error as "not yet" — the pod may be mid-restart.
+func secondarySerial(t *testing.T, zone string) (uint32, bool) {
+	t.Helper()
+	return soaSerialOn(dnsSecondaryServer(), zone)
+}
+
+// N28 (acceptance-test matrix): a change on the primary must reach the
+// secondary promptly, and by NOTIFY rather than by the refresh timer.
+//
+// This is the row that was hiding the propagation gap: before #59 phase 1
+// the primary never notified at all, so the only path was the secondary's
+// SOA refresh — an hour on the old chart default. The test therefore has to
+// prove the mechanism, not just the outcome: with SOA refresh at 300s, a
+// convergence measured in seconds can only have come from a NOTIFY, and the
+// secondary's own log says so in as many words.
+//
+// Deployment shape matters here and is the reason for the fixture: the dev
+// default transfer.to is '*', which the transfer plugin skips when
+// notifying, and the secondary only accepts NOTIFY from the primary's pod
+// address. Both are production-relevant — this is what a real deployment
+// must get right for NOTIFY to do anything at all.
+func TestChaos_N28_SecondaryConvergesOnNotify(t *testing.T) {
+	requireChaos(t)
+	waitForPrimary(t)
+
+	const ns = "coredns-netbox"
+	zone := forwardZone("dc1")
+
+	// The Service IP survives pod restarts, so the primary can be pointed at
+	// it before the pods are recreated.
+	secondarySvcIP := strings.TrimSpace(kubectlOut(t, "-n", ns, "get", "svc",
+		"coredns-netbox-secondary", "-o", "jsonpath={.spec.clusterIP}"))
+	require.NotEmpty(t, secondarySvcIP, "secondary service IP must be readable")
+	// The notify target needs the port the secondary is actually reachable
+	// on. The transfer plugin defaults to 53, and this deployment's
+	// secondary Service publishes 5354 — a NOTIFY to :53 lands on a Service
+	// port that does not exist and is answered by something else entirely
+	// (SERVFAIL), with nothing in the secondary's log to show for it.
+	secondarySvcPort := strings.TrimSpace(kubectlOut(t, "-n", ns, "get", "svc",
+		"coredns-netbox-secondary", "-o", "jsonpath={.spec.ports[0].port}"))
+	require.NotEmpty(t, secondarySvcPort, "secondary service port must be readable")
+	notifyTarget := net.JoinHostPort(secondarySvcIP, secondarySvcPort)
+
+	// Start from Helm-owned state. The patch below takes kubectl ownership
+	// of a ConfigMap field, and a run that died before its cleanup leaves
+	// that ownership behind — which makes this test's own first deploy fail
+	// with a field conflict. Deleting is idempotent and Helm recreates it.
+	kubectlOut(t, "-n", ns, "delete", "configmap", "coredns-netbox", "--ignore-not-found")
+
+	t.Cleanup(func() {
+		kubectlOut(t, "-n", ns, "delete", "configmap", "coredns-netbox", "--ignore-not-found")
+		helmDeploy(t) // also restores the chart's replica count
+		kubectlOut(t, "-n", ns, "rollout", "restart",
+			"statefulset/coredns-netbox", "deployment/coredns-netbox-secondary")
+		waitStatefulSetReady(t, ns, "coredns-netbox", 10*time.Minute)
+		waitDeployReady(t, ns, "coredns-netbox-secondary", 10*time.Minute)
+		waitForPrimary(t)
+	})
+
+	// Keep the wildcard AND name the secondary explicitly. The two entries
+	// do different jobs: '*' keeps AXFR working from whatever pod IP the
+	// secondary currently has, while the explicit address is what actually
+	// receives the NOTIFY, since the transfer plugin skips wildcards when
+	// notifying. Restricting the ACL to the Service IP instead would refuse
+	// the transfer outright — AXFR arrives from the secondary's pod IP, not
+	// the VIP (the same source-address rule N30 pins) — and pinning it to a
+	// pod IP cannot work either, because the deploy that applies it
+	// restarts the secondary and changes that IP.
+	// replicaCount goes through Helm rather than kubectl scale: scaling
+	// directly hands ownership of .spec.replicas to kubectl, and every
+	// later helm apply then fails with a field conflict — including this
+	// test's own cleanup.
+	helmDeploy(t,
+		"--set", "replicaCount=1",
+		"--set", "transfer.to[0]=*",
+		"--set", "transfer.to[1]="+notifyTarget)
+	waitStatefulSetReady(t, ns, "coredns-netbox", 10*time.Minute)
+	waitForPrimary(t)
+
+	// One primary replica for the measurement. With several, a NOTIFY can
+	// be wasted: each replica notifies after its own reload, but the
+	// secondary always probes the SOA of whatever is first in its own
+	// transfer-from list, which may be a replica that has not reloaded yet.
+	// It then logs "no SOA serial increase seen" and waits for its refresh
+	// timer. That is a real production characteristic (documented in
+	// docs/deployment.md), not an artifact of this test — but it makes the
+	// timing non-deterministic, and what this row measures is the NOTIFY
+	// path itself. Multi-replica behaviour is N24's and N29's subject.
+	//
+	// Now the primary's pod IP is settled, and teaching the secondary to
+	// accept NOTIFY from it restarts only the secondary — which the
+	// primary's config does not depend on, since its notify target is the
+	// Service address.
+	allowNotifyFrom(t, ns, podIPs(t, ns, "app.kubernetes.io/component=primary"))
+	waitForDNSOn(t, dnsSecondaryServer(), hostFQDN("server1-mgmt", "dc1"), "10.1.0.1", 3*time.Minute)
+
+	before, ok := secondarySerial(t, zone)
+	require.True(t, ok, "secondary must serve the zone before the change")
+	sinceLog := time.Now()
+
+	// A dynamic record is the shortest path to a serial bump on the primary.
+	name := dynamicFQDN("n28-notify")
+	conn := grpcConn(t)
+	ctx := authCtx(t)
+	zc := pb.NewDynamicZoneServiceClient(conn)
+	_, err := zc.UpsertRecord(ctx, &pb.UpsertRecordRequest{
+		Zone:   zone,
+		Record: &pb.Record{DnsName: name, Address: "10.79.0.1", Family: 4},
+	})
+	require.NoError(t, err, "UpsertRecord")
+	t.Cleanup(func() {
+		_, _ = zc.DeleteRecord(ctx, &pb.DeleteRecordRequest{Zone: zone, DnsName: name})
+	})
+	forceMerge(t, conn, ctx)
+	start := time.Now()
+
+	// Converge well inside the refresh interval, which is the whole point.
+	deadline := time.Now().Add(90 * time.Second)
+	var elapsed time.Duration
+	for time.Now().Before(deadline) {
+		if serial, ok := secondarySerial(t, zone); ok && serial != before {
+			elapsed = time.Since(start)
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if elapsed == 0 {
+		// Dump what each side saw: the chain has several links that fail
+		// silently (no notify sent, notify dropped on arrival, serial not
+		// actually advanced), and they are indistinguishable from "slow".
+		t.Logf("primary CoreDNS logs:\n%s", kubectlOut(t, "-n", ns, "logs",
+			"statefulset/coredns-netbox", "--tail=40", "--since-time="+sinceLog.UTC().Format(time.RFC3339)))
+		t.Logf("secondary logs:\n%s", kubectlOut(t, "-n", ns, "logs",
+			"deployment/coredns-netbox-secondary", "--tail=40", "--since-time="+sinceLog.UTC().Format(time.RFC3339)))
+		if serial, ok := secondarySerial(t, zone); ok {
+			t.Logf("secondary serial still %d (was %d before the change)", serial, before)
+		}
+		if serial, ok := soaSerialOn(dnsServer(), zone); ok {
+			t.Logf("primary serial (via service) is %d", serial)
+		}
+		for _, server := range dnsProbeServers() {
+			if serial, ok := soaSerialOn(server, zone); ok {
+				t.Logf("primary serial on %s is %d", server, serial)
+			}
+		}
+		t.Logf("secondary transfer-from list:\n%s", kubectlOut(t, "-n", ns, "get", "configmap",
+			"coredns-netbox", "-o", "jsonpath={.data.Corefile-secondary}"))
+	}
+	require.NotZero(t, elapsed, "secondary serial never moved within 90s (SOA refresh is 300s)")
+	t.Logf("N28 secondary convergence: %s after the change (SOA refresh is 300s)", elapsed.Round(time.Millisecond))
+	assert.Less(t, elapsed, 60*time.Second,
+		"convergence this slow would mean the refresh timer, not a NOTIFY")
+
+	waitForDNSOn(t, dnsSecondaryServer(), name, "10.79.0.1", 60*time.Second)
+
+	// The secondary's own log distinguishes the mechanism: an accepted
+	// NOTIFY logs "checking transfer", one from an unlisted source logs
+	// "Dropping notify" and the zone would then wait for its timer.
+	logs := kubectlOut(t, "-n", ns, "logs", "deployment/coredns-netbox-secondary",
+		"--since-time="+sinceLog.UTC().Format(time.RFC3339))
+	assert.Contains(t, logs, "Notify from",
+		"the secondary must have received a NOTIFY, not converged on its refresh timer")
+	assert.NotContains(t, logs, "Dropping notify",
+		"a dropped NOTIFY means the primary's source address is not in the secondary's transfer-from list")
 }
