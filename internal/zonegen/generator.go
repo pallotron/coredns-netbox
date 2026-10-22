@@ -166,7 +166,7 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int
 	if g.config.Type == ZoneTypeForward {
 		records = resolveCNAMECollisions(records, g.config.Origin)
 	}
-	hash := hashRecords(records)
+	hash := g.fingerprint(records)
 	if hash == g.lastHash {
 		slog.Debug("zone unchanged (hash match)", "zone", g.config.Origin, "hash", hash[:8], "records", len(records))
 		return "", false, len(records), nil
@@ -390,9 +390,38 @@ func recordLess(a, b netboxclient.IPRecord) bool {
 	return a.TTL < b.TTL
 }
 
+// fingerprint identifies everything that determines this zone's rendered
+// bytes: the record set, and the generator config that is written into the
+// file without coming from NetBox.
+//
+// Hashing only the records was a silent-no-op bug. Enabling PrimaryNSIP on a
+// running deployment changes the zone (ns1 gains its A record) but leaves the
+// record set untouched, so the hash matched, Generate returned "unchanged",
+// and the file was never rewritten. Every signal said success -- config
+// applied, pod healthy, zone served -- while the new record simply never
+// appeared, until some unrelated NetBox change happened to force a write.
+// The same held for PrimaryNS, AdminEmail, TTL and the SOA timers.
+//
+// Changing this function changes every zone's content-hash, so the first run
+// after upgrading rewrites each zone once, bumps its serial and triggers one
+// full AXFR per secondary. That is the intended behaviour: the on-disk files
+// may not reflect current config, and rewriting is how they catch up.
+func (g *Generator) fingerprint(records []netboxclient.IPRecord) string {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "records:%s\n", hashRecords(records))
+	// Only fields that reach the rendered file belong here. Origin and Type
+	// are excluded deliberately: they identify the zone rather than vary it,
+	// and a change to either produces a different file entirely.
+	_, _ = fmt.Fprintf(h, "ns:%s\nnsip:%s\nadmin:%s\nttl:%d\nsoa:%d/%d/%d/%d\n",
+		g.config.PrimaryNS, g.config.PrimaryNSIP, g.config.AdminEmail, g.config.TTL,
+		g.config.SOA.Refresh, g.config.SOA.Retry, g.config.SOA.Expire, g.config.SOA.Minimum)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
 // hashRecords fingerprints the record set for change detection. The hashed
 // fields must stay in sync with recordLess: a field that affects zone output
 // but not the hash would change zones without bumping the SOA serial.
+// Config that affects output is covered by fingerprint, not here.
 func hashRecords(records []netboxclient.IPRecord) string {
 	sorted := make([]netboxclient.IPRecord, len(records))
 	copy(sorted, records)

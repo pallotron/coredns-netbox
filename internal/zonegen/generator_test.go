@@ -891,3 +891,74 @@ func TestGeneratorRepairsDamagedZoneFile(t *testing.T) {
 			"the repair is a normal write: the serial advances once, so secondaries pick it up")
 	})
 }
+
+// Changing config that reaches the rendered file must count as a change.
+//
+// Regression test for a silent no-op: change detection hashed only the NetBox
+// record set, so enabling PrimaryNSIP on a running deployment produced a zone
+// that differed (ns1 gains its A record) while the hash matched. Generate
+// reported "unchanged", the file was never rewritten, and the record never
+// appeared — with every signal reporting success — until some unrelated NetBox
+// change happened to force a write.
+//
+// Found during the 0.1.29 rollout: PRIMARY_NS_IP was set, the pod was healthy,
+// Argo was Synced, and ns1.infra.cx still resolved nowhere with the zone's
+// serial a day stale.
+func TestGenerateDetectsConfigChangeNotJustRecords(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{DNSName: "host1.example.org.", Address: "10.0.0.1", Family: 4, TTL: 300, Type: "A"},
+	}
+
+	base := ZoneConfig{
+		Origin:     "example.org.",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+		SOA:        DefaultSOATimers(),
+	}
+
+	t.Run("same records and config is still unchanged", func(t *testing.T) {
+		g := NewGenerator(base, "")
+		_, changed, _, err := g.Generate(records)
+		require.NoError(t, err)
+		require.True(t, changed, "first generation must count as a change")
+
+		_, changed, _, err = g.Generate(records)
+		require.NoError(t, err)
+		assert.False(t, changed, "identical records and config must not rewrite")
+	})
+
+	// Each of these is written into the zone file but comes from config, not
+	// from NetBox, so none of them moves the record-set hash.
+	for _, tc := range []struct {
+		name  string
+		apply func(c *ZoneConfig)
+	}{
+		{"PrimaryNSIP", func(c *ZoneConfig) { c.PrimaryNSIP = "10.0.0.53" }},
+		{"PrimaryNS", func(c *ZoneConfig) { c.PrimaryNS = "ns2.example.org." }},
+		{"AdminEmail", func(c *ZoneConfig) { c.AdminEmail = "hostmaster.example.org." }},
+		{"TTL", func(c *ZoneConfig) { c.TTL = 600 }},
+		{"SOA.Refresh", func(c *ZoneConfig) { c.SOA.Refresh = 7200 }},
+	} {
+		t.Run(tc.name+" change is detected", func(t *testing.T) {
+			g := NewGenerator(base, "")
+			first, changed, _, err := g.Generate(records)
+			require.NoError(t, err)
+			require.True(t, changed)
+
+			// Restart with the same record set but new config, seeded with the
+			// hash the previous process would have persisted.
+			cfg := base
+			tc.apply(&cfg)
+			g2 := NewGenerator(cfg, "")
+			g2.lastHash = g.lastHash
+
+			second, changed, _, err := g2.Generate(records)
+			require.NoError(t, err)
+			assert.True(t, changed,
+				"%s reaches the zone file, so changing it must trigger a rewrite", tc.name)
+			assert.NotEqual(t, first, second, "the rendered zone must actually differ")
+		})
+	}
+}
