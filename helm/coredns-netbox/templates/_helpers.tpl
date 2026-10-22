@@ -106,3 +106,28 @@ http://{{ include "coredns-netbox.fullname" . }}-sidecar:8082
 {{- printf "localhost:%s" $port -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Address record for primaryNS.
+
+The SOA/NS name has no NetBox object behind it, so without an explicit A
+record it never resolves. The address is almost always the one the external
+LoadBalancer already publishes, and that value has to be declared anyway --
+GCP wants a pre-reserved static IP -- so defaulting to it removes a
+duplicate rather than inventing a value.
+
+Explicit primaryNSIP still wins. That matters: the external service exposes
+TCP only (a GCP internal LB forwards one protocol per rule), so a resolver
+following the NS record over UDP gets nothing from it. Where NS has to point
+at something that answers UDP, set primaryNSIP directly.
+
+Empty when neither is set, and the callers omit PRIMARY_NS_IP entirely. The
+`if` is load-bearing, not defensive: an unset value is nil, not "", and a
+bare nil renders through include as the 10-character string "<no value>",
+which is truthy. Callers guarding with `with` would then emit the variable
+with an empty value instead of omitting it.
+*/}}
+{{- define "coredns-netbox.primaryNSIP" -}}
+{{- $ip := .Values.primaryNSIP | default .Values.service.external.loadBalancerIP -}}
+{{- if $ip }}{{ $ip }}{{ end -}}
+{{- end -}}
