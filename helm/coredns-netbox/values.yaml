@@ -149,9 +149,19 @@ pollInterval: "60s"
 ttl: 300
 
 primaryNS: ns1.example.org.
-# Optional address record for primaryNS, emitted in the zone that contains
-# the name (typically this service's LoadBalancer/ClusterIP). Without it the
-# SOA/NS name never resolves — it has no NetBox object behind it.
+# Address record for primaryNS, emitted in the zone that contains the name.
+# Without it the SOA/NS name never resolves — it has no NetBox object behind
+# it.
+#
+# Defaults to service.external.loadBalancerIP when that is set, since the
+# address is usually the one the external LoadBalancer already publishes and
+# duplicating it invites the two to drift apart.
+#
+# Set this explicitly to override. Note the external service exposes TCP only
+# (a GCP internal LB forwards one protocol per forwarding rule), so a
+# resolver that follows the NS record over UDP gets nothing from that address
+# — point this at something that answers UDP if anything actually resolves
+# the NS name rather than being configured with the primary directly.
 primaryNSIP: ""
 
 # NetBox IP statuses published to DNS, comma-separated (valid: active,
@@ -336,6 +346,9 @@ service:
     enabled: false
     type: LoadBalancer
     annotations: {}
+    # Declared so the lookup yields "" rather than nil when unset: a nil
+    # renders through `include` as "<no value>", which is truthy.
+    loadBalancerIP: ""
     # Expose CoreDNS gRPC reload port on the external service.
     # Enable in dev/CI so e2e tests can reach the reload endpoint from the host.
     # Leave false in production.

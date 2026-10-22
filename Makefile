@@ -138,6 +138,32 @@ test.helm:
 		--set metrics.enabled=true 2>&1 | grep -q "name: metrics" && \
 		echo "PASS: metrics ports rendered" || \
 		(echo "FAIL: metrics ports not rendered" && exit 1)
+	# primaryNSIP defaults to the external LoadBalancer IP. The address has to
+	# be declared for the LB anyway, so duplicating it into primaryNSIP just
+	# gives the two a chance to drift apart.
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true \
+		--set service.external.loadBalancerIP=10.0.0.9 2>&1 | \
+		grep -A1 "name: PRIMARY_NS_IP" | grep -q '"10.0.0.9"' && \
+		echo "PASS: primaryNSIP defaults to loadBalancerIP" || \
+		(echo "FAIL: primaryNSIP did not default to loadBalancerIP" && exit 1)
+	# An explicit primaryNSIP still wins: the external service is TCP-only, so
+	# an NS record that anything resolves over UDP must point elsewhere.
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true \
+		--set service.external.loadBalancerIP=10.0.0.9 \
+		--set primaryNSIP=10.0.0.250 2>&1 | \
+		grep -A1 "name: PRIMARY_NS_IP" | grep -q '"10.0.0.250"' && \
+		echo "PASS: explicit primaryNSIP overrides the default" || \
+		(echo "FAIL: explicit primaryNSIP did not override" && exit 1)
+	# With neither set the env var is omitted rather than rendered empty.
+	# Written as an if, not `grep && (echo FAIL; exit 1) || echo PASS`: in that
+	# form the failing branch's `exit 1` makes the && chain fail, so the ||
+	# branch ALSO runs -- both messages print and make still exits 0.
+	@if helm template test ./helm/coredns-netbox --set netbox.token=test 2>&1 | \
+		grep -q "PRIMARY_NS_IP"; then \
+		echo "FAIL: PRIMARY_NS_IP rendered with no address configured"; exit 1; \
+	else echo "PASS: PRIMARY_NS_IP omitted when no address is configured"; fi
 	# transfer.to renders the transfer block; no notify directive is ever
 	# emitted (the CoreDNS transfer plugin rejects it at startup)
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \

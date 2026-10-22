@@ -77,9 +77,9 @@ spec:
               value: {{ .Values.ttl | quote }}
             - name: PRIMARY_NS
               value: {{ .Values.primaryNS | quote }}
-            {{- if .Values.primaryNSIP }}
+            {{- with include "coredns-netbox.primaryNSIP" . }}
             - name: PRIMARY_NS_IP
-              value: {{ .Values.primaryNSIP | quote }}
+              value: {{ . | quote }}
             {{- end }}
             {{- if .Values.publishStatuses }}
             - name: NETBOX_PUBLISH_STATUSES
@@ -235,9 +235,9 @@ spec:
               value: {{ .Values.ttl | quote }}
             - name: PRIMARY_NS
               value: {{ .Values.primaryNS | quote }}
-            {{- if .Values.primaryNSIP }}
+            {{- with include "coredns-netbox.primaryNSIP" . }}
             - name: PRIMARY_NS_IP
-              value: {{ .Values.primaryNSIP | quote }}
+              value: {{ . | quote }}
             {{- end }}
             {{- if .Values.publishStatuses }}
             - name: NETBOX_PUBLISH_STATUSES
