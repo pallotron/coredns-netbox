@@ -78,3 +78,51 @@ spec:
     {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: primary
 {{- end }}
+{{- if and .Values.service.external.enabled .Values.service.external.splitProtocols }}
+---
+# UDP twin of the external service, on the SAME LoadBalancer VIP.
+#
+# A GCP forwarding rule carries a single protocol, so one Service cannot
+# publish both TCP/53 and UDP/53 on an internal LoadBalancer -- which left
+# the external VIP answering TCP only. A resolver that sends UDP and gets
+# silence TIMES OUT; it does not fall back to TCP, because fallback is
+# triggered by a truncated (TC=1) answer, not by no answer. So a TCP-only
+# VIP is a hard failure for ordinary resolvers, not a slow path.
+#
+# Two Services pointing at one address is the pattern already in use for
+# Crusoe's unified internal DNS (central-dns -axfr-tcp / -axfr-udp on a
+# single VIP). It requires the address to be reserved for sharing; GKE then
+# creates one forwarding rule per protocol against it:
+#
+#   gcloud compute addresses create <name> \
+#     --project=<project> --region=<region> --subnet=<subnet> \
+#     --addresses=<ip> --purpose=SHARED_LOADBALANCER_VIP
+#
+# Without that purpose the second Service will not get the address. Nothing
+# on the Service itself expresses the sharing -- it is a property of the
+# reserved address -- so the only visible sign of a misconfiguration is the
+# UDP Service sitting in <pending>.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coredns-netbox.fullname" . }}-external-udp
+  labels:
+    {{- include "coredns-netbox.labels" . | nindent 4 }}
+  {{- with .Values.service.external.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.external.type | default "LoadBalancer" }}
+  {{- with .Values.service.external.loadBalancerIP }}
+  loadBalancerIP: {{ . | quote }}
+  {{- end }}
+  ports:
+    - name: dns-udp
+      port: {{ .Values.service.port }}
+      targetPort: dns-udp
+      protocol: UDP
+  selector:
+    {{- include "coredns-netbox.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: primary
+{{- end }}

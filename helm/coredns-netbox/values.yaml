@@ -349,6 +349,16 @@ service:
     # Declared so the lookup yields "" rather than nil when unset: a nil
     # renders through `include` as "<no value>", which is truthy.
     loadBalancerIP: ""
+    # Publish UDP/53 on the same VIP via a second Service. A GCP forwarding
+    # rule carries one protocol, so without this the external VIP answers TCP
+    # only -- and a resolver that sends UDP to it times out rather than
+    # falling back, since TCP fallback needs a truncated answer, not silence.
+    #
+    # Requires the address to be reserved with
+    # --purpose=SHARED_LOADBALANCER_VIP, or the second Service never gets it
+    # and sits in <pending>. Off by default: enabling it adds a forwarding
+    # rule to an existing VIP.
+    splitProtocols: false
     # Expose CoreDNS gRPC reload port on the external service.
     # Enable in dev/CI so e2e tests can reach the reload endpoint from the host.
     # Leave false in production.
