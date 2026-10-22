@@ -133,6 +133,32 @@ test.helm:
 		--set 'service.external.annotations.example\.com/foo=bar' 2>&1 | grep -q "example.com/foo" && \
 		echo "PASS: service.external.annotations rendered" || \
 		(echo "FAIL: service.external.annotations not rendered" && exit 1)
+	# splitProtocols adds a UDP twin on the same VIP. A GCP forwarding rule
+	# carries one protocol, so TCP-only is a hard failure for UDP resolvers:
+	# they time out rather than falling back, TCP fallback needing a truncated
+	# answer rather than silence.
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true \
+		--set service.external.loadBalancerIP=10.0.0.9 \
+		--set service.external.splitProtocols=true 2>&1 | \
+		grep -q "coredns-netbox-external-udp" && \
+		echo "PASS: splitProtocols renders the UDP twin" || \
+		(echo "FAIL: splitProtocols did not render the UDP twin" && exit 1)
+	# Both halves must land on the SAME VIP, which is the whole point.
+	@if [ "$$(helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true \
+		--set service.external.loadBalancerIP=10.0.0.9 \
+		--set service.external.splitProtocols=true 2>&1 | \
+		grep -c 'loadBalancerIP: "10.0.0.9"')" = "2" ]; then \
+		echo "PASS: both external Services share one loadBalancerIP"; \
+	else echo "FAIL: external Services do not share one loadBalancerIP"; exit 1; fi
+	# Off by default: enabling it adds a forwarding rule to an existing VIP,
+	# so an existing deployment must not acquire one by upgrading.
+	@if helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set service.external.enabled=true 2>&1 | \
+		grep -q "coredns-netbox-external-udp"; then \
+		echo "FAIL: UDP twin rendered without splitProtocols"; exit 1; \
+	else echo "PASS: UDP twin absent unless splitProtocols is set"; fi
 	# metrics.enabled adds metrics ports
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \
 		--set metrics.enabled=true 2>&1 | grep -q "name: metrics" && \
