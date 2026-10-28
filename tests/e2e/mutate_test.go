@@ -263,7 +263,7 @@ print(deleted)`, dnsName))
 }
 
 // N13 (acceptance-test matrix): a 1,000-record bulk change lands in one
-// poll — all records present, a single serial bump. Generator half of
+// poll — all records present, a single merge pass. Generator half of
 // PoC A12.
 func TestMutate_N13_BatchChange(t *testing.T) {
 	requireChaos(t)
@@ -282,6 +282,11 @@ print(deleted)`)
 	// Baseline only once every replica agrees — a preceding test's cleanup
 	// write may still be propagating through the 10s CoreDNS reload.
 	serialBefore := stableSerial(t, zone)
+	// The serial cannot count writes: it is wall-clock seconds, so a single
+	// write advances it by however long the batch took, not by one. Count the
+	// writes themselves instead, which is what this test actually claims.
+	updatesBefore, ok := metricValue(fetchMetrics(t), `netbox_sidecar_zone_writes_total{op="update"}`)
+	require.True(t, ok, `netbox_sidecar_zone_writes_total{op="update"} must be exported`)
 
 	// 1,000 records in 10.33.x — disjoint from the seed ranges.
 	netboxORM(t, `from ipam.models import IPAddress
@@ -329,11 +334,22 @@ print("bulk created", len(records))`)
 	}
 	require.Equal(t, 1000, count, "all 1000 bulk records must be in the zone")
 
-	// Single serial bump for the whole batch. The periodic poll may fire
-	// between bulk_create and forcePoll, but both see the same data, so
-	// exactly one zone write happens either way.
-	require.Equal(t, serialBefore+1, serialAfter,
-		"a 1000-record batch must land as ONE zone write (serial %d -> %d)", serialBefore, serialAfter)
+	// One merge pass for the whole batch, not one write per record. The
+	// 1,000 addresses sit in four /24s that all fall inside the single
+	// configured IPv4 reverse zone (10.in-addr.arpa, see
+	// dev/coredns-netbox-values.yaml), so one pass rewrites exactly two zone
+	// files: the dc3 forward zone and that reverse zone. The regression this
+	// guards against — a write per record — would be ~1000.
+	//
+	// The periodic poll may fire between bulk_create and forcePoll, but both
+	// see the same data and the content hash suppresses the redundant write,
+	// so exactly one pass lands either way.
+	require.NotEqual(t, serialBefore, serialAfter, "the batch must produce a zone write")
+	updatesAfter, ok := metricValue(fetchMetrics(t), `netbox_sidecar_zone_writes_total{op="update"}`)
+	require.True(t, ok, `netbox_sidecar_zone_writes_total{op="update"} must be exported`)
+	require.Equal(t, updatesBefore+2, updatesAfter,
+		"a 1000-record batch must land as ONE merge pass over the forward and reverse zones (serial %d -> %d)",
+		serialBefore, serialAfter)
 }
 
 // N11 (acceptance-test matrix), poll half: a freshly created NetBox IP is

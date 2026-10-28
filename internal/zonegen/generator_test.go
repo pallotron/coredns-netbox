@@ -153,33 +153,6 @@ func TestShortName(t *testing.T) {
 	}
 }
 
-func TestNextSerial(t *testing.T) {
-	// From zero, should get today-based serial
-	s := NextSerial(0)
-	if s == 0 {
-		t.Error("serial should not be 0")
-	}
-	// String length should be 10 (YYYYMMDDNN)
-	// Just verify it increments
-	s2 := NextSerial(s)
-	if s2 != s+1 {
-		t.Errorf("expected %d, got %d", s+1, s2)
-	}
-}
-
-// N10 (acceptance-test matrix): the SOA serial must be strictly monotonic
-// at any realistic change rate. YYYYMMDDNN allows 99 increments per UTC
-// day; the 100th same-day write used to wrap back to todayBase+1 (G2),
-// which silently freezes every AXFR secondary until the next UTC day.
-func TestNextSerialMonotonicAcross100SameDayWrites(t *testing.T) {
-	s := NextSerial(0)
-	for i := 0; i < 150; i++ {
-		next := NextSerial(s)
-		require.Greater(t, next, s, "serial regressed on write %d", i+2)
-		s = next
-	}
-}
-
 // N15 (acceptance-test matrix) / gap G3: PrimaryNS is named in every zone's
 // SOA and NS records but its address was never emitted, so the NS name
 // itself returned NXDOMAIN. With PrimaryNSIP configured, the forward zone
@@ -347,14 +320,15 @@ func TestGenerateForwardZone(t *testing.T) {
 }
 
 func TestSerialPersistence(t *testing.T) {
-	// Create a temporary zone file with a known serial
+	// A serial from the current scheme: wall-clock seconds, an hour old.
+	seed := uint32(time.Now().UTC().Unix()) - 3600
+
 	tmpDir := t.TempDir()
 	zonePath := filepath.Join(tmpDir, "db.example.org")
-
-	existingZone := `$ORIGIN example.org.
+	existingZone := fmt.Sprintf(`$ORIGIN example.org.
 $TTL 300
 @ IN SOA ns1.example.org. admin.example.org. (
-    2026030542   ; serial
+    %d   ; serial
     3600      ; refresh
     900       ; retry
     604800    ; expire
@@ -364,11 +338,9 @@ $TTL 300
 @ IN NS ns1.example.org.
 
 host1 IN A 10.0.0.1
-`
-	err := os.WriteFile(zonePath, []byte(existingZone), 0644)
-	require.NoError(t, err)
+`, seed)
+	require.NoError(t, os.WriteFile(zonePath, []byte(existingZone), 0644))
 
-	// Create generator with existing zone file
 	gen := NewGenerator(ZoneConfig{
 		Origin:     "example.org",
 		PrimaryNS:  "ns1.example.org.",
@@ -376,10 +348,8 @@ host1 IN A 10.0.0.1
 		TTL:        300,
 	}, zonePath)
 
-	// Generator should have read the serial from the file
-	assert.Equal(t, uint32(2026030542), gen.serial, "should have loaded serial from existing zone file")
+	assert.Equal(t, seed, gen.serial, "should have loaded serial from existing zone file")
 
-	// Generate with same records - should increment serial
 	records := []netboxclient.IPRecord{
 		{DNSName: "host1.example.org", Address: "10.0.0.2", Family: 4}, // Different IP
 	}
@@ -388,16 +358,59 @@ host1 IN A 10.0.0.1
 	require.NoError(t, err)
 	assert.True(t, changed, "should detect change when IP differs")
 
-	// Serial should have advanced past the loaded value (jumps to today's date when loaded serial is stale)
-	assert.Greater(t, gen.serial, uint32(2026030542), "serial should advance past loaded value")
-	now := time.Now().UTC()
-	expectedBase := uint32(now.Year()*1000000 + int(now.Month())*10000 + now.Day()*100)
-	assert.GreaterOrEqual(t, gen.serial, expectedBase+1, "serial should be at least today's base+01")
+	assert.Greater(t, gen.serial, seed, "serial must advance past the loaded value")
+	assert.GreaterOrEqual(t, gen.serial, uint32(time.Now().UTC().Unix())-5,
+		"an hour-old serial is overtaken by the clock, so the new serial is wall-clock time")
 	assert.Contains(t, content, fmt.Sprintf("%d   ; serial", gen.serial), "zone file should contain the new serial")
 }
 
+// The upgrade path, at the level the sidecar actually runs it: a zone file
+// left behind by the YYYYMMDDNN scheme carries a serial ~233M higher than
+// wall-clock time. It must be dropped rather than carried forward, or the
+// monotonic guard would walk it upward one write at a time and the new
+// scheme would never take effect.
+//
+// This steps the serial BACKWARDS once by design. A secondary holding the
+// old value reads the new one as older (RFC 1982) and stops transferring
+// until its state is cleared — see docs/deployment.md.
+func TestSerialPersistenceAdoptsWallClockFromLegacyZoneFile(t *testing.T) {
+	const legacy = 2026102801 // YYYYMMDDNN
+
+	zonePath := filepath.Join(t.TempDir(), "db.example.org")
+	require.NoError(t, os.WriteFile(zonePath, []byte(fmt.Sprintf(`$ORIGIN example.org.
+$TTL 300
+@ IN SOA ns1.example.org. admin.example.org. (
+    %d   ; serial
+    3600      ; refresh
+    900       ; retry
+    604800    ; expire
+    86400     ; minimum
+)
+
+@ IN NS ns1.example.org.
+
+host1 IN A 10.0.0.1
+`, legacy)), 0644))
+
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+	}, zonePath)
+	require.Equal(t, uint32(legacy), gen.serial, "the legacy serial is still read from the file")
+
+	_, changed, _, err := gen.Generate([]netboxclient.IPRecord{
+		{DNSName: "host1.example.org", Address: "10.0.0.2", Family: 4},
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	assert.Less(t, gen.serial, uint32(legacy), "the legacy serial must be dropped, not carried forward")
+	assert.GreaterOrEqual(t, gen.serial, uint32(time.Now().UTC().Unix())-5, "adopted serial is wall-clock time")
+}
+
 func TestSerialPersistenceNoFile(t *testing.T) {
-	// Create generator with non-existent zone file path
 	gen := NewGenerator(ZoneConfig{
 		Origin:     "example.org",
 		PrimaryNS:  "ns1.example.org.",
@@ -405,22 +418,20 @@ func TestSerialPersistenceNoFile(t *testing.T) {
 		TTL:        300,
 	}, "/nonexistent/path/db.example.org")
 
-	// Generator should start with serial 0 (file doesn't exist)
 	assert.Equal(t, uint32(0), gen.serial, "should start with serial 0 when file doesn't exist")
 
-	// Generate records - should create new serial based on today's date
 	records := []netboxclient.IPRecord{
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
 	}
 
+	before := uint32(time.Now().UTC().Unix())
 	content, changed, _, err := gen.Generate(records)
 	require.NoError(t, err)
 	assert.True(t, changed, "should detect change on first generation")
 
-	// Serial should be in YYYYMMDD01 format
-	now := time.Now().UTC()
-	expectedBase := uint32(now.Year()*1000000 + int(now.Month())*10000 + now.Day()*100)
-	assert.Equal(t, expectedBase+1, gen.serial, "serial should be today's date + 01")
+	after := uint32(time.Now().UTC().Unix())
+	assert.GreaterOrEqual(t, gen.serial, before, "first serial is wall-clock time")
+	assert.LessOrEqual(t, gen.serial, after, "first serial does not run ahead of the clock")
 	assert.Contains(t, content, "host1 IN A 10.0.0.1", "zone file should contain the record")
 }
 
