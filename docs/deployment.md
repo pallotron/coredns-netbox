@@ -234,3 +234,37 @@ zone "dc1.mycompany.com" {
     masters { <primary-ip>; };
 };
 ```
+
+## Upgrading: the SOA serial scheme change
+
+Releases before this change generated serials as `YYYYMMDDNN` — a date with a
+two-digit counter. Serials are now **seconds since the Unix epoch**, with a
+guard that forces `previous + 1` when two writes land in the same second.
+
+The reason for the change is the counter: `NN` allowed only 99 writes per UTC
+day, after which the serial ran into the next day's numeric space. Because it
+re-synchronises only when a later day's base overtakes the carried value,
+sustained load above 99 writes/day made the encoded date drift away from the
+real one and never recover. Wall-clock seconds have no per-day ceiling, and
+the collision guard keeps every write distinct — a serial a secondary already
+holds would otherwise look unchanged, leaving it stale with nothing logged on
+either side.
+
+**This moves the serial backwards once, by roughly 233 million.** A 2026
+`YYYYMMDDNN` serial is about `2.03e9`; Unix time is about `1.79e9` and does
+not overtake it until **March 2034**. Under RFC 1982 arithmetic a secondary
+holding the old value reads the new one as *older*, so it will not transfer:
+
+- The generator detects a serial implausibly far ahead of wall-clock time
+  (more than a year) and replaces it rather than carrying it forward. This
+  happens automatically, once, on the first write after the upgrade.
+- **Every secondary must have its stored copy of each zone cleared** — stop
+  it, delete its zone/journal files, restart. Otherwise it keeps serving its
+  cached zone and silently ignores all further updates until 2034.
+- Nothing reports this. SOA refresh keeps succeeding; the comparison simply
+  says nothing is newer. Verify after the upgrade by querying each secondary
+  directly for the zone's SOA and confirming the serial matches the primary.
+
+If you cannot clear secondary state, do the RFC 1912 §2.2 dance instead: set
+the serial to `4294967295`, wait for every secondary to pick it up, set it to
+`0`, wait again, then deploy this change.
