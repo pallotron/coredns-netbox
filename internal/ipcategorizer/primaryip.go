@@ -24,9 +24,12 @@ type SelectionStats struct {
 //	   device names that appear in IP assignments but not in the device
 //	   list, so a partial device fetch can never shrink the zone set.
 //
-// BMC: the heuristic (bmc/ipmi/ilo/idrac interface) wins when it found one,
-// else the device's oob_ip (when published). oob_ip coverage is near zero,
-// so the heuristic stays primary for BMC.
+// BMC: the device's oob_ip is the source of truth when it is set and
+// resolves to a published IP, and always overrides whatever the heuristic
+// found — on both the primary-resolved path above and the fallback path
+// (a device with no usable primary_ip4 can still have a published oob_ip).
+// The bmc/ipmi/ilo/idrac interface-name heuristic is only the BMC source
+// for devices with no published oob_ip.
 func (c *Categorizer) SelectDeviceIPsHybrid(
 	records []netboxclient.IPRecord,
 	devices []netboxclient.DeviceRecord,
@@ -76,8 +79,11 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 
 		primary, havePrimary := byID[dev.PrimaryIP4ID]
 		if dev.PrimaryIP4ID == 0 || !havePrimary {
+			// Unresolvable primary: still carry oobID forward (first entry
+			// for this name wins, matching the resolvable case below) so the
+			// fallback apply pass below can still produce a BMC record.
 			if !ok {
-				winners[dev.Name] = &winner{}
+				winners[dev.Name] = &winner{oobID: dev.OOBIPID}
 			}
 			continue
 		}
@@ -87,11 +93,35 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 
 	for name := range seen {
 		w := winners[name]
+
+		// A published, resolvable oob_ip always wins the BMC record,
+		// regardless of what the bmc-pattern heuristic found.
+		var oobIP *netboxclient.IPRecord
+		if w != nil && w.oobID != 0 {
+			if oob, ok := byID[w.oobID]; ok {
+				o := oob
+				oobIP = &o
+			}
+		}
+
 		if w == nil || !w.resolved {
-			if _, ok := result[name]; !ok {
-				stats.None++
+			dns, hadEntry := result[name]
+			if !hadEntry {
+				if oobIP == nil {
+					stats.None++
+					continue
+				}
+				// No heuristic primary or BMC match at all, but a published
+				// oob_ip still produces a BMC record (spec §2) — never drop
+				// dev.OOBIPID just because the primary is unresolvable.
+				dns = &DeviceDNSRecords{DeviceName: name, Zone: c.extractZone(name)}
+				result[name] = dns
+				stats.None++ // no primary IP was found for this device
 			} else {
 				stats.Fallback++
+			}
+			if oobIP != nil {
+				dns.BMCIP = oobIP
 			}
 			continue
 		}
@@ -107,11 +137,8 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 		p := w.primary
 		dns.PrimaryIP = &p
 
-		if dns.BMCIP == nil && w.oobID != 0 {
-			if oob, ok := byID[w.oobID]; ok {
-				o := oob
-				dns.BMCIP = &o
-			}
+		if oobIP != nil {
+			dns.BMCIP = oobIP
 		}
 		stats.PrimaryIP++
 	}

@@ -83,13 +83,13 @@ analyzer -file <netbox-ip-dump.json> -validate-name-formats \
 
 ## Interface Categorization
 
-The sidecar selects the appropriate IP for each device's primary A/AAAA record, and (unchanged) for its BMC record, and uses regex patterns to categorize interfaces for the optional per-interface records described below.
+The sidecar selects the appropriate IP for each device's primary address record and for its BMC record, and uses regex patterns to categorize interfaces for the optional per-interface records described below.
 
-**Device record selection (primary A/AAAA):**
-1. **Netbox `primary_ip4`** — if the device has a primary IPv4 address set in Netbox, it is used directly. This is the normal path for every device with its primary IP configured, and does not consult interface names or VRFs at all.
+**Device record selection (primary address record):**
+1. **Netbox `primary_ip4`** — if the device has a primary IPv4 address set in Netbox, it is used directly (an A record). This is the normal path for every device with its primary IP configured, and does not consult interface names or VRFs at all. `primary_ip6` is not yet consulted — a device whose only primary is IPv6 takes the fallback path; IPv6 addresses still produce AAAA records via per-interface records (and via the fallback, when the selected management IP is IPv6).
 2. **Management interface-name fallback** — only consulted when a device has no usable `primary_ip4`. The sidecar falls back to the old heuristic: interfaces in management/OOB VRFs (pattern: `(?i)mgmt|oob`) are preferred, then interfaces whose name matches the management pattern (default below). This keeps older or incompletely-modeled devices resolving.
 
-**BMC record selection (`{hostname}-bmc`, unchanged):** interfaces matching the BMC pattern (`(?i)bmc|ipmi|ilo|idrac`); the device's Netbox `oob_ip` fills in when the heuristic finds no matching interface.
+**BMC record selection (`{hostname}-bmc`):** the device's Netbox `oob_ip` is used when it is set and resolves to a published IP, and always overrides any other candidate. Only when there is no published `oob_ip` does the sidecar fall back to the BMC interface-name pattern (`(?i)bmc|ipmi|ilo|idrac`).
 
 **Interface categories** (used for BMC selection, the management fallback, and per-interface record generation):
 - **BMC**: `(?i)bmc|ipmi|ilo|idrac` → `{hostname}-bmc` DNS records
@@ -108,11 +108,15 @@ All patterns are configurable via environment variables (see Interface Categoriz
 
 ### Per-Interface Address Records
 
-Behind `interfaceRecords.enabled` / `INTERFACE_RECORDS_ENABLED` (default `false`), the sidecar additionally generates a record for every interface-assigned IP that has no explicit Netbox `dns_name` of its own: `<normalized-interface>.<device-fqdn>` A/AAAA, plus a PTR. The interface name is normalized (lowercased, non-alphanumeric runs collapsed to `-`) before it is prepended to the device's FQDN.
+Behind `interfaceRecords.enabled` / `INTERFACE_RECORDS_ENABLED` (default `false`), the sidecar additionally generates a record for every interface-assigned IP that has no explicit Netbox `dns_name` of its own: `<normalized-interface>.<device-fqdn>` A/AAAA, plus a PTR. The interface name is normalized (lowercased, each run of characters outside `[a-z0-9-]` collapsed to a single `-`; existing dashes are left as-is, e.g. `et-0/2/6` → `et-0-2-6`) before it is prepended to the device's FQDN.
 
 This is additive to, not a replacement for, the device and BMC records above, and roughly doubles zone size on a typical fleet — size memory and zone-transfer bandwidth accordingly before enabling it broadly.
 
+**Caution with `coredns.extraConfig` rewrite rules:** a generic second-label `rewrite name regex` (matching any `<label>.<label>.{domainSuffix}`, e.g. for collapsing a DC label) also matches every `<interface>.<device>.{domainSuffix}` per-interface record and rewrites it to a name that was never published, so all per-interface records come back NXDOMAIN. Restrict such rewrites to a DC-shaped second label (e.g. `dc[0-9]+`) when `interfaceRecords.enabled` is true. See the `coredns.extraConfig` comment in `values.yaml` for the full example.
+
 **PTR priority:** exactly one PTR is published per address. When more than one record kind could claim the same IP, priority is: explicit Netbox `dns_name` > per-interface record > device (primary) record > BMC record. This keeps the PTR stable and predictable even when, for example, a device's primary IP is also separately exposed as a named interface record.
+
+**Turning `interfaceRecords.enabled` back off:** disabling it after it has been on drops roughly half the records in every zone (reverse zones that exist only because of interface PTRs can drop entirely), so expect the [shrink guard](#shrink-guard) to refuse the first poll after the change and `netbox_sidecar_shrink_guard_blocked` to go to 1 — that refusal is the designed consent channel, not a bug. Clear it with the single-use `ForceNetboxPoll(allow_shrink=true)` override (see [Clearing a refusal](#clearing-a-refusal)) once the drop is confirmed intentional.
 
 ## Reverse DNS (PTR Records)
 

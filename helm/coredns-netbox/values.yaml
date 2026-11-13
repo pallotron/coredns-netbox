@@ -93,9 +93,14 @@ coredns:
   # Use this to inject additional plugins (e.g. rewrite, acl, metadata) without
   # forking the chart. Each directive must be valid Corefile syntax.
   # Example — rewrite DC-labelled queries to the flat zone so that both
-  # hostname.dc.domain and hostname.domain resolve from the same zone:
+  # hostname.dc.domain and hostname.domain resolve from the same zone. The
+  # second label is restricted to a DC-shaped pattern (dc<digits>) rather
+  # than a generic "any label": a generic second-label rewrite also matches
+  # every <interface>.<device>.example.com per-interface record (see
+  # interfaceRecords.enabled below) and rewrites it to a name that was never
+  # published, returning NXDOMAIN for all of them.
   #   extraConfig: |
-  #     rewrite name regex ^([^.]+)\.([^.]+)\.example\.com\.$ {1}.example.com. answer auto
+  #     rewrite name regex ^([^.]+)\.(dc[0-9]+)\.example\.com\.$ {1}.example.com. answer auto
   extraConfig: ""
 
 sidecar:
@@ -296,6 +301,14 @@ interfacePatterns:
 # Per-interface address records: every interface-assigned IP without an
 # explicit dns_name gets <normalized-iface>.<device-fqdn> plus an
 # interface-form PTR. Roughly doubles zone size; size memory accordingly.
+#
+# Turning this back OFF after it has been enabled drops roughly half the
+# records in every zone (more in reverse zones that exist only because of
+# interface PTRs) — expect the shrinkGuard above to refuse the first poll
+# after the change and netbox_sidecar_shrink_guard_blocked to go to 1. That
+# refusal is the guard doing its job, not a bug: clear it with the single-use
+# ForceNetboxPoll(allow_shrink=true) override once you've confirmed the drop
+# is intentional (see "Clearing a refusal" in docs/configuration.md).
 interfaceRecords:
   enabled: false
 
