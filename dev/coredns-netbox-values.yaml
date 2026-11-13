@@ -23,8 +23,18 @@ coredns:
   reloadPollInterval: "10s"
   # Rewrite DC-labelled queries to the flat zone so both
   # server1-mgmt.dc1.mycompany.com and server1-mgmt.mycompany.com resolve.
+  #
+  # The second label is deliberately restricted to dc<digits> (dc1/dc2/dc3,
+  # matching dev/seed-ips.py), not an arbitrary label: a generic
+  # "^([^.]+)\.([^.]+)\.mycompany\.com\.$" pattern also matches
+  # "<iface>.<device-fqdn>" (Task 11, INTERFACE_RECORDS_ENABLED) whenever a
+  # device's own canonical is itself a flat <name>.mycompany.com form --
+  # e.g. "ethernet1-1.dc1-h1a-r301-prod-sw-01.mycompany.com." has the same
+  # four-label shape, and rewriting it would collapse away the device's own
+  # identity ("dc1-h1a-r301-prod-sw-01"), rewriting the query to a name that
+  # was never published and returning NXDOMAIN for every interface record.
   extraConfig: |
-    rewrite name regex ^([^.]+)\.([^.]+)\.mycompany\.com\.$ {1}.mycompany.com. answer auto
+    rewrite name regex ^([^.]+)\.(dc[0-9]+)\.mycompany\.com\.$ {1}.mycompany.com. answer auto
 
 sidecar:
   image: coredns-netbox-sidecar
@@ -79,6 +89,12 @@ nameFormats:
   canonical: '{{.name}}.{{template "zone" .}}'
   aliases:
     - '{{.role}}{{.idx}}-{{.dc}}-{{.hall}}-r{{.rack}}.{{template "zone" .}}'
+
+# Per-interface address records (Task 11): exercised by the switch /
+# primary_ip4+loopback fixtures in dev/seed-ips.py and gated in the e2e
+# suite by INTERFACE_RECORDS_ENABLED (Makefile).
+interfaceRecords:
+  enabled: true
 
 # DNS metadata
 primaryNS: ns1.mycompany.com.

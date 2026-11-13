@@ -109,3 +109,92 @@ if v6 is None:
     )
 
 print(f"Device seed complete: {Device.objects.count()} devices")
+
+# --- Task 11: primary_ip4 selection, interface records, and PTR priority ---
+# Three fixtures exercising the device A-record/interface-record/PTR-priority
+# spec: primary_ip4 as the source of truth over the regex heuristic, per-
+# interface address records (INTERFACE_RECORDS_ENABLED), and PTR priority
+# (explicit dns_name > interface > device > bmc). Names match the
+# dc-hall-rack-env-role-idx convention so deviceNameParsers matches them,
+# same as the dc1-h1a-r10N hypervisors above; racks 301/401/501 are unused
+# elsewhere in this fixture.
+
+# Switch-like device: primary_ip4 points at "Management1" even though several
+# other interface-assigned addresses ("EthernetN/1", the switch's front-panel
+# ports) are also present as candidates.
+switch, _ = Device.objects.get_or_create(
+    name="dc1-h1a-r301-prod-sw-01",
+    defaults={"device_type": dtype, "role": role, "site": site},
+)
+mgmt1_iface, _ = Interface.objects.get_or_create(
+    device=switch, name="Management1", defaults={"type": "1000base-t"}
+)
+mgmt1_ip = IPAddress.objects.filter(address="10.9.32.1/24").first()
+if mgmt1_ip is None:
+    mgmt1_ip = IPAddress(address="10.9.32.1/24", status="active")
+    mgmt1_ip.assigned_object = mgmt1_iface
+    mgmt1_ip.save()
+
+for eth_idx in (1, 2, 3):
+    eth_iface, _ = Interface.objects.get_or_create(
+        device=switch, name=f"Ethernet{eth_idx}/1", defaults={"type": "1000base-t"}
+    )
+    eth_ip = IPAddress.objects.filter(address=f"10.9.33.{eth_idx}/24").first()
+    if eth_ip is None:
+        eth_ip = IPAddress(address=f"10.9.33.{eth_idx}/24", status="active")
+        eth_ip.assigned_object = eth_iface
+        eth_ip.save()
+
+switch.primary_ip4 = mgmt1_ip
+switch.save()
+
+# Fallback-path device: no primary_ip4 at all, so SelectDeviceIPsHybrid must
+# fall back to the regex heuristic. Its mgmt address lives on "eno1" -- a
+# different branch of the "management" fallback pattern (^eno[0-9]) from the
+# mgmt0/"(?i)mgmt" branch the dc1-h1a-r10N hypervisors above already exercise.
+fallback_dev, _ = Device.objects.get_or_create(
+    name="dc1-h1a-r401-prod-fw-01",
+    defaults={"device_type": dtype, "role": role, "site": site},
+)
+eno1_iface, _ = Interface.objects.get_or_create(
+    device=fallback_dev, name="eno1", defaults={"type": "1000base-t"}
+)
+eno1_ip = IPAddress.objects.filter(address="10.9.40.1/24").first()
+if eno1_ip is None:
+    eno1_ip = IPAddress(address="10.9.40.1/24", status="active")
+    eno1_ip.assigned_object = eno1_iface
+    eno1_ip.save()
+# primary_ip4 deliberately left unset.
+
+# primary_ip4 + loopback device: primary_ip4 selects the mgmt0 address; a
+# second Loopback0 address (uncategorized by the device-selection heuristic)
+# sits in the 10.in-addr.arpa range the suite's reverse zones already cover,
+# so its forward/PTR records only appear when INTERFACE_RECORDS_ENABLED --
+# proving a primary_ip4-selected device's other addresses still get reverse
+# coverage via the interface-records path.
+loop_dev, _ = Device.objects.get_or_create(
+    name="dc1-h1a-r501-prod-sv-01",
+    defaults={"device_type": dtype, "role": role, "site": site},
+)
+loop_mgmt_iface, _ = Interface.objects.get_or_create(
+    device=loop_dev, name="mgmt0", defaults={"type": "1000base-t"}
+)
+loop_mgmt_ip = IPAddress.objects.filter(address="10.9.50.1/24").first()
+if loop_mgmt_ip is None:
+    loop_mgmt_ip = IPAddress(address="10.9.50.1/24", status="active")
+    loop_mgmt_ip.assigned_object = loop_mgmt_iface
+    loop_mgmt_ip.save()
+loop_dev.primary_ip4 = loop_mgmt_ip
+loop_dev.save()
+
+loopback_iface, _ = Interface.objects.get_or_create(
+    device=loop_dev, name="Loopback0", defaults={"type": "virtual"}
+)
+loopback_ip = IPAddress.objects.filter(address="10.9.58.1/24").first()
+if loopback_ip is None:
+    loopback_ip = IPAddress(address="10.9.58.1/24", status="active")
+    loopback_ip.assigned_object = loopback_iface
+    loopback_ip.save()
+
+print("Task 11 fixture complete: primary_ip4 switch, eno1 fallback device, "
+      "primary_ip4+loopback device seeded")

@@ -87,6 +87,44 @@ func TestStripDCLabel_RecordNotUnderDomainSuffix(t *testing.T) {
 	assert.Equal(t, "host.dc.other.com", got[0].DNSName)
 }
 
+// A generated record's own device name must never be discarded as if it
+// were a DC label, even when it lands exactly at the position a true DC
+// label would occupy. An interface record ("<iface>.<device>.<domain>")
+// hits this: positionally it is indistinguishable from "host.dc.domain",
+// but the candidate label here is the device's own identity.
+func TestStripDCLabel_PreservesDeviceNameAtDCLabelPosition(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{
+			DNSName:    "mgmt0.dc1-h1a-r101-prod-hv-01.example.org",
+			Address:    "10.9.0.1",
+			Family:     4,
+			DeviceName: "dc1-h1a-r101-prod-hv-01",
+			Kind:       netboxclient.KindInterface,
+		},
+	}
+	got := StripDCLabel(records, "example.org")
+	assert.Equal(t, "mgmt0.dc1-h1a-r101-prod-hv-01.example.org", got[0].DNSName,
+		"the device's own name must not be stripped even though it occupies the DC-label position")
+}
+
+// A real DC label at that same position, on a record that DOES carry a
+// DeviceName (the legacy <device>.<zone> canonical, whose zone component is
+// a synthetic tag unrelated to the device name), still gets stripped.
+func TestStripDCLabel_StillStripsRealDCLabelWithDeviceNameSet(t *testing.T) {
+	records := []netboxclient.IPRecord{
+		{
+			DNSName:    "oob-sw-01.oob-sw.example.org",
+			Address:    "10.9.24.1",
+			Family:     4,
+			DeviceName: "oob-sw-01",
+			Kind:       netboxclient.KindDevice,
+		},
+	}
+	got := StripDCLabel(records, "example.org")
+	assert.Equal(t, "oob-sw-01.example.org", got[0].DNSName,
+		"a genuine zone-discriminator label distinct from the device name must still be stripped")
+}
+
 // A stripped alias must point at the stripped canonical, not the pre-strip name.
 func TestStripDCLabelRewritesCNAMETarget(t *testing.T) {
 	records := []netboxclient.IPRecord{
