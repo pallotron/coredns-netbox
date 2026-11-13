@@ -128,7 +128,7 @@ func runScalePipeline(t testing.TB, records []netboxclient.IPRecord,
 	forwardDisc, reverseDisc zonediscovery.Discoverer,
 ) int {
 	t.Helper()
-	enriched := enrichRecordsWithDeviceNames(records, categorizer, scaleDomain, formatter)
+	enriched := enrichRecordsWithDeviceNames(records, nil, categorizer, scaleDomain, formatter, false, nil)
 
 	forwardZones, err := forwardDisc.Discover(enriched)
 	require.NoError(t, err)

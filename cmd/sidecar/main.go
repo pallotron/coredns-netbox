@@ -139,13 +139,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Metrics registry is created here (rather than where it previously sat,
+	// further down) because the reverse zone discoverer below needs it to
+	// wire its skipped-PTR counters before reverseDisc is narrowed to the
+	// zonediscovery.Discoverer interface.
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+	client.RetryCounter = m.NetboxFetchRetriesTotal
+
 	// Create reverse zone discoverer if enabled
 	var reverseDisc zonediscovery.Discoverer
 	if cfg.EnableReverseZones {
-		reverseDisc = zonediscovery.NewReverseZoneDiscoverer(
+		rzd := zonediscovery.NewReverseZoneDiscoverer(
 			cfg.ReverseZonesIPv4,
 			cfg.ReverseZonesIPv6,
 		)
+		// Set on the concrete type before it is narrowed to the
+		// zonediscovery.Discoverer interface below, since the interface
+		// does not expose these fields.
+		rzd.SkippedPrivate = m.PTRSkippedTotal.WithLabelValues("private")
+		rzd.SkippedPublic = m.PTRSkippedTotal.WithLabelValues("public")
+		reverseDisc = rzd
 		slog.Info("reverse zones enabled", "ipv4_zones", cfg.ReverseZonesIPv4, "ipv6_zones", cfg.ReverseZonesIPv6)
 	}
 
@@ -186,10 +200,6 @@ func main() {
 	webhookPollSignal := make(chan struct{}, 1)
 
 	slog.Info("starting sidecar", "discovery_mode", cfg.DiscoveryMode, "zone_dir", cfg.ZoneDir)
-
-	reg := prometheus.NewRegistry()
-	m := metrics.NewSidecar(reg)
-	client.RetryCounter = m.NetboxFetchRetriesTotal
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -328,7 +338,7 @@ func run(ctx context.Context, cfg *config.Config, client *netboxclient.Client,
 	doFetchNetbox := func() (zonediscovery.ZoneMap, error) {
 		fetchStart := time.Now()
 		zm, baseline, err := fetchNetbox(ctx, client, categorizer, formatter, forwardDisc, reverseDisc,
-			m, cfg.DomainSuffix, cfg.ShrinkGuard, lastBaseline, shrinkOverride)
+			m, cfg.DomainSuffix, cfg.InterfaceRecordsEnabled, cfg.ShrinkGuard, lastBaseline, shrinkOverride)
 		if err != nil {
 			return zm, err
 		}
@@ -566,7 +576,7 @@ func mergeAllowed(fetchSucceededOnce, hasExistingZones bool) bool {
 func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	categorizer *ipcategorizer.Categorizer, formatter *nameformat.Formatter,
 	forwardDisc, reverseDisc zonediscovery.Discoverer,
-	m *metrics.Sidecar, domainSuffix string,
+	m *metrics.Sidecar, domainSuffix string, interfaceRecordsEnabled bool,
 	guard shrinkguard.Config, prev shrinkguard.Baseline, override *shrinkguard.Override,
 ) (zonediscovery.ZoneMap, shrinkguard.Baseline, error) {
 	slog.Info("fetching IP addresses from netbox")
@@ -596,7 +606,17 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		return nil, shrinkguard.Baseline{}, fmt.Errorf("refusing to publish: %s", v.Reason())
 	}
 
-	enriched := enrichRecordsWithDeviceNames(records, categorizer, domainSuffix, formatter)
+	slog.Info("fetching devices from netbox")
+	devFetchStart := time.Now()
+	devices, err := client.FetchDevices(ctx)
+	m.NetboxFetchDurationSeconds.Observe(time.Since(devFetchStart).Seconds())
+	if err != nil {
+		m.PollTotal.WithLabelValues("error").Inc()
+		return nil, shrinkguard.Baseline{}, fmt.Errorf("fetch devices: %w", err)
+	}
+	slog.Info("fetched devices from netbox", "count", len(devices))
+
+	enriched := enrichRecordsWithDeviceNames(records, devices, categorizer, domainSuffix, formatter, interfaceRecordsEnabled, m)
 
 	forwardZones, err := forwardDisc.Discover(enriched)
 	if err != nil {
@@ -670,17 +690,21 @@ func countZoneRecords(zm zonediscovery.ZoneMap) map[string]int {
 
 // enrichRecordsWithDeviceNames implements a hybrid approach:
 // - Keep records that already have dns_name populated (qualifying bare names with domainSuffix)
-// - Generate DNS names from device names for records without dns_name
+// - Generate DNS names from device names for records without dns_name, using NetBox's
+//   primary_ip4 as the source of truth and falling back to the regex heuristic (SelectDeviceIPsHybrid)
 // - When a formatter is configured, matching devices get template-rendered canonical names plus CNAME aliases
-func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *ipcategorizer.Categorizer, domainSuffix string, formatter *nameformat.Formatter) []netboxclient.IPRecord {
+// - Optionally generate one per-interface record for every interface-assigned IP without an
+//   explicit dns_name (interfaceRecordsEnabled)
+func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, devices []netboxclient.DeviceRecord,
+	categorizer *ipcategorizer.Categorizer, domainSuffix string, formatter *nameformat.Formatter,
+	interfaceRecordsEnabled bool, m *metrics.Sidecar) []netboxclient.IPRecord {
 	var withDNSName []netboxclient.IPRecord
 	var withoutDNSName []netboxclient.IPRecord
 
-	// Split records based on whether dns_name is populated
 	for _, rec := range records {
 		if rec.DNSName != "" {
 			rec.DNSName = zonediscovery.QualifyDNSName(rec.DNSName, domainSuffix)
-			withDNSName = append(withDNSName, rec)
+			withDNSName = append(withDNSName, rec) // Kind "" = explicit: wins PTR priority
 		} else {
 			withoutDNSName = append(withoutDNSName, rec)
 		}
@@ -688,16 +712,28 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, categorizer *
 
 	slog.Info("record split", "with_dns_name", len(withDNSName), "without_dns_name", len(withoutDNSName))
 
-	// Generate device-based DNS records for those without dns_name
-	deviceDNS := categorizer.SelectDeviceIPs(withoutDNSName)
+	deviceDNS, stats := categorizer.SelectDeviceIPsHybrid(withoutDNSName, devices)
 	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
 
-	slog.Info("generated device-based records", "devices", len(deviceDNS), "records", len(generatedRecords))
+	var ifaceRecords []netboxclient.IPRecord
+	if interfaceRecordsEnabled {
+		ifaceRecords = categorizer.InterfaceRecords(withoutDNSName, formatter)
+	}
 
-	// Merge: keep existing dns_name records and add generated ones
-	result := make([]netboxclient.IPRecord, 0, len(withDNSName)+len(generatedRecords))
+	if m != nil {
+		m.DevicesTotal.WithLabelValues("primary_ip").Set(float64(stats.PrimaryIP))
+		m.DevicesTotal.WithLabelValues("fallback").Set(float64(stats.Fallback))
+		m.DevicesTotal.WithLabelValues("none").Set(float64(stats.None))
+		m.InterfaceRecords.Set(float64(len(ifaceRecords)))
+	}
+	slog.Info("generated records",
+		"devices_primary_ip", stats.PrimaryIP, "devices_fallback", stats.Fallback,
+		"devices_none", stats.None, "device_records", len(generatedRecords),
+		"interface_records", len(ifaceRecords))
+
+	result := make([]netboxclient.IPRecord, 0, len(withDNSName)+len(generatedRecords)+len(ifaceRecords))
 	result = append(result, withDNSName...)
 	result = append(result, generatedRecords...)
-
+	result = append(result, ifaceRecords...)
 	return result
 }
