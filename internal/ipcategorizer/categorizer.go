@@ -213,10 +213,9 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter *namef
 	for _, deviceName := range deviceNames {
 		dns := deviceDNS[deviceName]
 
-		canonical := deviceName + "." + dns.Zone
+		canonical := canonicalFQDN(deviceName, dns.Zone, formatter)
 		var aliases []string
 		if names, ok := formatter.Format(deviceName); ok {
-			canonical = names.Canonical
 			aliases = names.Aliases
 		}
 
@@ -228,6 +227,7 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter *namef
 				DeviceName:    deviceName,
 				InterfaceName: dns.PrimaryIP.InterfaceName,
 				VRF:           dns.PrimaryIP.VRF,
+				Kind:          netboxclient.KindDevice,
 			})
 		}
 		if dns.BMCIP != nil {
@@ -238,6 +238,7 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter *namef
 				DeviceName:    deviceName,
 				InterfaceName: dns.BMCIP.InterfaceName,
 				VRF:           dns.BMCIP.VRF,
+				Kind:          netboxclient.KindBMC,
 			})
 		}
 		for _, alias := range aliases {
@@ -320,4 +321,14 @@ func (c *Categorizer) extractZone(deviceName string) string {
 	}
 
 	return loc + "-" + site + "." + c.domainSuffix
+}
+
+// canonicalFQDN returns the template-rendered canonical name when a
+// formatter parser matches, else the legacy <device>.<zone> form.
+// Formatter.Format is nil-receiver safe.
+func canonicalFQDN(deviceName, zone string, formatter *nameformat.Formatter) string {
+	if names, ok := formatter.Format(deviceName); ok {
+		return names.Canonical
+	}
+	return deviceName + "." + zone
 }
