@@ -128,6 +128,8 @@ spec:
               value: {{ join "|" .Values.interfacePatterns.mgmtVRF | quote }}
             - name: MGMT_INTERFACE_PATTERN
               value: {{ join "|" .Values.interfacePatterns.management | quote }}
+            - name: INTERFACE_RECORDS_ENABLED
+              value: {{ .Values.interfaceRecords.enabled | quote }}
             - name: COREDNS_RELOAD_ADDRS
               value: {{ include "coredns-netbox.reloadAddrs" . | quote }}
             - name: COREDNS_RELOAD_TOKEN
