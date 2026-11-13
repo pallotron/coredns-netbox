@@ -37,6 +37,10 @@ go build -o analyzer ./cmd/analyzer/main.go
 # Output as CSV
 ./analyzer -file all_ips.json -format csv > dns_records.csv
 
+# Output a diffable, sorted name/type/value line per record (forward + PTR) —
+# join against devices.json's primary_ip4 and include per-interface records
+./analyzer -file all_ips.json -devices-file devices.json -interface-records -format records > records.txt
+
 # Show records sourced from dns_name field (service VIPs, UFM cluster IPs, etc.)
 ./analyzer -file all_ips.json -show-dns-names
 
@@ -52,8 +56,10 @@ go build -o analyzer ./cmd/analyzer/main.go
 - `-stats` - Show statistics about the data
 - `-all` - Show all IPs for each device (use with `-format detailed`)
 - `-device <substring>` - Filter to devices matching the substring
-- `-format <format>` - Output format: `summary` (default), `detailed`, or `csv`
+- `-format <format>` - Output format: `summary` (default), `detailed`, `csv`, or `records`
 - `-show-dns-names` - Show records sourced from the `dns_name` field in Netbox (service VIPs, UFM cluster IPs, etc.) rather than device-based records. Bare hostnames without a domain suffix are automatically qualified with `-domain`.
+- `-devices-file <path>` - Path to a combined devices JSON array (`dcim/devices` + `virtualization/virtual-machines` results). When set, device A/AAAA selection joins against each device's `primary_ip4` (falling back to the regex heuristic only when unset/unpublished), matching the sidecar's hybrid selection. Without it, the analyzer uses the legacy regex-only heuristic.
+- `-interface-records` - Also generate a `<normalized-interface>.<device-fqdn>` A/AAAA record (plus PTR) for every interface-assigned IP without its own `dns_name`, matching the sidecar's `interfaceRecords.enabled`.
 
 ### Reverse DNS Options
 - `-enable-reverse-zones` - Enable PTR record preview (default: `true`)
@@ -250,3 +256,18 @@ PTR,64.1.26.172.in-addr.arpa,64,dc1-r01-hv-01-bmc.dc1.yourcompany.com,dc1-r01-hv
 - `interface` - Source interface name
 - `vrf` - Source VRF name
 ```
+
+### Records Export
+
+`-format records` prints one sorted, tab-separated `<name> <type> <value>` line per record (forward A/AAAA/CNAME, then reverse PTR) — meant to be diffed between runs:
+
+```bash
+$ ./analyzer -file all_ips.json -devices-file devices.json -interface-records -format records
+dc1-r01-hv-01-bmc.dc1.yourcompany.com. A       172.26.1.1
+dc1-r01-hv-01.dc1.yourcompany.com.     A       172.26.33.1
+eno1.dc1-r01-hv-01.dc1.yourcompany.com. A      10.0.0.5
+1.33.26.172.26.172.in-addr.arpa.       PTR     dc1-r01-hv-01.dc1.yourcompany.com.
+...
+```
+
+With `-devices-file` set, the `devices: primary_ip=... fallback=... none=...` summary line is written to **stderr**, not stdout, so it never corrupts `-format records`/`csv` output piped to a file or `diff`.

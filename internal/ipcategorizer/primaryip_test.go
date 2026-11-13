@@ -92,6 +92,48 @@ func TestHybridOOBIPBecomesBMC(t *testing.T) {
 	assert.Equal(t, "10.9.0.5", dns.BMCIP.Address)
 }
 
+func TestHybridOOBIPOverridesBMCHeuristic(t *testing.T) {
+	// Spec §2: a published oob_ip is the BMC record's source of truth and
+	// always wins, even when the bmc-pattern heuristic also found a (different)
+	// candidate interface.
+	c := newTestCategorizer(t)
+	records := []netboxclient.IPRecord{
+		{ID: 20, Address: "172.16.9.1", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "eno1"},
+		{ID: 21, Address: "10.9.0.21", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "idrac-dedicated"}, // bmc-pattern match
+		{ID: 22, Address: "10.9.0.22", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "oob-eth0"},       // published oob_ip target; not bmc-pattern-named
+	}
+	devices := []netboxclient.DeviceRecord{
+		{Name: "dc1-site13a-r110-prod-hv-08", Status: "active", PrimaryIP4ID: 20, OOBIPID: 22},
+	}
+
+	result, _ := c.SelectDeviceIPsHybrid(records, devices)
+	dns := result["dc1-site13a-r110-prod-hv-08"]
+	require.NotNil(t, dns.BMCIP, "BMC record should exist")
+	assert.Equal(t, "10.9.0.22", dns.BMCIP.Address, "published oob_ip must win over the bmc-pattern heuristic")
+}
+
+func TestHybridFallbackPathOOBIPStillProducesBMC(t *testing.T) {
+	// Spec §2: a fallback-path device (no resolvable primary_ip4) with a
+	// published oob_ip and no bmc-pattern interface at all must still get a
+	// BMC record from oob_ip — the unresolved winner{} placeholder must not
+	// silently drop dev.OOBIPID.
+	c := newTestCategorizer(t)
+	records := []netboxclient.IPRecord{
+		// Neither bmc- nor mgmt-pattern named, so the heuristic finds nothing.
+		{ID: 30, Address: "10.9.0.30", Family: 4, DeviceName: "dc1-site13a-r111-prod-hv-09", InterfaceName: "oob-eth0"},
+	}
+	devices := []netboxclient.DeviceRecord{
+		{Name: "dc1-site13a-r111-prod-hv-09", Status: "active", PrimaryIP4ID: 0, OOBIPID: 30},
+	}
+
+	result, _ := c.SelectDeviceIPsHybrid(records, devices)
+	require.Contains(t, result, "dc1-site13a-r111-prod-hv-09", "a published oob_ip must produce a BMC record even with no resolvable primary and no bmc-pattern interface")
+	dns := result["dc1-site13a-r111-prod-hv-09"]
+	require.NotNil(t, dns.BMCIP)
+	assert.Equal(t, "10.9.0.30", dns.BMCIP.Address)
+	assert.Nil(t, dns.PrimaryIP, "no primary IP should have been found")
+}
+
 func TestHybridDeviceMissingFromDeviceListKeepsFallback(t *testing.T) {
 	// Safety net: a device that appears in IP assignments but not in the
 	// devices fetch (name drift, partial API data) keeps its heuristic record.
