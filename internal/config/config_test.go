@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"regexp"
 	"testing"
 	"time"
 
@@ -41,6 +42,7 @@ var allEnvKeys = []string{
 	"REVERSE_ZONES_IPV6",
 	"GRPC_ADDR",
 	"GRPC_AUTH_TOKEN",
+	"INTERFACE_RECORDS_ENABLED",
 	"DEVICE_NAME_PARSERS",
 	"NAME_FORMAT_CANONICAL",
 	"NAME_FORMAT_ALIASES",
@@ -108,7 +110,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "^lo$|^lo0|^Loopback", cfg.LoopbackInterfacePattern)
 	assert.Equal(t, "(?i)storage|vtep|vsan", cfg.DataplaneInterfacePattern)
 	assert.Equal(t, "(?i)mgmt|oob", cfg.MgmtVRFPattern)
-	assert.Equal(t, "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET|^ens[0-9]|^eno[0-9]|^nic[0-9]", cfg.MgmtInterfacePattern)
+	assert.Equal(t, "(?i)mgmt|Management|fxp0|^eth[01]|^mgt|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]", cfg.MgmtInterfacePattern)
 
 	// Reverse zones
 	assert.True(t, cfg.EnableReverseZones)
@@ -406,4 +408,38 @@ func TestLoad_ShrinkGuardRejectsNonsense(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestInterfaceRecordsFlagDefaultsOff(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.False(t, cfg.InterfaceRecordsEnabled, "interface records must default off")
+}
+
+func TestInterfaceRecordsFlagEnabled(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+	t.Setenv("INTERFACE_RECORDS_ENABLED", "true")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	assert.True(t, cfg.InterfaceRecordsEnabled)
+}
+
+func TestMgmtInterfacePatternDefaultHasNoUnanchoredNET(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	re := regexp.MustCompile(cfg.MgmtInterfacePattern)
+	assert.False(t, re.MatchString("Ethernet49/1"), "EthernetN dataplane ports must not match the mgmt pattern")
+	assert.True(t, re.MatchString("Management1"), "Management1 still matches")
+	assert.True(t, re.MatchString("me0"), "Juniper me0 now matches")
+	assert.True(t, re.MatchString("eth0"), "eth0 still matches (anchored)")
+	assert.False(t, re.MatchString("sfp-eth1"), "embedded eth1 no longer matches")
 }

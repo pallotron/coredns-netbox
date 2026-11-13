@@ -56,6 +56,11 @@ type Config struct {
 	MgmtVRFPattern            string
 	MgmtInterfacePattern      string
 
+	// InterfaceRecordsEnabled gates per-interface A/PTR generation
+	// (<iface>.<device-fqdn>). Default off; the primary-IP device join is
+	// always on.
+	InterfaceRecordsEnabled bool
+
 	// SOA timers (seconds) for generated zones. Refresh/retry control how
 	// often secondaries poll for updates; expire is how long they keep
 	// serving after the primary becomes unreachable.
@@ -130,7 +135,10 @@ func Load() (*Config, error) {
 		LoopbackInterfacePattern:  envOrDefault("LOOPBACK_PATTERN", "^lo$|^lo0|^Loopback"),
 		DataplaneInterfacePattern: envOrDefault("DATAPLANE_PATTERN", "(?i)storage|vtep|vsan"),
 		MgmtVRFPattern:            envOrDefault("MGMT_VRF_PATTERN", "(?i)mgmt|oob"),
-		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET|^ens[0-9]|^eno[0-9]|^nic[0-9]"),
+		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", "(?i)mgmt|Management|fxp0|^eth[01]|^mgt|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]"),
+
+		// InterfaceRecordsEnabled gates per-interface A/PTR generation
+		InterfaceRecordsEnabled: envOrDefault("INTERFACE_RECORDS_ENABLED", "false") == "true",
 
 		// DNS domain configuration
 		DomainSuffix: envOrDefault("DOMAIN_SUFFIX", "example.org"),
