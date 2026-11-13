@@ -123,7 +123,7 @@ func fetchWith(t *testing.T, srv *httptest.Server, m *metrics.Sidecar,
 	cat, err := ipcategorizer.NewCategorizer("bmc", "^lo$", "storage", "mgmt", "mgmt", "example.org")
 	require.NoError(t, err)
 	return fetchNetbox(context.Background(), client, cat, nil,
-		testDiscoverer(t), nil, m, "example.org", testGuard(), prev, override)
+		testDiscoverer(t), nil, m, "example.org", false, testGuard(), prev, override)
 }
 
 // N21 / gap G1: a NetBox fetch that succeeds but returns far fewer records
@@ -305,7 +305,7 @@ func TestFetchNetboxRefusesEmptyOverPublished(t *testing.T) {
 	// The refusal fires before record enrichment and zone discovery, so the
 	// categorizer/formatter/discoverer arguments are never touched here.
 	prev := shrinkguard.FromZoneCounts(map[string]int{"example.org": 42})
-	_, _, err = fetchNetbox(context.Background(), client, nil, nil, nil, nil, m, "example.org",
+	_, _, err = fetchNetbox(context.Background(), client, nil, nil, nil, nil, m, "example.org", false,
 		testGuard(), prev, nil)
 	require.Error(t, err, "empty fetch over 42 published records must refuse to publish")
 	assert.ErrorContains(t, err, "refusing to publish", "error must name the refusal")
