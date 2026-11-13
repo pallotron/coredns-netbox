@@ -479,3 +479,16 @@ func TestSetPublishStatusesIgnoresEmpty(t *testing.T) {
 	client.SetPublishStatuses(nil)
 	assert.Equal(t, []string{"active"}, client.publishStatuses)
 }
+
+func TestRecordFromJSONParsesID(t *testing.T) {
+	raw := []byte(`{
+		"id": 32374,
+		"address": "172.26.41.73/23",
+		"dns_name": "",
+		"assigned_object": {"name": "Management1", "device": {"name": "dc1-site13a-r101-prod-eth-tor-01"}}
+	}`)
+	rec, err := RecordFromJSON(raw)
+	require.NoError(t, err, "RecordFromJSON should parse valid JSON")
+	assert.Equal(t, 32374, rec.ID, "NetBox IP object id should be parsed")
+	assert.Equal(t, "", rec.Kind, "fetched records default to explicit kind (zero value)")
+}

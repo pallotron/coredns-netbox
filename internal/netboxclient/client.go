@@ -32,6 +32,16 @@ const RecordTypeCNAME = "CNAME"
 // it is never present on Netbox-fetched records.
 const SourceWebhook = "webhook"
 
+// Kind classifies how a record was generated, used by reverse-zone PTR
+// selection. The zero value "" means explicit: the dns_name came from an
+// operator (NetBox dns_name field, dynamicstore, webhook) and wins PTR
+// priority over all generated kinds.
+const (
+	KindDevice    = "device"
+	KindBMC       = "bmc"
+	KindInterface = "interface"
+)
+
 // IPRecord is a simplified representation of a Netbox IP address with DNS info.
 type IPRecord struct {
 	DNSName       string `json:"dns_name"`
@@ -53,6 +63,12 @@ type IPRecord struct {
 	// reconciliation in cmd/sidecar/main.go.
 	Source    string    `json:"source,omitempty"`
 	AppliedAt time.Time `json:"applied_at,omitempty"`
+	// ID is the NetBox IP object id (0 when unknown), the join key against
+	// DeviceRecord.PrimaryIP4ID / OOBIPID.
+	ID int `json:"id,omitempty"`
+	// Kind is "" for explicit/operator-named records, or one of the Kind*
+	// constants for generated ones. Reverse-zone PTR selection keys on it.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Client queries the Netbox IPAM API with parallel paginated fetching.
@@ -83,6 +99,7 @@ type ipListResponse struct {
 
 // ipItem represents a single IP address object in the Netbox API response.
 type ipItem struct {
+	ID             int             `json:"id"`
 	Address        string          `json:"address"`
 	DNSName        string          `json:"dns_name"`
 	VRF            *vrfInfo        `json:"vrf"`
@@ -233,6 +250,7 @@ func ipItemToRecord(ip ipItem) IPRecord {
 		DeviceName:    deviceName,
 		InterfaceName: interfaceName,
 		VRF:           vrf,
+		ID:            ip.ID,
 	}
 }
 
