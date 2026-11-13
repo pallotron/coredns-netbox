@@ -550,7 +550,12 @@ func TestCNAMEAliasLookup(t *testing.T) {
 	}
 }
 
-// PTRs must target the canonical name only — never an alias.
+// PTRs must never target an alias. With INTERFACE_RECORDS_ENABLED, tmplMgmtIP
+// (10.9.0.1, mgmt0's own address) now has a competing interface record for
+// the same device/address pair (TestInterfaceRecordAndPTRPriority exercises
+// this generically on the switch fixture), and interface priority correctly
+// outranks the device canonical for PTR purposes — so the expected target
+// shifts to the interface form, but "never an alias" still holds either way.
 func TestPTRTargetsCanonicalOnly(t *testing.T) {
 	skipUnlessNameTemplates(t)
 	waitForDeviceRecords(t)
@@ -562,11 +567,15 @@ func TestPTRTargetsCanonicalOnly(t *testing.T) {
 	require.Equal(t, dns.RcodeSuccess, r.Rcode)
 	require.NotEmpty(t, r.Answer)
 
+	wantTarget := tmplCanonical
+	if os.Getenv("INTERFACE_RECORDS_ENABLED") == "true" {
+		wantTarget = "mgmt0." + tmplCanonical
+	}
 	for _, ans := range r.Answer {
 		ptr, ok := ans.(*dns.PTR)
 		require.True(t, ok)
-		require.Equal(t, dns.Fqdn(tmplCanonical), ptr.Ptr,
-			"PTR must target the canonical FQDN, never an alias")
+		require.Equal(t, dns.Fqdn(wantTarget), ptr.Ptr,
+			"PTR must target the canonical (or, with interface records enabled, the higher-priority interface) FQDN, never an alias")
 	}
 }
 
@@ -633,36 +642,70 @@ func axfrRecords(t *testing.T, zone string) []dns.RR {
 }
 
 // N2 (acceptance-test matrix), negative half: an interface matching none of
-// the categorization patterns must produce no DNS record. The positive half
-// — a management interface becoming the canonical record and a BMC
-// interface the -bmc one — is TestDeviceCanonicalRecords above.
+// the categorization patterns must never be SELECTED as a device's own
+// canonical or BMC address. The positive half — a management interface
+// becoming the canonical record and a BMC interface the -bmc one — is
+// TestDeviceCanonicalRecords above.
 //
 // The fixture hangs swp1 (10.9.16.1) off a device that already has mgmt0 and
 // bmc0, so the device still resolves; what is under test is that this extra
-// address appears nowhere. Only mgmt-VRF, mgmt-interface and BMC categories
-// are ever selected (internal/ipcategorizer.SelectDeviceIPs) with no
-// "any interface" fallback, so this pins that a fallback is never added by
-// accident — it would publish front-panel addresses fleet-wide.
+// address is never treated as the device's own identity. Only mgmt-VRF,
+// mgmt-interface and BMC categories are ever selected
+// (internal/ipcategorizer.SelectDeviceIPs) with no "any interface"
+// fallback, so this pins that a fallback is never added by accident to that
+// heuristic — it would make an uncategorized port the device's canonical
+// address fleet-wide.
+//
+// That is a different, narrower claim than "this address is never
+// published at all": with INTERFACE_RECORDS_ENABLED, swp1 legitimately
+// gets its own swp1.<device-fqdn> record via the separate, opt-in
+// per-interface-records path (spec §3), which publishes every
+// interface-assigned address with no category filter by design. Without
+// it, nothing is published for swp1 at all, which is the original form of
+// this test.
 func TestUnmatchedInterfaceYieldsNoRecord(t *testing.T) {
 	skipUnlessNameTemplates(t)
 	waitForDeviceRecords(t)
 
 	const swpIP = "10.9.16.1"
+	interfaceRecordsOn := os.Getenv("INTERFACE_RECORDS_ENABLED") == "true"
+	wantOwner := dns.Fqdn("swp1." + tmplCanonical)
 
+	found := false
 	for _, rr := range axfrRecords(t, forwardZone("dc1")) {
-		if a, ok := rr.(*dns.A); ok {
-			assert.NotEqual(t, swpIP, a.A.String(),
-				"%s is on an uncategorized interface and must not be published (owner %s)",
-				swpIP, rr.Header().Name)
+		a, ok := rr.(*dns.A)
+		if !ok || a.A.String() != swpIP {
+			continue
+		}
+		found = true
+		assert.NotEqual(t, dns.Fqdn(tmplCanonical), rr.Header().Name,
+			"%s is on an uncategorized interface and must never become the device's own canonical A record", swpIP)
+		assert.NotEqual(t, dns.Fqdn(tmplCanonicalBMC), rr.Header().Name,
+			"%s is on an uncategorized interface and must never become the device's BMC record", swpIP)
+		if interfaceRecordsOn {
+			assert.Equal(t, wantOwner, rr.Header().Name,
+				"with INTERFACE_RECORDS_ENABLED, swp1's own interface record is the only record this address should carry")
 		}
 	}
+	if !interfaceRecordsOn {
+		assert.False(t, found, "%s is on an uncategorized interface and must not be published when interface records are disabled", swpIP)
+	}
 
-	// And no reverse record either: PTRs are generated from the same
-	// selected set, so one here would mean the address slipped through.
+	// Reverse: without interface records, no PTR at all. With them, the PTR
+	// must target swp1's own interface record, never the device/BMC form.
 	ptr, err := dns.ReverseAddr(swpIP)
 	require.NoError(t, err)
 	r := queryServer(t, ptr, dns.TypePTR, dnsServer())
-	assert.Empty(t, r.Answer, "uncategorized interface address must have no PTR")
+	if !interfaceRecordsOn {
+		assert.Empty(t, r.Answer, "uncategorized interface address must have no PTR when interface records are disabled")
+		return
+	}
+	require.NotEmpty(t, r.Answer, "expected the interface-form PTR for %s", swpIP)
+	for _, ans := range r.Answer {
+		p, ok := ans.(*dns.PTR)
+		require.True(t, ok)
+		assert.Equal(t, wantOwner, p.Ptr)
+	}
 }
 
 // N3 (acceptance-test matrix), catch-all half: a device whose name matches
@@ -742,4 +785,112 @@ func TestIPv6ReversePTR(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	t.Fatalf("PTR %s -> %s did not appear within 60s", ptr, want)
+}
+
+// --- primary_ip4 selection, interface records, and PTR priority ---
+//
+// Fixtures live in dev/seed-ips.py under "Task 11". All three device names
+// match deviceNameParsers (same dc-hall-rack-env-role-idx convention as the
+// dc1-h1a-r10N hypervisors above), so their canonical FQDN is the flat
+// <name>.mycompany.com form (nameFormats.zone is '{{.domain}}' in dev).
+
+const (
+	// Switch-like device: primary_ip4 points at Management1 even though
+	// several EthernetN/1 addresses are also present as candidates.
+	swPrimaryCanonical  = "dc1-h1a-r301-prod-sw-01.mycompany.com"
+	swPrimaryMgmtIP     = "10.9.32.1" // Management1 -- the device's primary_ip4
+	swPrimaryEth1IP     = "10.9.33.1" // Ethernet1/1 -- must never be selected
+	swPrimaryEth1Record = "ethernet1-1." + swPrimaryCanonical
+	swPrimaryMgmtRecord = "management1." + swPrimaryCanonical
+
+	// Fallback-path device: no primary_ip4 at all; mgmt address on eno1.
+	fallbackDevCanonical = "dc1-h1a-r401-prod-fw-01.mycompany.com"
+	fallbackDevEno1IP    = "10.9.40.1"
+
+	// primary_ip4 + loopback device: primary_ip4 selects the mgmt0 address;
+	// Loopback0 sits in a range the suite's reverse zones (10.in-addr.arpa)
+	// already cover.
+	loopDevCanonical   = "dc1-h1a-r501-prod-sv-01.mycompany.com"
+	loopDevMgmtIP      = "10.9.50.1"
+	loopDevLoopbackIP  = "10.9.58.1"
+	loopDevIfaceRecord = "loopback0." + loopDevCanonical
+)
+
+func skipUnlessInterfaceRecords(t *testing.T) {
+	t.Helper()
+	if os.Getenv("INTERFACE_RECORDS_ENABLED") != "true" {
+		t.Skip("INTERFACE_RECORDS_ENABLED not set; skipping interface-record tests")
+	}
+}
+
+// TestPrimaryIP4BeatsHeuristicForSwitch: a device's primary_ip4 is the
+// source of truth for its canonical A record (SelectDeviceIPsHybrid), even
+// with several other interface-assigned addresses -- the switch's
+// EthernetN/1 front-panel ports -- also present as candidates.
+func TestPrimaryIP4BeatsHeuristicForSwitch(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDNS(t, swPrimaryCanonical, dns.TypeA, swPrimaryMgmtIP, 60*time.Second)
+
+	r := query(t, swPrimaryCanonical, dns.TypeA)
+	require.Equal(t, dns.RcodeSuccess, r.Rcode)
+	require.NotEmpty(t, r.Answer)
+
+	foundMgmt := false
+	for _, ans := range r.Answer {
+		a, ok := ans.(*dns.A)
+		require.True(t, ok, "expected only A record answers for %s", swPrimaryCanonical)
+		if a.A.Equal(net.ParseIP(swPrimaryMgmtIP)) {
+			foundMgmt = true
+		}
+		assert.NotEqual(t, swPrimaryEth1IP, a.A.String(),
+			"canonical record must resolve to the primary_ip4-selected Management1 address, never an EthernetN/1 port")
+	}
+	assert.True(t, foundMgmt, "expected %s (Management1, the device's primary_ip4) among answers for %s",
+		swPrimaryMgmtIP, swPrimaryCanonical)
+}
+
+// TestInterfaceRecordAndPTRPriority: with INTERFACE_RECORDS_ENABLED, every
+// interface-assigned address without an explicit dns_name gets its own
+// <iface>.<device-fqdn> record (here Ethernet1/1 on the switch), and that
+// interface form wins PTR priority over the device's own canonical name for
+// the Management1 address (explicit dns_name > interface > device > bmc).
+func TestInterfaceRecordAndPTRPriority(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	skipUnlessInterfaceRecords(t)
+
+	waitForDNS(t, swPrimaryEth1Record, dns.TypeA, swPrimaryEth1IP, 60*time.Second)
+	waitForPTR(t, swPrimaryMgmtIP, swPrimaryMgmtRecord, 60*time.Second)
+}
+
+// TestFallbackDeviceResolvesViaEno1: a device with no primary_ip4 at all
+// still resolves, via the regex heuristic (SelectDeviceIPsHybrid's fallback
+// union), to its management-pattern address -- here on eno1, a different
+// branch of the "management" fallback pattern (^eno[0-9]) from the
+// mgmt0/"(?i)mgmt" branch TestDeviceCanonicalRecords already exercises.
+func TestFallbackDeviceResolvesViaEno1(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDNS(t, fallbackDevCanonical, dns.TypeA, fallbackDevEno1IP, 60*time.Second)
+}
+
+// TestPrimaryIP4DeviceResolves: a device selected via primary_ip4 (rather
+// than the fallback heuristic) still resolves normally even though it also
+// carries a second, otherwise-uncategorized address (Loopback0, checked
+// separately below).
+func TestPrimaryIP4DeviceResolves(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	waitForDNS(t, loopDevCanonical, dns.TypeA, loopDevMgmtIP, 60*time.Second)
+}
+
+// TestPrimaryIP4DeviceLoopbackReverseCoverage: the Loopback0 address on the
+// primary_ip4-selected device above is not part of device A-record
+// selection (SelectDeviceIPs has no loopback branch), so it only gets a
+// forward/PTR record via INTERFACE_RECORDS_ENABLED -- proving the suite's
+// reverse zones (10.in-addr.arpa) cover a primary_ip4 device's other
+// addresses too, reached through the interface-records path.
+func TestPrimaryIP4DeviceLoopbackReverseCoverage(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	skipUnlessInterfaceRecords(t)
+
+	waitForDNS(t, loopDevIfaceRecord, dns.TypeA, loopDevLoopbackIP, 60*time.Second)
+	waitForPTR(t, loopDevLoopbackIP, loopDevIfaceRecord, 60*time.Second)
 }
