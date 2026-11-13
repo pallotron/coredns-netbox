@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // ReverseZoneDiscoverer creates reverse DNS zones (in-addr.arpa, ip6.arpa) from IP addresses
@@ -13,6 +14,11 @@ import (
 type ReverseZoneDiscoverer struct {
 	IPv4Zones []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa", "172.16.in-addr.arpa"])
 	IPv6Zones []string // Static IPv6 reverse zones (e.g., ["8.b.d.0.1.0.0.2.ip6.arpa"])
+	// SkippedPrivate / SkippedPublic count IPs that matched no configured
+	// reverse zone, split by RFC1918/ULA scope. Private skips are actionable
+	// (a missing reverse zone); public skips are by design. Nil-safe.
+	SkippedPrivate prometheus.Counter
+	SkippedPublic  prometheus.Counter
 }
 
 // NewReverseZoneDiscoverer creates a new reverse zone discoverer with static parent zones.
@@ -27,20 +33,35 @@ func NewReverseZoneDiscoverer(ipv4Zones, ipv6Zones []string) *ReverseZoneDiscove
 	}
 }
 
+// ptrPriority orders PTR candidates for one address: lower wins.
+// Explicit operator-named records ("" — NetBox dns_name, dynamicstore,
+// webhook) beat every generated kind (spec §4).
+func ptrPriority(kind string) int {
+	switch kind {
+	case netboxclient.KindInterface:
+		return 1
+	case netboxclient.KindDevice:
+		return 2
+	case netboxclient.KindBMC:
+		return 3
+	default:
+		return 0
+	}
+}
+
 // Discover groups IP records into reverse DNS zones.
 // Returns a ZoneMap where keys are reverse zone names (e.g., "10.in-addr.arpa")
 // and values are IPRecords with DNSName representing the PTR target.
 func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneMap, error) {
-	zones := make(ZoneMap)
+	type key struct{ zone, ptrName string }
+	best := make(map[key]int)
+	candidates := make(map[key][]netboxclient.IPRecord)
+	var keys []key // insertion order for deterministic output
 
 	for _, rec := range records {
-		// Skip records without DNS names, and CNAME aliases — PTRs must
-		// target canonical names only.
 		if rec.DNSName == "" || rec.Type == netboxclient.RecordTypeCNAME {
 			continue
 		}
-
-		// Parse the IP address
 		ip := net.ParseIP(rec.Address)
 		if ip == nil {
 			continue
@@ -48,7 +69,6 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 
 		var zoneName, ptrName string
 		var err error
-
 		switch rec.Family {
 		case 4:
 			zoneName, ptrName, err = d.reverseIPv4(ip)
@@ -57,27 +77,48 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 		default:
 			continue
 		}
-
 		if err != nil {
-			// Skip IPs that don't match any configured zone
+			// No configured reverse zone covers this IP. Private-range skips
+			// are actionable gaps; public ones are by design (spec §4, §6).
+			if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+				if d.SkippedPrivate != nil {
+					d.SkippedPrivate.Inc()
+				}
+			} else if d.SkippedPublic != nil {
+				d.SkippedPublic.Inc()
+			}
 			continue
 		}
 
-		// Create a PTR record entry
-		// We reuse IPRecord but with DNSName as the PTR target (FQDN)
-		// and the ptrName (reverse notation) stored for the zone file generation
-		ptrRecord := netboxclient.IPRecord{
-			DNSName:       rec.DNSName, // PTR target (forward FQDN)
-			Address:       ptrName,     // Reverse notation (e.g., "3.2.1")
-			Family:        rec.Family,
-			DeviceName:    rec.DeviceName,
-			InterfaceName: rec.InterfaceName,
-			VRF:           rec.VRF,
+		k := key{zoneName, ptrName}
+		prio := ptrPriority(rec.Kind)
+		cur, seen := best[k]
+		switch {
+		case !seen:
+			best[k] = prio
+			keys = append(keys, k)
+			candidates[k] = []netboxclient.IPRecord{rec}
+		case prio < cur:
+			best[k] = prio
+			candidates[k] = []netboxclient.IPRecord{rec}
+		case prio == cur:
+			candidates[k] = append(candidates[k], rec)
 		}
-
-		zones[zoneName] = append(zones[zoneName], ptrRecord)
 	}
 
+	zones := make(ZoneMap)
+	for _, k := range keys {
+		for _, rec := range candidates[k] {
+			zones[k.zone] = append(zones[k.zone], netboxclient.IPRecord{
+				DNSName:       rec.DNSName,
+				Address:       k.ptrName,
+				Family:        rec.Family,
+				DeviceName:    rec.DeviceName,
+				InterfaceName: rec.InterfaceName,
+				VRF:           rec.VRF,
+			})
+		}
+	}
 	return zones, nil
 }
 
