@@ -26,7 +26,9 @@ func main() {
 	showStats := flag.Bool("stats", false, "Show statistics about the data")
 	showDNSNames := flag.Bool("show-dns-names", false, "Show records sourced from dns_name field (service VIPs, UFM cluster IPs, etc.)")
 	filterDevice := flag.String("device", "", "Filter to a specific device name (substring match)")
-	outputFormat := flag.String("format", "summary", "Output format: summary, detailed, csv")
+	outputFormat := flag.String("format", "summary", "Output format: summary, detailed, csv, records")
+	devicesFile := flag.String("devices-file", "", "Path to combined devices JSON array (dcim/devices + virtualization/virtual-machines results); enables the primary_ip4 join")
+	interfaceRecords := flag.Bool("interface-records", false, "Generate per-interface <iface>.<device-fqdn> records")
 
 	// Pattern overrides
 	bmcPattern := flag.String("bmc-pattern", "(?i)bmc|ipmi|ilo|idrac", "Regex pattern for BMC interfaces")
@@ -68,6 +70,7 @@ func main() {
 
 	// Parse the Netbox API response format
 	var apiRecords []struct {
+		ID      int    `json:"id"`
 		Address string `json:"address"`
 		DNSName string `json:"dns_name"`
 		VRF     *struct {
@@ -131,6 +134,7 @@ func main() {
 		}
 
 		records = append(records, netboxclient.IPRecord{
+			ID:            apiRec.ID,
 			DNSName:       apiRec.DNSName,
 			Address:       addr,
 			Family:        family,
@@ -138,6 +142,47 @@ func main() {
 			InterfaceName: interfaceName,
 			VRF:           vrf,
 		})
+	}
+
+	// Parse the optional devices file (dcim/devices + virtualization/virtual-machines
+	// results, combined into one JSON array). When present, it enables the
+	// primary_ip4 join via SelectDeviceIPsHybrid below.
+	var devices []netboxclient.DeviceRecord
+	if *devicesFile != "" {
+		devData, err := os.ReadFile(*devicesFile)
+		if err != nil {
+			slog.Error("failed to read devices file", "path", *devicesFile, "err", err)
+			os.Exit(1)
+		}
+		var deviceItems []struct {
+			Name   string `json:"name"`
+			Status *struct {
+				Value string `json:"value"`
+			} `json:"status"`
+			PrimaryIP4 *struct {
+				ID int `json:"id"`
+			} `json:"primary_ip4"`
+			OOBIP *struct {
+				ID int `json:"id"`
+			} `json:"oob_ip"`
+		}
+		if err := json.Unmarshal(devData, &deviceItems); err != nil {
+			slog.Error("failed to parse devices JSON", "err", err)
+			os.Exit(1)
+		}
+		for _, d := range deviceItems {
+			rec := netboxclient.DeviceRecord{Name: d.Name}
+			if d.Status != nil {
+				rec.Status = d.Status.Value
+			}
+			if d.PrimaryIP4 != nil {
+				rec.PrimaryIP4ID = d.PrimaryIP4.ID
+			}
+			if d.OOBIP != nil {
+				rec.OOBIPID = d.OOBIP.ID
+			}
+			devices = append(devices, rec)
+		}
 	}
 
 	// Qualify dns_name records — same logic as the sidecar's enrichRecordsWithDeviceNames.
@@ -220,8 +265,17 @@ func main() {
 		return
 	}
 
-	// Select device IPs (creates FQDNs from device names)
-	deviceDNS := cat.SelectDeviceIPs(withoutDNSName)
+	// Select device IPs (creates FQDNs from device names). When a devices
+	// file was supplied, join against primary_ip4 (SelectDeviceIPsHybrid);
+	// otherwise fall back to the legacy regex-heuristic selection.
+	var deviceDNS map[string]*ipcategorizer.DeviceDNSRecords
+	if len(devices) > 0 {
+		var stats ipcategorizer.SelectionStats
+		deviceDNS, stats = cat.SelectDeviceIPsHybrid(withoutDNSName, devices)
+		fmt.Printf("devices: primary_ip=%d fallback=%d none=%d\n", stats.PrimaryIP, stats.Fallback, stats.None)
+	} else {
+		deviceDNS = cat.SelectDeviceIPs(withoutDNSName)
+	}
 
 	// Filter if requested (before discovering reverse zones)
 	if *filterDevice != "" {
@@ -250,6 +304,12 @@ func main() {
 	// Generate enriched records (A/AAAA + CNAME aliases from formatter)
 	genRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
 
+	// Optionally append one per-interface record for every interface-assigned
+	// IP without an explicit dns_name.
+	if *interfaceRecords {
+		genRecords = append(genRecords, cat.InterfaceRecords(withoutDNSName, formatter)...)
+	}
+
 	// Discover reverse zones from selected (and possibly filtered) device IPs
 	// This ensures PTR records match the forward A/AAAA records we're creating
 	var reverseZones zonediscovery.ZoneMap
@@ -270,6 +330,8 @@ func main() {
 		outputCSV(deviceDNS, genRecords, reverseZones)
 	case "detailed":
 		outputDetailed(deviceDNS, records, genRecords, cat, *showAll, reverseZones)
+	case "records":
+		outputRecords(genRecords, reverseZones)
 	default:
 		outputSummary(deviceDNS, reverseZones)
 	}
@@ -607,6 +669,41 @@ func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, genRecords 
 					rec.InterfaceName, rec.VRF)
 			}
 		}
+	}
+}
+
+// outputRecords prints the complete generated record set (forward A/AAAA +
+// CNAME, plus every PTR when reverse zones are enabled) as one sorted line
+// per record: "FQDN\tTYPE\tVALUE". The sort makes two runs — e.g. before and
+// after enabling -devices-file/-interface-records — diff cleanly, which is
+// the point of this format: offline churn review ahead of a rollout.
+func outputRecords(genRecords []netboxclient.IPRecord, reverseZones zonediscovery.ZoneMap) {
+	var lines []string
+
+	for _, r := range genRecords {
+		if r.Type == netboxclient.RecordTypeCNAME {
+			lines = append(lines, fmt.Sprintf("%s\tCNAME\t%s", r.DNSName, r.CNAMETarget))
+			continue
+		}
+		rtype := "A"
+		if r.Family == 6 {
+			rtype = "AAAA"
+		}
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", r.DNSName, rtype, r.Address))
+	}
+
+	for zone, recs := range reverseZones {
+		for _, rec := range recs {
+			if rec.Address == "" {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s.%s\tPTR\t%s", rec.Address, zone, rec.DNSName))
+		}
+	}
+
+	sort.Strings(lines)
+	for _, line := range lines {
+		fmt.Println(line)
 	}
 }
 
