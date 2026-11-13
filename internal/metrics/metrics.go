@@ -24,6 +24,9 @@ type Sidecar struct {
 	CoreDNSReloadDirtyTargets   prometheus.Gauge
 	WebhookRequestsTotal        *prometheus.CounterVec
 	WebhookLastEventTimestamp   prometheus.Gauge
+	DevicesTotal                *prometheus.GaugeVec
+	InterfaceRecords            prometheus.Gauge
+	PTRSkippedTotal             *prometheus.CounterVec
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -142,6 +145,21 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Name: "netbox_sidecar_webhook_last_event_timestamp_seconds",
 			Help: "Unix timestamp of the last successfully applied Netbox webhook event.",
 		}),
+
+		DevicesTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_devices_total",
+			Help: "Device records by resolution source (primary_ip, fallback, none).",
+		}, []string{"source"}),
+
+		InterfaceRecords: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_interface_records",
+			Help: "Generated per-interface address records in the last poll.",
+		}),
+
+		PTRSkippedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "netbox_sidecar_ptr_skipped_total",
+			Help: "IPs with no covering reverse zone, by address scope (private, public).",
+		}, []string{"scope"}),
 	}
 
 	// Pre-create the refusal series for every scope (see
@@ -173,6 +191,9 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.CoreDNSReloadDirtyTargets,
 		m.WebhookRequestsTotal,
 		m.WebhookLastEventTimestamp,
+		m.DevicesTotal,
+		m.InterfaceRecords,
+		m.PTRSkippedTotal,
 	)
 
 	return m

@@ -6,6 +6,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -193,4 +194,22 @@ func TestZoneStalenessSeconds_Registered(t *testing.T) {
 	if val := mf.GetMetric()[0].GetGauge().GetValue(); val != 42.0 {
 		t.Errorf("expected gauge=42.0, got %v", val)
 	}
+}
+
+func TestNewSidecarRegistersDeviceAndPTRMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+	m.DevicesTotal.WithLabelValues("primary_ip").Set(5)
+	m.InterfaceRecords.Set(7)
+	m.PTRSkippedTotal.WithLabelValues("private").Inc()
+
+	families, err := reg.Gather()
+	require.NoError(t, err, "gather should succeed")
+	names := map[string]bool{}
+	for _, f := range families {
+		names[f.GetName()] = true
+	}
+	assert.True(t, names["netbox_sidecar_devices_total"], "devices gauge registered")
+	assert.True(t, names["netbox_sidecar_interface_records"], "interface records gauge registered")
+	assert.True(t, names["netbox_sidecar_ptr_skipped_total"], "ptr skipped counter registered")
 }
