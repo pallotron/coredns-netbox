@@ -7,12 +7,14 @@
 [![CoreDNS Image](https://img.shields.io/badge/ghcr.io-coredns--netbox-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox)
 [![Sidecar Image](https://img.shields.io/badge/ghcr.io-coredns--netbox--sidecar-blue?logo=docker)](https://github.com/pallotron/coredns-netbox/pkgs/container/coredns-netbox-sidecar)
 
-A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones from device names, intelligently selects management and BMC IPs using configurable patterns, and writes zone files to its own persistent volume. Zone files are served to CoreDNS replicas over HTTP — no shared storage required. CoreDNS serves DNS using the custom `netboxreload` plugin and is notified immediately via gRPC after each zone write. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
+A Helm chart deploying CoreDNS with Netbox-backed DNS zones. A Go sidecar periodically scrapes Netbox for IP addresses, auto-discovers zones from device names, and writes zone files to its own persistent volume. Each device's primary A/AAAA record comes from its Netbox `primary_ip4` whenever one is set, falling back to configurable interface-name pattern matching only for devices without a usable primary IP; BMC records are selected the same way they always were, via configurable BMC interface patterns (with the device's `oob_ip` as a backstop). Optionally, every interface-assigned IP without its own Netbox `dns_name` can also get its own `<interface>.<device>` A/AAAA and PTR record. Zone files are served to CoreDNS replicas over HTTP — no shared storage required. CoreDNS serves DNS using the custom `netboxreload` plugin and is notified immediately via gRPC after each zone write. Zone transfers (AXFR) are supported for replicating zones to secondary DNS servers.
 
 **Key Features:**
+- **Primary-IP-First Device Records**: Each device's A/AAAA record is taken from its Netbox `primary_ip4`; interface-name pattern matching is only a fallback for devices without one
 - **Smart Interface Categorization**: Automatically identifies BMC, management, loopback, and dataplane interfaces using regex patterns
 - **Device-Based Discovery**: Creates DNS records from device names even when `dns_name` is empty in Netbox
-- **Multi-IP Support**: Generates both primary management records and BMC records with `-bmc` suffix
+- **Multi-IP Support**: Generates both primary device records and BMC records with `-bmc` suffix
+- **Optional Per-Interface Records**: Every interface-assigned IP without an explicit `dns_name` can get its own `<interface>.<device>` A/AAAA plus PTR (`interfaceRecords.enabled`, default off)
 - **Flexible Zone Extraction**: Derives DNS zones from device naming conventions (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
 - **Reverse DNS (PTR) Records**: Automatically generates reverse zones (in-addr.arpa, ip6.arpa) with configurable prefix lengths
 - **Zero-downtime deploys**: Multiple CoreDNS replicas with a standalone sidecar — DNS never goes down during a rollout
@@ -89,12 +91,11 @@ With 18,000 IP addresses (6,000 hosts × 3 data centers × 3 interfaces each), t
 
 1. **Init container** (`zone-init`) uses `--fetch-from http://<sidecar>:8082` to wait for the sidecar to be ready, then fetches all zone files over HTTP and writes them to a local emptyDir before CoreDNS starts
 2. **Sidecar** continuously polls Netbox for all active IP addresses:
-   - Fetches device information, interface names, VRFs, and IP addresses
-   - Categorizes interfaces using regex patterns (BMC, management, loopback, dataplane)
-   - Groups IPs by device and selects the best management IP
+   - Fetches device information, interface names, VRFs, and IP addresses (including each device's Netbox `primary_ip4` and `oob_ip`)
+   - Selects each device's primary IP from `primary_ip4`, falling back to interface-name/VRF pattern matching (BMC, management, loopback, dataplane) only when no usable `primary_ip4` is set; BMC selection always uses the interface patterns, backstopped by `oob_ip`
    - Extracts DNS zones from device names (e.g., `dc1-site13a-r101-hv-01` → `dc1-site.example.com`)
-   - Generates DNS records: `{device}.{zone}` for management, `{device}-bmc.{zone}` for BMC
-   - Generates reverse zones (in-addr.arpa, ip6.arpa) with PTR records
+   - Generates DNS records: `{device}.{zone}` for the primary record, `{device}-bmc.{zone}` for BMC, and optionally `{interface}.{device}.{zone}` for every other interface-assigned IP without its own `dns_name` (`interfaceRecords.enabled`)
+   - Generates reverse zones (in-addr.arpa, ip6.arpa) with PTR records; when more than one record kind would claim the same address, priority is explicit `dns_name` > per-interface record > device record > BMC record
    - Atomically writes zone files **only when content changes** (SOA serial incremented on write)
    - After a successful write, calls `ZoneReloadService.Reload()` on each CoreDNS pod in parallel
 3. **CoreDNS** serves DNS from in-memory zones loaded by the `netboxreload` plugin. On `Reload()` the plugin fetches fresh zone files from the sidecar HTTP endpoint and swaps them into memory atomically. A fallback poll (configurable, default 60s) covers gRPC delivery failures.

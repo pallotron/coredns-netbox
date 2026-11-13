@@ -278,16 +278,26 @@ interfacePatterns:
   mgmtVRF:
     - "(?i)mgmt"
     - "(?i)oob"
+  # Fallback only: used for device A-record selection only when a device has
+  # no usable NetBox primary_ip4 (primary_ip4 is tried first). "NET" was
+  # removed — with the leading (?i) applied to the whole joined pattern, it
+  # case-insensitively matched every "EthernetN" dataplane port.
   management:
     - "(?i)mgmt"
     - "Management"
     - "fxp0"
-    - "eth[01]"
-    - "mgt"
-    - "NET"
+    - "^eth[01]"
+    - "^mgt"
+    - "^me[0-9]"
     - "^ens[0-9]"
     - "^eno[0-9]"
     - "^nic[0-9]"
+
+# Per-interface address records: every interface-assigned IP without an
+# explicit dns_name gets <normalized-iface>.<device-fqdn> plus an
+# interface-form PTR. Roughly doubles zone size; size memory accordingly.
+interfaceRecords:
+  enabled: false
 
 forwardServers:
   - 1.1.1.1

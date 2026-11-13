@@ -5,14 +5,16 @@
 The sidecar uses a **hybrid approach** to generate DNS records from Netbox:
 
 1. **Records with `dns_name` populated** - Preserved as-is from Netbox
-   - Typically network switches/routers with manually-configured DNS names
    - Example: A switch with `dns_name="switch01.example.com"` → DNS record created directly
 
-2. **Records without `dns_name`** - Generated from device names using interface categorization
-   - Typically servers, PDUs, and infrastructure devices
-   - Example: Device `dc1-r101-prod-srv-01` with mgmt interface → `dc1-r101-prod-srv-01.dc1.example.com`
+2. **Device records** - Generated using NetBox `primary_ip4`, with interface patterns as fallback
+   - `primary_ip4` is used when set and published; interface categorization is only consulted when there is no usable primary IP
+   - Example: Device `dc1-r101-prod-srv-01` with `primary_ip4` set → `dc1-r101-prod-srv-01.dc1.example.com`
 
-This ensures both manually-managed DNS records and automatically-generated device records coexist.
+3. **Per-interface records** - Generated when `interfaceRecords.enabled` is true
+   - A record for every interface-assigned IP without an explicit `dns_name`: `<normalized-interface>.<device-fqdn>` A/AAAA + PTR
+
+This ensures manually-managed DNS records, automatically-generated device records, and optional per-interface records coexist.
 
 ### Zone Extraction from Device Names
 
@@ -81,22 +83,36 @@ analyzer -file <netbox-ip-dump.json> -validate-name-formats \
 
 ## Interface Categorization
 
-The sidecar uses regex patterns to categorize network interfaces and intelligently select the appropriate IP for each device:
+The sidecar selects the appropriate IP for each device's primary A/AAAA record, and (unchanged) for its BMC record, and uses regex patterns to categorize interfaces for the optional per-interface records described below.
 
-**Categories:**
-- **BMC**: BMC/IPMI interfaces (pattern: `(?i)bmc|ipmi|ilo|idrac`) → Creates `{hostname}-bmc` DNS records
-- **Management (VRF-based)**: Interfaces in management/OOB VRFs (pattern: `(?i)mgmt|oob`) → Primary DNS record (preferred)
-- **Management (interface name)**: Interfaces with management naming (pattern: `(?i)mgmt|Management|fxp0|eth[01]|mgt|NET`) → Primary DNS record
-- **Loopback**: Routing protocol loopbacks (pattern: `^lo$|^lo0|^Loopback`) → Skipped
-- **Dataplane**: Production/storage traffic (pattern: `(?i)storage|vtep|vsan`) → Skipped
+**Device record selection (primary A/AAAA):**
+1. **Netbox `primary_ip4`** — if the device has a primary IPv4 address set in Netbox, it is used directly. This is the normal path for every device with its primary IP configured, and does not consult interface names or VRFs at all.
+2. **Management interface-name fallback** — only consulted when a device has no usable `primary_ip4`. The sidecar falls back to the old heuristic: interfaces in management/OOB VRFs (pattern: `(?i)mgmt|oob`) are preferred, then interfaces whose name matches the management pattern (default below). This keeps older or incompletely-modeled devices resolving.
 
-**Example:** A hypervisor `dc1-r101-prod-hv-01` with 5 interfaces generates:
-- `dc1-r101-prod-hv-01.dc1.example.com` → Management IP (172.26.33.64)
+**BMC record selection (`{hostname}-bmc`, unchanged):** interfaces matching the BMC pattern (`(?i)bmc|ipmi|ilo|idrac`); the device's Netbox `oob_ip` fills in when the heuristic finds no matching interface.
+
+**Interface categories** (used for BMC selection, the management fallback, and per-interface record generation):
+- **BMC**: `(?i)bmc|ipmi|ilo|idrac` → `{hostname}-bmc` DNS records
+- **Management (VRF-based)**: `(?i)mgmt|oob` → primary-record fallback (preferred over interface-name matching)
+- **Management (interface name)**: fallback-only, see default pattern in [Interface Categorization Patterns](#interface-categorization-patterns)
+- **Loopback**: `^lo$|^lo0|^Loopback` → skipped
+- **Dataplane**: `(?i)storage|vtep|vsan` → skipped
+
+**Example:** A hypervisor `dc1-r101-prod-hv-01` with a Netbox `primary_ip4` and 5 interfaces generates:
+- `dc1-r101-prod-hv-01.dc1.example.com` → `primary_ip4` (172.26.33.64)
 - `dc1-r101-prod-hv-01-bmc.dc1.example.com` → BMC IP (172.26.1.64)
 
 Dataplane interfaces (ovn-vtep-if, storage-if) are automatically excluded from DNS.
 
 All patterns are configurable via environment variables (see Interface Categorization Patterns below).
+
+### Per-Interface Address Records
+
+Behind `interfaceRecords.enabled` / `INTERFACE_RECORDS_ENABLED` (default `false`), the sidecar additionally generates a record for every interface-assigned IP that has no explicit Netbox `dns_name` of its own: `<normalized-interface>.<device-fqdn>` A/AAAA, plus a PTR. The interface name is normalized (lowercased, non-alphanumeric runs collapsed to `-`) before it is prepended to the device's FQDN.
+
+This is additive to, not a replacement for, the device and BMC records above, and roughly doubles zone size on a typical fleet — size memory and zone-transfer bandwidth accordingly before enabling it broadly.
+
+**PTR priority:** exactly one PTR is published per address. When more than one record kind could claim the same IP, priority is: explicit Netbox `dns_name` > per-interface record > device (primary) record > BMC record. This keeps the PTR stable and predictable even when, for example, a device's primary IP is also separately exposed as a named interface record.
 
 ## Reverse DNS (PTR Records)
 
@@ -200,6 +216,7 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `metrics.port` | `9153` | CoreDNS prometheus plugin port |
 | `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator `ServiceMonitor` |
 | `metrics.serviceMonitor.interval` | `30s` | Scrape interval |
+| `interfaceRecords.enabled` | `false` | Generate optional per-interface A/AAAA and PTR records for interface-assigned IPs without an explicit `dns_name`. Roughly doubles zone size when enabled. See [Per-Interface Address Records](#per-interface-address-records). |
 
 ## Shrink guard
 
@@ -256,7 +273,8 @@ Customize interface categorization via environment variables:
 | `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
 | `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |
 | `MGMT_VRF_PATTERN` | `(?i)mgmt\|oob` | Regex for management VRFs |
-| `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|eth[01]\|mgt\|NET` | Regex for management interfaces |
+| `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|^eth[01]\|^mgt\|^me[0-9]\|^ens[0-9]\|^eno[0-9]\|^nic[0-9]` | Regex for management interfaces. **Fallback only** — consulted for a device's primary record only when it has no usable Netbox `primary_ip4`. |
+| `INTERFACE_RECORDS_ENABLED` | `false` | Generate a `<normalized-interface>.<device-fqdn>` A/AAAA (plus PTR) for every interface-assigned IP without an explicit `dns_name`. Helm value: `interfaceRecords.enabled`. See [Per-Interface Address Records](#per-interface-address-records). |
 | `DOMAIN_SUFFIX` | `example.org` | DNS domain suffix for zone extraction from device names |
 | `STRIP_DC_LABEL` | `false` | Strip the DC label from DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
 | `DEVICE_NAME_PARSERS` | `""` | Newline-separated RE2 regexes with named capture groups; ordered, first match wins. See [Device Name Templates and CNAME Aliases](#device-name-templates-and-cname-aliases). |
