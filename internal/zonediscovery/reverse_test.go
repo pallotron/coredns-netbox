@@ -7,6 +7,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -274,4 +276,60 @@ func TestReverseIPv6RejectsSwappedZone(t *testing.T) {
 	d := NewReverseZoneDiscoverer(nil, []string{"b.8.0.d.0.1.2.0.ip6.arpa"})
 	_, _, err := d.reverseIPv6(net.ParseIP("2001:db8::1"))
 	assert.Error(t, err, "the pre-G12 nibble order must no longer match")
+}
+
+func TestDiscoverPTRKindPriority(t *testing.T) {
+	d := NewReverseZoneDiscoverer([]string{"172.in-addr.arpa"}, nil)
+	records := []netboxclient.IPRecord{
+		{DNSName: "dc1-site13a-r101-prod-eth-tor-01.dc1-site.example.com", Address: "172.26.41.73", Family: 4, Kind: netboxclient.KindDevice},
+		{DNSName: "management1.dc1-site13a-r101-prod-eth-tor-01.dc1-site.example.com", Address: "172.26.41.73", Family: 4, Kind: netboxclient.KindInterface},
+	}
+	zones, err := d.Discover(records)
+	require.NoError(t, err, "discover should succeed")
+	ptrs := zones["172.in-addr.arpa"]
+	require.Len(t, ptrs, 1, "exactly one PTR per address")
+	assert.Equal(t, "management1.dc1-site13a-r101-prod-eth-tor-01.dc1-site.example.com", ptrs[0].DNSName,
+		"interface form beats device form")
+}
+
+func TestDiscoverPTRExplicitBeatsInterface(t *testing.T) {
+	d := NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	records := []netboxclient.IPRecord{
+		{DNSName: "vlan801.dc1-site13a-r101-prod-eth-tor-01.dc1-site.example.com", Address: "10.1.1.1", Family: 4, Kind: netboxclient.KindInterface},
+		{DNSName: "svc-vip.example.com", Address: "10.1.1.1", Family: 4}, // Kind "" = explicit
+	}
+	zones, err := d.Discover(records)
+	require.NoError(t, err, "discover should succeed")
+	ptrs := zones["10.in-addr.arpa"]
+	require.Len(t, ptrs, 1, "exactly one PTR per address")
+	assert.Equal(t, "svc-vip.example.com", ptrs[0].DNSName, "explicit dns_name wins PTR priority")
+}
+
+func TestDiscoverPTRExplicitTiesAllSurvive(t *testing.T) {
+	d := NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	records := []netboxclient.IPRecord{
+		{DNSName: "vip-a.example.com", Address: "10.2.2.2", Family: 4},
+		{DNSName: "vip-b.example.com", Address: "10.2.2.2", Family: 4},
+	}
+	zones, err := d.Discover(records)
+	require.NoError(t, err, "discover should succeed")
+	assert.Len(t, zones["10.in-addr.arpa"], 2, "equal-priority explicit records keep today's multi-PTR behavior")
+}
+
+func TestDiscoverCountsSkippedByScope(t *testing.T) {
+	priv := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_skipped_private"})
+	pub := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_skipped_public"})
+	d := NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	d.SkippedPrivate = priv
+	d.SkippedPublic = pub
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "a.example.com", Address: "192.168.1.1", Family: 4}, // private, no zone → actionable
+		{DNSName: "b.example.com", Address: "203.0.113.5", Family: 4}, // public, no zone → by design
+		{DNSName: "c.example.com", Address: "10.1.2.3", Family: 4},    // matches → not counted
+	}
+	_, err := d.Discover(records)
+	require.NoError(t, err, "discover should succeed")
+	assert.Equal(t, 1.0, testutil.ToFloat64(priv), "one private skip")
+	assert.Equal(t, 1.0, testutil.ToFloat64(pub), "one public skip")
 }
