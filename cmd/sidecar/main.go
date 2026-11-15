@@ -729,9 +729,9 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, devices []net
 	}
 
 	if m != nil {
-		m.DevicesTotal.WithLabelValues("primary_ip").Set(float64(stats.PrimaryIP))
-		m.DevicesTotal.WithLabelValues("fallback").Set(float64(stats.Fallback))
-		m.DevicesTotal.WithLabelValues("none").Set(float64(stats.None))
+		m.Devices.WithLabelValues("primary_ip").Set(float64(stats.PrimaryIP))
+		m.Devices.WithLabelValues("fallback").Set(float64(stats.Fallback))
+		m.Devices.WithLabelValues("none").Set(float64(stats.None))
 		m.InterfaceRecords.Set(float64(len(ifaceRecords)))
 	}
 	slog.Info("generated records",

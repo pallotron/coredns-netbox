@@ -24,7 +24,7 @@ type Sidecar struct {
 	CoreDNSReloadDirtyTargets   prometheus.Gauge
 	WebhookRequestsTotal        *prometheus.CounterVec
 	WebhookLastEventTimestamp   prometheus.Gauge
-	DevicesTotal                *prometheus.GaugeVec
+	Devices                     *prometheus.GaugeVec
 	InterfaceRecords            prometheus.Gauge
 	PTRUncoveredIPs             *prometheus.GaugeVec
 }
@@ -146,8 +146,8 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Help: "Unix timestamp of the last successfully applied Netbox webhook event.",
 		}),
 
-		DevicesTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Name: "netbox_sidecar_devices_total",
+		Devices: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_devices",
 			Help: "Device records by resolution source (primary_ip, fallback, none).",
 		}, []string{"source"}),
 
@@ -197,7 +197,7 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.CoreDNSReloadDirtyTargets,
 		m.WebhookRequestsTotal,
 		m.WebhookLastEventTimestamp,
-		m.DevicesTotal,
+		m.Devices,
 		m.InterfaceRecords,
 		m.PTRUncoveredIPs,
 	)

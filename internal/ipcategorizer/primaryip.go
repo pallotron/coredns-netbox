@@ -5,7 +5,7 @@ import (
 )
 
 // SelectionStats reports how device records were resolved, feeding the
-// netbox_sidecar_devices_total metric. Fallback is the NetBox-hygiene
+// netbox_sidecar_devices metric. Fallback is the NetBox-hygiene
 // burn-down number: devices still resolved by the regex heuristic because
 // primary_ip4 is unset or points at an unpublished IP.
 type SelectionStats struct {
