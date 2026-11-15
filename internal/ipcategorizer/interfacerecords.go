@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 )
 
@@ -41,7 +40,7 @@ func NormalizeInterfaceName(name string) string {
 // deterministic zone generation.
 func (c *Categorizer) InterfaceRecords(
 	records []netboxclient.IPRecord,
-	formatter *nameformat.Formatter,
+	formatter NameFormatter,
 ) []netboxclient.IPRecord {
 	var out []netboxclient.IPRecord
 	var skipped []string

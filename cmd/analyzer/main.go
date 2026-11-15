@@ -305,12 +305,13 @@ func main() {
 	}
 
 	// Generate enriched records (A/AAAA + CNAME aliases from formatter)
-	genRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
+	names := formatter.Memo() // render each device once, as the sidecar does
+	genRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, names)
 
 	// Optionally append one per-interface record for every interface-assigned
 	// IP without an explicit dns_name.
 	if *interfaceRecords {
-		genRecords = append(genRecords, cat.InterfaceRecords(filterByDevice(withoutDNSName, *filterDevice), formatter)...)
+		genRecords = append(genRecords, cat.InterfaceRecords(filterByDevice(withoutDNSName, *filterDevice), names)...)
 	}
 
 	// Discover reverse zones from selected (and possibly filtered) device IPs
