@@ -287,15 +287,18 @@ interfacePatterns:
     - "(?i)mgmt"
     - "(?i)oob"
   # Fallback only: used for device A-record selection only when a device has
-  # no usable NetBox primary_ip4 (primary_ip4 is tried first). "NET" was
-  # removed — with the leading (?i) applied to the whole joined pattern, it
-  # case-insensitively matched every "EthernetN" dataplane port.
+  # no usable NetBox primary_ip4 (primary_ip4 is tried first). The leading
+  # (?i) applies to the whole joined pattern, so a bare "NET" would match
+  # every "EthernetN" dataplane port; "^net[0-9]" matches NETn/netN
+  # management ports only. "^eth[01]" is anchored so bond0-eth0 and
+  # sfp-eth1 do not match.
   management:
     - "(?i)mgmt"
     - "Management"
     - "fxp0"
     - "^eth[01]"
-    - "^mgt"
+    - "mgt"
+    - "^net[0-9]"
     - "^me[0-9]"
     - "^ens[0-9]"
     - "^eno[0-9]"

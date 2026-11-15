@@ -285,7 +285,7 @@ Customize interface categorization via environment variables:
 | `LOOPBACK_PATTERN` | `^lo$\|^lo0\|^Loopback` | Regex for loopback interfaces |
 | `DATAPLANE_PATTERN` | `(?i)storage\|vtep\|vsan` | Regex for dataplane interfaces |
 | `MGMT_VRF_PATTERN` | `(?i)mgmt\|oob` | Regex for management VRFs |
-| `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|^eth[01]\|^mgt\|^me[0-9]\|^ens[0-9]\|^eno[0-9]\|^nic[0-9]` | Regex for management interfaces. **Fallback only** — consulted for a device's primary record only when it has no usable Netbox `primary_ip4`. |
+| `MGMT_INTERFACE_PATTERN` | `(?i)mgmt\|Management\|fxp0\|^eth[01]\|mgt\|^net[0-9]\|^me[0-9]\|^ens[0-9]\|^eno[0-9]\|^nic[0-9]` | Regex for management interfaces. **Fallback only** — consulted for a device's primary record only when it has no usable Netbox `primary_ip4`. `eth[01]` is anchored, so names that only contain it (`bond0-eth0`, `sfp-eth1`) do not match, and there is no bare `net`, which would match every `EthernetN` port. If a device resolved through one of those names, set its `primary_ip4` or extend this pattern. |
 | `INTERFACE_RECORDS_ENABLED` | `false` | Generate a `<normalized-interface>.<device-fqdn>` A/AAAA (plus PTR) for every interface-assigned IP without an explicit `dns_name`. Helm value: `interfaceRecords.enabled`. See [Per-Interface Address Records](#per-interface-address-records). |
 | `DOMAIN_SUFFIX` | `example.org` | DNS domain suffix for zone extraction from device names |
 | `STRIP_DC_LABEL` | `false` | Strip the DC label from DNS names before zone discovery. See [Collapsing Per-DC Zones](dc-label-stripping.md). |
