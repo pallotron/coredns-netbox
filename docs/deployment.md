@@ -6,6 +6,37 @@
 - [Helm](https://helm.sh/)
 - A running Netbox instance (3.x or 4.x) with an API token
 
+### NetBox token permissions
+
+The sidecar only reads from NetBox. The token's user needs these view
+permissions:
+
+| Permission | Endpoint | Used for |
+|------------|----------|----------|
+| `ipam.view_ipaddress` | `/api/ipam/ip-addresses/` | Every published record |
+| `dcim.view_device` | `/api/dcim/devices/` | `primary_ip4` and `oob_ip` selection |
+| `virtualization.view_virtualmachine` | `/api/virtualization/virtual-machines/` | VM `primary_ip4` selection |
+
+All three are required, including `virtualization.view_virtualmachine` when
+you have no virtual machines. A token that only has `ipam.view_ipaddress`
+is not enough. Grant all three before deploying or upgrading. If any is
+missing:
+
+- every poll fails and the sidecar keeps serving the last good zones, with
+  `netbox_sidecar_poll_total{result="error"}` increasing;
+- a pod starting with an empty zone directory fails its zone-init step, so
+  CoreDNS on that pod does not start.
+
+The log line names the endpoint and the permission:
+
+```
+netbox API returned 403 for /api/dcim/devices/: the token is invalid or expired, or lacks the dcim.view_device permission
+```
+
+NetBox returns the same 403 for an expired or invalid token, so check the
+token too. A 401 or 403 is not retried within a poll; the next poll tries
+again, so restoring the permission needs no restart.
+
 ## Install
 
 Reference a pre-existing Kubernetes Secret containing the Netbox API token. This is the recommended approach — it keeps secrets out of Helm values and integrates with external secret management. (You can also pass `--set netbox.token=...` directly for quick testing.)

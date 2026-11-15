@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -176,6 +175,9 @@ func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
 		if err == nil {
 			return records, nil
 		}
+		if isAuthError(err) {
+			return nil, err
+		}
 		lastErr = err
 	}
 	return nil, lastErr
@@ -327,7 +329,7 @@ func (c *Client) fetchPage(ctx context.Context, offset, limit int) (*ipListRespo
 	}
 	q.Set("limit", fmt.Sprint(limit))
 	q.Set("offset", fmt.Sprint(offset))
-	reqURL := fmt.Sprintf("%s/api/ipam/ip-addresses/?%s", c.baseURL, q.Encode())
+	reqURL := fmt.Sprintf("%s%s?%s", c.baseURL, ipAddressesPath, q.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -344,8 +346,7 @@ func (c *Client) fetchPage(ctx context.Context, offset, limit int) (*ipListRespo
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("netbox API returned %d: %s", resp.StatusCode, string(body))
+		return nil, statusError(resp, ipAddressesPath)
 	}
 
 	var result ipListResponse

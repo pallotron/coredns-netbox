@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,4 +81,45 @@ func TestFetchDevicesPagination(t *testing.T) {
 	require.Len(t, got, 3, "all pages collected")
 	assert.Equal(t, "dev-a", got[0].Name, "deterministic page order")
 	assert.Equal(t, "dev-c", got[2].Name, "deterministic page order")
+}
+
+// A 401/403 names the endpoint and the permission the token
+// needs, and is not retried (it cannot fix itself within a poll).
+func TestFetchDevicesForbiddenNamesPermissionAndSkipsRetries(t *testing.T) {
+	cases := []struct {
+		forbiddenPath string
+		permission    string
+	}{
+		{"/api/dcim/devices/", "dcim.view_device"},
+		{"/api/virtualization/virtual-machines/", "virtualization.view_virtualmachine"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.permission, func(t *testing.T) {
+			var forbiddenHits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == tc.forbiddenPath {
+					forbiddenHits.Add(1)
+					http.Error(w, `{"detail":"You do not have permission to perform this action."}`, http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, `{"count": 0, "results": []}`)
+			}))
+			defer srv.Close()
+
+			c, err := New(srv.URL, "test-token", 1000, 4, 3, time.Millisecond, time.Millisecond)
+			require.NoError(t, err, "client construction should succeed")
+
+			_, err = c.FetchDevices(context.Background())
+			require.Error(t, err, "a 403 must fail the fetch")
+
+			var authErr *AuthError
+			require.ErrorAs(t, err, &authErr, "a 403 must surface as an AuthError")
+			assert.Equal(t, http.StatusForbidden, authErr.Status)
+			assert.Equal(t, tc.forbiddenPath, authErr.Path)
+			assert.Equal(t, tc.permission, authErr.Permission)
+			assert.ErrorContains(t, err, tc.permission, "the log line must name the missing permission")
+			assert.Equal(t, int32(1), forbiddenHits.Load(), "a 403 must not be retried")
+		})
+	}
 }
