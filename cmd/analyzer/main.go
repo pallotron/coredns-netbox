@@ -310,7 +310,7 @@ func main() {
 	// Optionally append one per-interface record for every interface-assigned
 	// IP without an explicit dns_name.
 	if *interfaceRecords {
-		genRecords = append(genRecords, cat.InterfaceRecords(withoutDNSName, formatter)...)
+		genRecords = append(genRecords, cat.InterfaceRecords(filterByDevice(withoutDNSName, *filterDevice), formatter)...)
 	}
 
 	// Discover reverse zones from selected (and possibly filtered) device IPs
@@ -320,7 +320,7 @@ func main() {
 		ipv4ZoneList := parseZoneList(*ipv4Zones)
 		ipv6ZoneList := parseZoneList(*ipv6Zones)
 		disc := zonediscovery.NewReverseZoneDiscoverer(ipv4ZoneList, ipv6ZoneList)
-		reverseZones, err = disc.Discover(genRecords)
+		reverseZones, err = previewReverseZones(disc, genRecords, withDNSName)
 		if err != nil {
 			slog.Error("failed to discover reverse zones", "err", err)
 			os.Exit(1)
@@ -617,6 +617,48 @@ func outputDetailed(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, allRec
 	}
 }
 
+// filterByDevice keeps the records whose device name contains filter, the
+// same substring match -device applies to device records. An empty filter
+// keeps everything.
+func filterByDevice(records []netboxclient.IPRecord, filter string) []netboxclient.IPRecord {
+	if filter == "" {
+		return records
+	}
+	var out []netboxclient.IPRecord
+	for _, r := range records {
+		if strings.Contains(r.DeviceName, filter) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// previewReverseZones picks PTRs the way the sidecar does: explicit dns_name
+// records take part in PTR priority, so a generated PTR never appears where
+// the sidecar would publish the explicit one. The explicit PTRs themselves
+// are then left out, as the preview only covers generated records.
+func previewReverseZones(disc *zonediscovery.ReverseZoneDiscoverer, genRecords, explicit []netboxclient.IPRecord) (zonediscovery.ZoneMap, error) {
+	all := make([]netboxclient.IPRecord, 0, len(genRecords)+len(explicit))
+	all = append(all, genRecords...)
+	for _, r := range explicit {
+		r.Kind = "" // explicit: wins PTR priority
+		all = append(all, r)
+	}
+	zones, err := disc.Discover(all)
+	if err != nil {
+		return nil, err
+	}
+	out := make(zonediscovery.ZoneMap, len(zones))
+	for zone, recs := range zones {
+		for _, r := range recs {
+			if r.Kind != "" {
+				out[zone] = append(out[zone], r)
+			}
+		}
+	}
+	return out, nil
+}
+
 func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, genRecords []netboxclient.IPRecord, reverseZones zonediscovery.ZoneMap) {
 	fmt.Println("record_type,zone,name,value,device,interface,vrf")
 
@@ -639,6 +681,19 @@ func outputCSV(deviceDNS map[string]*ipcategorizer.DeviceDNSRecords, genRecords 
 				dns.Zone, name, dns.BMCIP.Address, name,
 				dns.BMCIP.InterfaceName, dns.BMCIP.VRF)
 		}
+	}
+
+	// Per-interface address records (-interface-records). Zone is "-" for
+	// the same reason as the aliases below.
+	for _, r := range genRecords {
+		if r.Kind != netboxclient.KindInterface {
+			continue
+		}
+		rtype := "A"
+		if r.Family == 6 {
+			rtype = "AAAA"
+		}
+		fmt.Printf("%s,-,%s,%s,%s,%s,%s\n", rtype, r.DNSName, r.Address, r.DeviceName, r.InterfaceName, r.VRF)
 	}
 
 	// CNAME alias records (name templates). Zone is printed as "-" because
