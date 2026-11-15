@@ -119,6 +119,17 @@ test.helm:
 		--set 'secondary.transferFrom[0]=10.0.0.1' > /dev/null
 	helm template test ./helm/coredns-netbox --set netbox.token=test \
 		--set metrics.enabled=false > /dev/null
+	# values without an interfaceRecords key (helm upgrade --reuse-values from
+	# a release that predates it) render INTERFACE_RECORDS_ENABLED as "false"
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set interfaceRecords=null 2>&1 | grep -A1 INTERFACE_RECORDS_ENABLED | grep -q 'value: "false"' && \
+		echo "PASS: missing interfaceRecords renders as false" || \
+		(echo "FAIL: missing interfaceRecords did not render as false" && exit 1)
+	@helm template test ./helm/coredns-netbox --set netbox.token=test \
+		--set sidecar.standalone=true \
+		--set interfaceRecords=null 2>&1 | grep -A1 INTERFACE_RECORDS_ENABLED | grep -q 'value: "false"' && \
+		echo "PASS: missing interfaceRecords renders as false (standalone sidecar)" || \
+		(echo "FAIL: missing interfaceRecords did not render as false (standalone sidecar)" && exit 1)
 	# service.annotations renders on ClusterIP service
 	@helm template test ./helm/coredns-netbox --set netbox.token=test \
 		--set 'service.annotations.example\.com/foo=bar' 2>&1 | grep -q "example.com/foo" && \
