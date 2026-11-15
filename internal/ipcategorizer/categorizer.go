@@ -212,7 +212,7 @@ func (c *Categorizer) SelectDeviceIPs(records []netboxclient.IPRecord) map[strin
 // inserted before the first dot, and each alias template contributes a CNAME
 // pointing at the canonical (and, when a BMC IP exists, a BMC alias pointing
 // at the BMC canonical). Devices that do not match keep the legacy behavior.
-func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter *nameformat.Formatter) []netboxclient.IPRecord {
+func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter NameFormatter) []netboxclient.IPRecord {
 	var records []netboxclient.IPRecord
 
 	deviceNames := make([]string, 0, len(deviceDNS))
@@ -226,7 +226,7 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter *namef
 
 		canonical := canonicalFQDN(deviceName, dns.Zone, formatter)
 		var aliases []string
-		if names, ok := formatter.Format(deviceName); ok {
+		if names, ok := formatNames(formatter, deviceName); ok {
 			aliases = names.Aliases
 		}
 
@@ -334,11 +334,26 @@ func (c *Categorizer) extractZone(deviceName string) string {
 	return loc + "-" + site + "." + c.domainSuffix
 }
 
+// NameFormatter renders device names from templates: a *nameformat.Formatter,
+// or the per-poll *nameformat.Memo the sidecar and analyzer pass so each
+// device renders once however many records need its name.
+type NameFormatter interface {
+	Format(deviceName string) (nameformat.Names, bool)
+}
+
+// formatNames is formatter.Format, treating a nil formatter as "off".
+func formatNames(formatter NameFormatter, deviceName string) (nameformat.Names, bool) {
+	if formatter == nil {
+		return nameformat.Names{}, false
+	}
+	return formatter.Format(deviceName)
+}
+
 // canonicalFQDN returns the template-rendered canonical name when a
 // formatter parser matches, else the legacy <device>.<zone> form.
 // Formatter.Format is nil-receiver safe.
-func canonicalFQDN(deviceName, zone string, formatter *nameformat.Formatter) string {
-	if names, ok := formatter.Format(deviceName); ok {
+func canonicalFQDN(deviceName, zone string, formatter NameFormatter) string {
+	if names, ok := formatNames(formatter, deviceName); ok {
 		return names.Canonical
 	}
 	return deviceName + "." + zone

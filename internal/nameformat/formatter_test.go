@@ -1,6 +1,9 @@
 package nameformat
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,4 +182,41 @@ func TestFormatLowercasesRenderedNames(t *testing.T) {
 	names, ok := f.Format("dc1-hv-01")
 	require.True(t, ok)
 	assert.Equal(t, "hv01.example.org", names.Canonical, "rendered names are normalized to lowercase")
+}
+
+// A Memo renders each device name once, so a broken template logs its
+// error once per pass however many records need the name.
+func TestMemoFormatsEachNameOnce(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	broken, err := New(
+		[]string{`^(?P<dc>[a-z0-9]+)-(?P<role>[a-z]+)-(?P<idx>[0-9]+)$`},
+		`{{.name}} extra.{{.domain}}`, // renders an invalid name
+		nil, "", "example.org",
+	)
+	require.NoError(t, err)
+
+	memo := broken.Memo()
+	for i := 0; i < 5; i++ {
+		_, ok := memo.Format("dc1-hv-01")
+		assert.False(t, ok, "a broken canonical still falls back")
+	}
+	assert.Equal(t, 1, strings.Count(buf.String(), "level=ERROR"), "one error for five lookups")
+
+	good, err := New(
+		[]string{`^(?P<dc>[a-z0-9]+)-(?P<role>[a-z]+)-(?P<idx>[0-9]+)$`},
+		`{{.name}}.{{.domain}}`, []string{`{{.role}}{{.idx}}.{{.domain}}`}, "", "example.org",
+	)
+	require.NoError(t, err)
+	want, wantOK := good.Format("dc1-hv-01")
+	got, gotOK := good.Memo().Format("dc1-hv-01")
+	assert.Equal(t, wantOK, gotOK)
+	assert.Equal(t, want, got, "a memo returns exactly what Format returns")
+
+	var off *Formatter // feature off
+	_, ok := off.Memo().Format("dc1-hv-01")
+	assert.False(t, ok, "a memo of a nil formatter is safe and matches nothing")
 }

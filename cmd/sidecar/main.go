@@ -718,11 +718,14 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, devices []net
 	slog.Info("record split", "with_dns_name", len(withDNSName), "without_dns_name", len(withoutDNSName))
 
 	deviceDNS, stats := categorizer.SelectDeviceIPsHybrid(records, devices)
-	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
+	// One memo per poll: each device's templates render (and a broken one
+	// logs) once, however many records below need the name.
+	names := formatter.Memo()
+	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, names)
 
 	var ifaceRecords []netboxclient.IPRecord
 	if interfaceRecordsEnabled {
-		ifaceRecords = categorizer.InterfaceRecords(withoutDNSName, formatter)
+		ifaceRecords = categorizer.InterfaceRecords(withoutDNSName, names)
 	}
 
 	if m != nil {

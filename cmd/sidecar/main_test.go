@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
+	"github.com/pallotron/coredns-netbox/internal/nameformat"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
@@ -395,4 +397,34 @@ func TestFetchNetboxSetsPTRUncoveredGauge(t *testing.T) {
 			"poll %d: 50 distinct uncovered private IPs", poll)
 		assert.Equal(t, 0.0, testutil.ToFloat64(m.PTRUncoveredIPs.WithLabelValues("public")), "poll %d", poll)
 	}
+}
+
+// A broken name template logs one error per device per poll, not one per
+// record that needs the device's name (device, aliases, every interface).
+func TestEnrichBrokenTemplateLogsOncePerDevice(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	cat, err := ipcategorizer.NewCategorizer("bmc", "^lo$", "storage", "mgmt", "(?i)mgmt", "example.org")
+	require.NoError(t, err)
+	formatter, err := nameformat.New(
+		[]string{`^(?P<dc>[a-z0-9]+)-(?P<role>[a-z]+)-(?P<idx>[0-9]+)$`},
+		`{{.name}} extra.{{.domain}}`, // renders an invalid name
+		[]string{`{{.role}}{{.idx}}.{{.domain}}`}, "", "example.org",
+	)
+	require.NoError(t, err)
+
+	var records []netboxclient.IPRecord
+	for i, iface := range []string{"mgmt0", "eno1", "eno2", "eno3", "eno4"} {
+		records = append(records, netboxclient.IPRecord{
+			ID: i + 1, Address: fmt.Sprintf("10.0.0.%d", i+1), Family: 4,
+			DeviceName: "dc1-hv-01", InterfaceName: iface,
+		})
+	}
+
+	enrichRecordsWithDeviceNames(records, nil, cat, "example.org", formatter, true, nil)
+	assert.Equal(t, 1, strings.Count(buf.String(), "nameformat: canonical template"),
+		"one error for the device, not one per record built from its name")
 }
