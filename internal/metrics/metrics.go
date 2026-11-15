@@ -26,7 +26,7 @@ type Sidecar struct {
 	WebhookLastEventTimestamp   prometheus.Gauge
 	DevicesTotal                *prometheus.GaugeVec
 	InterfaceRecords            prometheus.Gauge
-	PTRSkippedTotal             *prometheus.CounterVec
+	PTRUncoveredIPs             *prometheus.GaugeVec
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -156,9 +156,9 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Help: "Generated per-interface address records in the last poll.",
 		}),
 
-		PTRSkippedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "netbox_sidecar_ptr_skipped_total",
-			Help: "IPs with no covering reverse zone, by address scope (private, public).",
+		PTRUncoveredIPs: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_ptr_uncovered_ips",
+			Help: "Distinct IPs in the last published poll that no configured reverse zone covers, by address scope (private, public).",
 		}, []string{"scope"}),
 	}
 
@@ -166,6 +166,9 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 	// internal/shrinkguard) so a dashboard or alert reads 0 from the first
 	// scrape instead of a missing series that only appears once something
 	// has already gone wrong.
+	for _, scope := range []string{"private", "public"} {
+		m.PTRUncoveredIPs.WithLabelValues(scope)
+	}
 	for _, scope := range []string{"empty", "global", "zone"} {
 		m.ShrinkGuardRefusalsTotal.WithLabelValues(scope)
 	}
@@ -193,7 +196,7 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.WebhookLastEventTimestamp,
 		m.DevicesTotal,
 		m.InterfaceRecords,
-		m.PTRSkippedTotal,
+		m.PTRUncoveredIPs,
 	)
 
 	return m

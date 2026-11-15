@@ -371,3 +371,28 @@ func TestEnrichTooLongInterfaceKeepsDevicePTR(t *testing.T) {
 			"interfaceRecords=%v: PTR must target the device name, got %s", ifaceRecords, ptrs[0].DNSName)
 	}
 }
+
+// netbox_sidecar_ptr_uncovered_ips reports the distinct IPs of the last
+// published poll that no reverse zone covers. It is a level, not a running
+// count: a second identical poll leaves it unchanged.
+func TestFetchNetboxSetsPTRUncoveredGauge(t *testing.T) {
+	srv := fakeNetbox(t, 50) // 50 distinct 10.x addresses
+	defer srv.Close()
+	m := metrics.NewSidecar(prometheus.NewRegistry())
+
+	client, err := netboxclient.New(srv.URL, "testtoken", 1000, 2, 0, 0, 0)
+	require.NoError(t, err)
+	cat, err := ipcategorizer.NewCategorizer("bmc", "^lo$", "storage", "mgmt", "mgmt", "example.org")
+	require.NoError(t, err)
+	// No reverse zone covers 10.0.0.0/8: every address is an uncovered private IP.
+	reverse := zonediscovery.NewReverseZoneDiscoverer([]string{"168.192.in-addr.arpa"}, nil)
+
+	for poll := 1; poll <= 2; poll++ {
+		_, _, err := fetchNetbox(context.Background(), client, cat, nil,
+			testDiscoverer(t), reverse, m, "example.org", false, testGuard(), shrinkguard.Baseline{}, nil)
+		require.NoError(t, err, "poll %d", poll)
+		assert.Equal(t, 50.0, testutil.ToFloat64(m.PTRUncoveredIPs.WithLabelValues("private")),
+			"poll %d: 50 distinct uncovered private IPs", poll)
+		assert.Equal(t, 0.0, testutil.ToFloat64(m.PTRUncoveredIPs.WithLabelValues("public")), "poll %d", poll)
+	}
+}

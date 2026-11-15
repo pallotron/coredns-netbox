@@ -23,6 +23,7 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_netbox_fetch_duration_seconds` | Histogram | — | Netbox HTTP fetch duration |
 | `netbox_sidecar_netbox_records_fetched` | Gauge | — | IP records returned by Netbox in the last poll |
 | `netbox_sidecar_netbox_empty_response_total` | Counter | — | Polls where Netbox returned zero records |
+| `netbox_sidecar_ptr_uncovered_ips` | Gauge | `scope=private\|public` | Distinct IPs in the last published poll that no configured reverse zone covers, so they get no PTR. A non-zero `private` value (RFC 1918, ULA, link-local, loopback) usually means a reverse zone is missing; `public` is expected unless you serve public reverse zones |
 | `netbox_sidecar_shrink_guard_refusals_total` | Counter | `scope=empty\|global\|zone` | Publishes refused because the record set shrank implausibly, by which rule refused |
 | `netbox_sidecar_shrink_guard_blocked` | Gauge | — | 1 while the shrink guard is refusing to publish; **alert on this** — the zones are frozen until an operator clears it (see [Shrink guard](configuration.md#shrink-guard)) |
 | `netbox_sidecar_shrink_guard_overrides_total` | Counter | — | Refusals suppressed by an operator override (`ForceNetboxPoll{allow_shrink:true}`) |

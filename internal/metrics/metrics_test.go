@@ -201,7 +201,7 @@ func TestNewSidecarRegistersDeviceAndPTRMetrics(t *testing.T) {
 	m := metrics.NewSidecar(reg)
 	m.DevicesTotal.WithLabelValues("primary_ip").Set(5)
 	m.InterfaceRecords.Set(7)
-	m.PTRSkippedTotal.WithLabelValues("private").Inc()
+	m.PTRUncoveredIPs.WithLabelValues("private").Set(1)
 
 	families, err := reg.Gather()
 	require.NoError(t, err, "gather should succeed")
@@ -211,5 +211,5 @@ func TestNewSidecarRegistersDeviceAndPTRMetrics(t *testing.T) {
 	}
 	assert.True(t, names["netbox_sidecar_devices_total"], "devices gauge registered")
 	assert.True(t, names["netbox_sidecar_interface_records"], "interface records gauge registered")
-	assert.True(t, names["netbox_sidecar_ptr_skipped_total"], "ptr skipped counter registered")
+	assert.True(t, names["netbox_sidecar_ptr_uncovered_ips"], "ptr uncovered gauge registered")
 }
