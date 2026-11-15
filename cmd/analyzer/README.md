@@ -96,7 +96,11 @@ The analyzer mirrors the sidecar's record generation logic using two paths:
 IPs that have `dns_name` set in Netbox are used as-is. Bare hostnames without a domain suffix are automatically qualified with the configured `-domain` suffix. Use `-show-dns-names` to inspect these records.
 
 **Path 2 — Device-based records** (default output):
-IPs without `dns_name` go through interface categorization:
+IPs without `dns_name` go through interface categorization. The output
+covers these generated records only. Explicit `dns_name` records still take
+part in PTR selection, as they do in the sidecar, so where an address also
+has an explicit name (which the sidecar publishes as its PTR) no generated
+PTR is shown for it.
 
 1. Reads the Netbox IP address JSON data
 2. Filters to only active IP addresses
