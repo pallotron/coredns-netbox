@@ -22,6 +22,13 @@ const maxBodyBytes = 64 * 1024
 
 const objectTypeIPAddress = "ipam.ipaddress"
 
+// Device and virtual machine events can change their records (primary_ip4,
+// oob_ip, a rename), which only a full poll can recompute.
+const (
+	objectTypeDevice         = "dcim.device"
+	objectTypeVirtualMachine = "virtualization.virtualmachine"
+)
+
 // Register adds the Netbox webhook route to mux. If secret is empty, no
 // route is registered at all — there is never an accidental unauthenticated
 // trigger endpoint.
@@ -98,6 +105,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.m.WebhookRequestsTotal.WithLabelValues("bad_payload").Inc()
 		http.Error(w, "malformed payload", http.StatusBadRequest)
+		return
+	}
+
+	if p.ObjectType == objectTypeDevice || p.ObjectType == objectTypeVirtualMachine {
+		switch p.Event {
+		case "created", "updated", "deleted":
+			h.triggerPoll()
+			h.m.WebhookRequestsTotal.WithLabelValues("poll_triggered").Inc()
+		default:
+			slog.Debug("netboxwebhook: ignoring unknown event type", "event", p.Event, "object_type", p.ObjectType)
+			h.m.WebhookRequestsTotal.WithLabelValues("stale").Inc()
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 

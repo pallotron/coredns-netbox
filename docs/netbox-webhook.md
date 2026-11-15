@@ -1,16 +1,21 @@
 # Netbox Webhook Trigger
 
-The sidecar can apply Netbox `ipam.ipaddress` changes immediately, via a webhook Netbox posts directly to the sidecar — no message broker. There is no need to filter which IP addresses the webhook covers: every `ipam.ipaddress` create/update/delete event is handled, whether or not the record has `dns_name` set in Netbox.
+The sidecar can apply Netbox `ipam.ipaddress` changes immediately, via a webhook Netbox posts directly to the sidecar — no message broker. There is no need to filter which IP addresses the webhook covers: every `ipam.ipaddress` create/update/delete event is handled, whether or not the record has `dns_name` set in Netbox. Device and virtual machine events (`dcim.device`, `virtualization.virtualmachine`) are handled too, so a change to a device's `primary_ip4`, `oob_ip` or name is published straight away rather than at the next periodic poll.
 
 ## How it works
 
 ```
-Netbox (ipam.ipaddress webhook, HMAC-signed)
+Netbox (ipam.ipaddress / dcim.device / virtualization.virtualmachine
+        webhook, HMAC-signed)
     → POST /webhook/netbox on the sidecar's HEALTH_ADDR port
     → verify X-Hook-Signature (HMAC-SHA512)
     → parse event (created/updated/deleted)
 
-    dns_name set in Netbox?
+    device or virtual machine event?
+      yes → trigger a full Netbox poll (see "Device and virtual machine
+            events" below), rate-limited by WEBHOOK_POLL_MIN_INTERVAL
+
+    ip address event with dns_name set in Netbox?
       yes → write directly into the dynamic record store
             → trigger the same debounced re-merge + zone write + CoreDNS
               reload path the gRPC DynamicZoneService API already uses
@@ -30,10 +35,10 @@ Set `NETBOX_WEBHOOK_SECRET` to a shared secret and configure a matching Netbox w
 
 - Webhook `payload_url`: `http://<sidecar-service>:8082/webhook/netbox`
 - Webhook `secret`: same value as `NETBOX_WEBHOOK_SECRET`
-- Event rule `object_types`: `ipam.ipaddress`
+- Event rule `object_types`: `ipam.ipaddress`, `dcim.device`, `virtualization.virtualmachine`
 - Event rule `event_types`: `object_created`, `object_updated`, `object_deleted`
 
-No condition/filter on `dns_name` is needed on the event rule — subscribe to all `ipam.ipaddress` events. If `NETBOX_WEBHOOK_SECRET` is unset, the `/webhook/netbox` route is not registered at all — there is no way to accidentally expose an unauthenticated trigger endpoint.
+No condition/filter on `dns_name` is needed on the event rule — subscribe to all events for these object types. Without the device and virtual machine types the webhook still works, but `primary_ip4`, `oob_ip` and name changes wait for the next periodic poll. If `NETBOX_WEBHOOK_SECRET` is unset, the `/webhook/netbox` route is not registered at all — there is no way to accidentally expose an unauthenticated trigger endpoint.
 
 ## Records without `dns_name`
 
@@ -42,7 +47,7 @@ Many environments generate DNS names from device names (`ipcategorizer`/`namefor
 - `ipcategorizer.SelectDeviceIPs` picks the *one* preferred IP for a device by comparing **all** of that device's interfaces (mgmt VRF vs. BMC vs. dataplane, etc.) — a webhook event for one IP address doesn't carry the device's other IPs.
 - `nameformat`'s CNAME alias generation needs the **full zone's** record set to resolve collisions between different devices.
 
-**Why the webhook payload can't supply this itself, no matter how it's configured:** the `data` field in a Netbox webhook (the default JSON body, or a custom Jinja2 `body_template`) is always the plain REST-API-serialized representation of the changed object — never a live, queryable Django object. Jinja2 templates can't perform relational lookups (`data.assigned_object.device.interfaces.all` is not available); you only ever get fields the object's own serializer already includes. For an `ipam.ipaddress` event that's the one assigned interface/device name (already parsed for the direct-write path), never the device's *other* interfaces or IPs. Subscribing to `dcim.device` events instead wouldn't help either — NetBox's device serializer exposes `primary_ip4`/`primary_ip6` (a single reference each) plus metadata, not a nested interface list; that's always a separate `/api/dcim/interfaces/?device_id=X` call regardless of webhook configuration. Closing this gap requires an actual poll no matter how the webhook is set up.
+**Why the webhook payload can't supply this itself, no matter how it's configured:** the `data` field in a Netbox webhook (the default JSON body, or a custom Jinja2 `body_template`) is always the plain REST-API-serialized representation of the changed object — never a live, queryable Django object. Jinja2 templates can't perform relational lookups (`data.assigned_object.device.interfaces.all` is not available); you only ever get fields the object's own serializer already includes. For an `ipam.ipaddress` event that's the one assigned interface/device name (already parsed for the direct-write path), never the device's *other* interfaces or IPs. A `dcim.device` event doesn't carry them either: NetBox's device serializer exposes `primary_ip4`/`primary_ip6`/`oob_ip` (a single reference each) plus metadata, not a nested interface list. Closing this gap requires an actual poll no matter how the webhook is set up.
 
 So instead of a no-op, an event with no `dns_name` (a `created`/`updated` event whose `data.dns_name` is empty, or a `deleted` event whose `snapshots.prechange.dns_name` was empty) triggers a full Netbox poll — the same code path `ForceNetboxPoll` already uses, unchanged. This means these records get the same near-real-time propagation as `dns_name`-having ones, just via a slightly heavier (but already correct and tested) mechanism, rather than waiting for the next `POLL_INTERVAL` tick.
 
@@ -52,6 +57,12 @@ So instead of a no-op, an event with no `dns_name` (a `created`/`updated` event 
 - `WEBHOOK_POLL_MIN_INTERVAL` (default `5s`) additionally bounds how often a webhook-triggered poll can run at all, independent of how many events arrive — a hard ceiling on Netbox API request rate during a burst, on top of the channel's own coalescing. A signal that arrives inside the cooldown window is simply dropped; the periodic poll (or the next webhook event once the cooldown has elapsed) is always there as a backstop.
 - The worst case under a sustained burst is back-to-back full polls for as long as the burst lasts, bounded by `burst_duration / poll_cycle_duration` — this degrades toward the *pre-webhook baseline* (continuous polling), not into something new or worse. The webhook path only removes idle-time API calls; it never adds a failure mode under load that didn't already exist.
 - This is deliberately a **separate signal channel** from the one `ForceNetboxPoll` (the gRPC control call) uses, so a deliberate operator-triggered force-poll always runs immediately and is never subject to `WEBHOOK_POLL_MIN_INTERVAL`'s cooldown.
+
+## Device and virtual machine events
+
+A device's `primary_ip4` and `oob_ip` choose the addresses of its device and `-bmc` records, and its name is the base of every generated name. A change to any of them arrives as a `dcim.device` (or `virtualization.virtualmachine`) event, not as an `ipam.ipaddress` one, so these events matter too. Every `created`, `updated` or `deleted` event for either type triggers a full Netbox poll, through the same coalesced, rate-limited signal as a `dns_name`-less IP event (see the throttling notes above). Nothing is written to the dynamic store directly, and the event is counted as `poll_triggered`.
+
+The handler does not try to tell which fields changed: a device edit that touches nothing DNS-related still triggers a poll. The coalescing and `WEBHOOK_POLL_MIN_INTERVAL` keep that cheap.
 
 ## Limitations
 

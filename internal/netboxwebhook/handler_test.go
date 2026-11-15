@@ -2,6 +2,8 @@ package netboxwebhook
 
 import (
 	"bytes"
+	"errors"
+	"strings"
 	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/hex"
@@ -17,6 +19,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
 	"github.com/pallotron/coredns-netbox/internal/zonediscovery"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,14 +28,44 @@ func newTestServer(t *testing.T) (srv *httptest.Server, store dynamicstore.Dynam
 	t.Helper()
 	store, err := dynamicstore.NewFileStore(filepath.Join(t.TempDir(), "dynamic.json"))
 	require.NoError(t, err)
+	srv, _, mergeSignal, pollSignal = newTestServerWithStore(t, store)
+	return srv, store, mergeSignal, pollSignal
+}
+
+// newTestServerWithStore is newTestServer with a caller-supplied store, and
+// it also returns the metrics so tests can check the request outcome.
+func newTestServerWithStore(t *testing.T, store dynamicstore.DynamicStore) (srv *httptest.Server, m *metrics.Sidecar, mergeSignal, pollSignal chan struct{}) {
+	t.Helper()
 	disc := &zonediscovery.ZoneDepthDiscoverer{Depth: 2}
-	m := metrics.NewSidecar(prometheus.NewRegistry())
+	m = metrics.NewSidecar(prometheus.NewRegistry())
 	mergeSignal = make(chan struct{}, 1)
 	pollSignal = make(chan struct{}, 1)
 
 	mux := http.NewServeMux()
 	Register(mux, testSecret, store, disc, mergeSignal, pollSignal, m, nil)
-	return httptest.NewServer(mux), store, mergeSignal, pollSignal
+	return httptest.NewServer(mux), m, mergeSignal, pollSignal
+}
+
+func newFileStore(t *testing.T) dynamicstore.DynamicStore {
+	t.Helper()
+	store, err := dynamicstore.NewFileStore(filepath.Join(t.TempDir(), "dynamic.json"))
+	require.NoError(t, err)
+	return store
+}
+
+// outcome reads the webhook request counter for one result label.
+func outcome(m *metrics.Sidecar, result string) float64 {
+	return testutil.ToFloat64(m.WebhookRequestsTotal.WithLabelValues(result))
+}
+
+// assertNoSignal fails if ch has a pending signal.
+func assertNoSignal(t *testing.T, ch chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatalf("unexpected %s signal", what)
+	default:
+	}
 }
 
 func computeSignature(secret string, body []byte) string {
@@ -156,11 +189,43 @@ func TestHandler_UnsupportedObjectType_Ignored(t *testing.T) {
 	srv, store, _, _ := newTestServer(t)
 	defer srv.Close()
 
-	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"dcim.device","data":{}}`)
+	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"dcim.site","data":{}}`)
 	resp := postSigned(t, srv, body, testSecret)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Empty(t, store.GetRecords("mycompany.com"))
+}
+
+// A device or VM change can change its records (primary_ip4, oob_ip, or a
+// rename), and only a full poll can recompute them, so every
+// created/updated/deleted event for either triggers one. Nothing is written
+// to the store directly.
+func TestHandler_DeviceAndVMEvents_TriggerPoll(t *testing.T) {
+	for _, objectType := range []string{"dcim.device", "virtualization.virtualmachine"} {
+		for _, event := range []string{"created", "updated", "deleted"} {
+			t.Run(objectType+"/"+event, func(t *testing.T) {
+				srv, store, mergeSignal, pollSignal := newTestServer(t)
+				defer srv.Close()
+
+				body := []byte(`{"event":"` + event + `","timestamp":"2026-07-12T08:00:00Z","object_type":"` + objectType + `","data":{"name":"dc1-r101-hv-01","primary_ip4":{"id":7}}}`)
+				resp := postSigned(t, srv, body, testSecret)
+				defer func() { _ = resp.Body.Close() }()
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Empty(t, store.GetRecords("mycompany.com"), "no direct write")
+
+				select {
+				case <-pollSignal:
+				default:
+					t.Fatal("expected a full poll to be triggered")
+				}
+				select {
+				case <-mergeSignal:
+					t.Fatal("mergeSignal must not fire when no direct store write happened")
+				default:
+				}
+			})
+		}
+	}
 }
 
 // TestHandler_CreatedEvent_EmptyDNSName_TriggersPoll covers records that
@@ -484,4 +549,121 @@ func TestHandler_ConfiguredStatusAccepted(t *testing.T) {
 	default:
 		t.Fatal("expected mergeSignal to be sent")
 	}
+}
+
+func TestHandler_OversizedBody_Rejected(t *testing.T) {
+	srv, m, mergeSignal, pollSignal := newTestServerWithStore(t, newFileStore(t))
+	defer srv.Close()
+
+	body := []byte(`{"event":"created","object_type":"ipam.ipaddress","data":{"dns_name":"` + strings.Repeat("a", maxBodyBytes) + `"}}`)
+	resp := postSigned(t, srv, body, testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, 1.0, outcome(m, "bad_payload"))
+	assertNoSignal(t, mergeSignal, "merge")
+	assertNoSignal(t, pollSignal, "poll")
+}
+
+func TestHandler_MalformedPayload_Rejected(t *testing.T) {
+	srv, m, mergeSignal, pollSignal := newTestServerWithStore(t, newFileStore(t))
+	defer srv.Close()
+
+	resp := postSigned(t, srv, []byte(`{"event": not json`), testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, 1.0, outcome(m, "bad_payload"))
+	assertNoSignal(t, mergeSignal, "merge")
+	assertNoSignal(t, pollSignal, "poll")
+}
+
+// failingStore fails every write, to exercise the handler's error path.
+type failingStore struct{ dynamicstore.DynamicStore }
+
+func (failingStore) UpsertRecords(string, []netboxclient.IPRecord) error {
+	return errors.New("disk full")
+}
+
+func TestHandler_StoreError_Returns500(t *testing.T) {
+	srv, m, mergeSignal, _ := newTestServerWithStore(t, failingStore{newFileStore(t)})
+	defer srv.Close()
+
+	body := []byte(`{"event":"created","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":{"address":"10.0.0.1/32","dns_name":"host1.dc1.mycompany.com"}}`)
+	resp := postSigned(t, srv, body, testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode, "a failed write must not be acknowledged")
+	assert.Equal(t, 1.0, outcome(m, "error"))
+	assertNoSignal(t, mergeSignal, "merge")
+}
+
+// An event type the handler does not know is acknowledged and ignored, for
+// IP address and device events alike.
+func TestHandler_UnknownEventType_Ignored(t *testing.T) {
+	for _, objectType := range []string{"ipam.ipaddress", "dcim.device", "virtualization.virtualmachine"} {
+		t.Run(objectType, func(t *testing.T) {
+			store := newFileStore(t)
+			srv, m, mergeSignal, pollSignal := newTestServerWithStore(t, store)
+			defer srv.Close()
+
+			body := []byte(`{"event":"job_completed","timestamp":"2026-07-12T08:00:00Z","object_type":"` + objectType + `","data":{"address":"10.0.0.1/32","dns_name":"host1.dc1.mycompany.com"}}`)
+			resp := postSigned(t, srv, body, testSecret)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			assert.Empty(t, store.GetRecords("dc1.mycompany.com"))
+			assert.Equal(t, 1.0, outcome(m, "stale"))
+			assertNoSignal(t, mergeSignal, "merge")
+			assertNoSignal(t, pollSignal, "poll")
+		})
+	}
+}
+
+// A delete without a prechange snapshot carries no name to remove; it is a
+// no-op rather than an error or a poll.
+func TestHandler_DeletedEvent_NoPrechange_Noop(t *testing.T) {
+	srv, m, mergeSignal, pollSignal := newTestServerWithStore(t, newFileStore(t))
+	defer srv.Close()
+
+	body := []byte(`{"event":"deleted","timestamp":"2026-07-12T08:00:00Z","object_type":"ipam.ipaddress","data":null,"snapshots":{}}`)
+	resp := postSigned(t, srv, body, testSecret)
+	defer func() { _ = resp.Body.Close() }()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 1.0, outcome(m, "stale"))
+	assertNoSignal(t, mergeSignal, "merge")
+	assertNoSignal(t, pollSignal, "poll")
+}
+
+// A burst of device events (a bulk edit, a rack turn-up) must coalesce into
+// one pending poll: every request is answered at once, never blocked on the
+// poll signal, and the run loop sees a single signal.
+func TestHandler_DeviceEventBurst_CoalescesIntoOnePoll(t *testing.T) {
+	srv, m, _, pollSignal := newTestServerWithStore(t, newFileStore(t))
+	defer srv.Close()
+
+	const burst = 20
+	var wg sync.WaitGroup
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := []byte(`{"event":"updated","timestamp":"2026-07-12T08:00:00Z","object_type":"dcim.device","data":{"name":"dc1-r101-hv-` + strings.Repeat("0", i%3) + `1"}}`)
+			resp := postSigned(t, srv, body, testSecret)
+			defer func() { _ = resp.Body.Close() }()
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("webhook requests blocked: the poll signal must never block a request")
+	}
+
+	assert.Equal(t, float64(burst), outcome(m, "poll_triggered"), "every event is counted")
+	select {
+	case <-pollSignal:
+	default:
+		t.Fatal("expected one pending poll signal")
+	}
+	assertNoSignal(t, pollSignal, "second poll")
 }
