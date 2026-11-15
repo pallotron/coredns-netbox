@@ -83,8 +83,8 @@ func withRetry[T any](ctx context.Context, c *Client, what string, fetch func(co
 // total count NetBox reports and the page's items.
 type pageFunc[T any] func(ctx context.Context, offset, limit int) (count int, items []T, err error)
 
-// fetchAllPages probes for the total count, then fetches every page with
-// bounded concurrency. Results keep page order, and any page error fails the
+// fetchAllPages probes for the total count, then fetches every page
+// concurrently, within the client-wide request limit (see getPage). Results keep page order, and any page error fails the
 // whole fetch, so a partial result never reaches zone generation.
 func fetchAllPages[T any](ctx context.Context, c *Client, page pageFunc[T]) ([]T, error) {
 	total, _, err := page(ctx, 0, 1)
@@ -96,7 +96,6 @@ func fetchAllPages[T any](ctx context.Context, c *Client, page pageFunc[T]) ([]T
 	}
 	totalPages := int(math.Ceil(float64(total) / float64(c.pageSize)))
 
-	sem := make(chan struct{}, c.maxConcurrency)
 	results := make([][]T, totalPages)
 	errsCh := make(chan error, totalPages)
 
@@ -105,9 +104,7 @@ func fetchAllPages[T any](ctx context.Context, c *Client, page pageFunc[T]) ([]T
 		wg.Add(1)
 		go func(pageNum, offset int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
+			// getPage waits for a slot under the client-wide limit.
 			_, items, err := page(ctx, offset, c.pageSize)
 			if err != nil {
 				errsCh <- fmt.Errorf("fetch page offset=%d: %w", offset, err)
@@ -131,8 +128,17 @@ func fetchAllPages[T any](ctx context.Context, c *Client, page pageFunc[T]) ([]T
 }
 
 // getPage GETs apiPath with query and decodes the JSON body into out. Error
-// and success bodies are both read through their caps.
+// and success bodies are both read through their caps. Every request waits
+// for a slot under the client-wide limit (Client.sem), so however many
+// fetches run at once, NetBox sees at most maxConcurrency requests.
 func (c *Client) getPage(ctx context.Context, apiPath string, query url.Values, out any) error {
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-c.sem }()
+
 	reqURL := fmt.Sprintf("%s%s?%s", c.baseURL, apiPath, query.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {

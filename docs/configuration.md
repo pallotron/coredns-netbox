@@ -205,7 +205,7 @@ See `helm/coredns-netbox/values.yaml` for all options. Key values:
 | `nameFormats.aliases` | `[]` | List of alias FQDN templates; each renders to a CNAME pointing at the canonical. |
 | `nameFormats.zone` | `""` | Optional sub-template reusable as `{{template "zone" .}}` in other format strings. |
 | `pageSize` | `1000` | Records per API page (max 1000) |
-| `maxConcurrency` | `10` | Parallel API request limit |
+| `maxConcurrency` | `10` | Maximum NetBox API requests in flight at once, shared by the IP address, device and virtual machine fetches, which run concurrently |
 | `forwardServers` | `[1.1.1.1, 8.8.8.8]` | Upstream DNS resolvers |
 | `cacheTTL` | `30` | Maximum TTL (seconds) for cached DNS responses (positive and negative). Reduce in dev/test environments to ensure zone changes are visible quickly. |
 | `transfer.to` | `[]` | IPs allowed to pull AXFR (empty = disabled) |

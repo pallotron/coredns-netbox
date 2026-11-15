@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -427,4 +428,35 @@ func TestEnrichBrokenTemplateLogsOncePerDevice(t *testing.T) {
 	enrichRecordsWithDeviceNames(records, nil, cat, "example.org", formatter, true, nil)
 	assert.Equal(t, 1, strings.Count(buf.String(), "nameformat: canonical template"),
 		"one error for the device, not one per record built from its name")
+}
+
+// The device fetch runs alongside the IP fetch: the fake NetBox holds every
+// IP request until a device request has arrived, which only happens if the
+// two overlap.
+func TestFetchNetboxFetchesIPsAndDevicesConcurrently(t *testing.T) {
+	deviceSeen := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/ipam/ip-addresses/":
+			select {
+			case <-deviceSeen:
+			case <-time.After(2 * time.Second):
+				http.Error(w, "no device request while an IP request was in flight", http.StatusServiceUnavailable)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"count": 1, "results": [{"id": 1, "address": "10.0.0.1/32", "dns_name": "host1.example.org"}]}`)
+		case "/api/dcim/devices/", "/api/virtualization/virtual-machines/":
+			once.Do(func() { close(deviceSeen) })
+			_, _ = fmt.Fprint(w, `{"count": 0, "results": []}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	m := metrics.NewSidecar(prometheus.NewRegistry())
+
+	_, _, err := fetchWith(t, srv, m, shrinkguard.Baseline{}, nil)
+	require.NoError(t, err, "IP and device fetches must overlap")
 }

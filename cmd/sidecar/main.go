@@ -574,7 +574,26 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	m *metrics.Sidecar, domainSuffix string, interfaceRecordsEnabled bool,
 	guard shrinkguard.Config, prev shrinkguard.Baseline, override *shrinkguard.Override,
 ) (zonediscovery.ZoneMap, shrinkguard.Baseline, error) {
-	slog.Info("fetching IP addresses from netbox")
+	// The device fetch runs alongside the IP fetch (the client keeps their
+	// combined requests within its limit). Returning early, on an IP fetch
+	// error or a refused empty result, cancels it.
+	devCtx, cancelDevices := context.WithCancel(ctx)
+	defer cancelDevices()
+	type deviceResult struct {
+		devices []netboxclient.DeviceRecord
+		err     error
+	}
+	deviceCh := make(chan deviceResult, 1)
+	go func() {
+		start := time.Now()
+		devices, err := client.FetchDevices(devCtx)
+		if devCtx.Err() == nil {
+			m.NetboxFetchDurationSeconds.WithLabelValues("devices").Observe(time.Since(start).Seconds())
+		}
+		deviceCh <- deviceResult{devices, err}
+	}()
+
+	slog.Info("fetching IP addresses and devices from netbox")
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
 	m.NetboxFetchDurationSeconds.WithLabelValues("ip_addresses").Observe(time.Since(fetchStart).Seconds())
@@ -601,10 +620,8 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		return nil, shrinkguard.Baseline{}, fmt.Errorf("refusing to publish: %s", v.Reason())
 	}
 
-	slog.Info("fetching devices from netbox")
-	devFetchStart := time.Now()
-	devices, err := client.FetchDevices(ctx)
-	m.NetboxFetchDurationSeconds.WithLabelValues("devices").Observe(time.Since(devFetchStart).Seconds())
+	dr := <-deviceCh
+	devices, err := dr.devices, dr.err
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
 		return nil, shrinkguard.Baseline{}, fmt.Errorf("fetch devices: %w", err)
