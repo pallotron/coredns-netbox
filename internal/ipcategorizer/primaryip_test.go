@@ -26,20 +26,28 @@ func newTestCategorizer(t *testing.T) *Categorizer {
 
 func TestHybridPrimaryIPWins(t *testing.T) {
 	c := newTestCategorizer(t)
+	const dev = "dc1-site13a-r101-prod-eth-tor-01"
 	records := []netboxclient.IPRecord{
-		// Alphabetically-first dataplane port — the old heuristic's wrong pick.
-		{ID: 1, Address: "192.168.26.139", Family: 4, DeviceName: "dc1-site13a-r101-prod-eth-tor-01", InterfaceName: "Ethernet1/1"},
-		{ID: 2, Address: "172.26.41.73", Family: 4, DeviceName: "dc1-site13a-r101-prod-eth-tor-01", InterfaceName: "Management1"},
+		// The heuristic's pick: a management-pattern interface.
+		{ID: 1, Address: "172.26.41.73", Family: 4, DeviceName: dev, InterfaceName: "Management1"},
+		// NetBox's primary_ip4: an interface the heuristic would never pick.
+		{ID: 2, Address: "192.168.26.139", Family: 4, DeviceName: dev, InterfaceName: "Vlan100"},
 	}
 	devices := []netboxclient.DeviceRecord{
-		{Name: "dc1-site13a-r101-prod-eth-tor-01", Status: "active", PrimaryIP4ID: 2},
+		{Name: dev, Status: "active", PrimaryIP4ID: 2},
 	}
 
+	// Guard: without the device list the heuristic picks Management1, so the
+	// assertion below can only pass if primary_ip4 really overrides it.
+	heuristic := c.SelectDeviceIPs(records)
+	require.Contains(t, heuristic, dev)
+	require.Equal(t, "172.26.41.73", heuristic[dev].PrimaryIP.Address, "heuristic baseline must pick Management1")
+
 	result, stats := c.SelectDeviceIPsHybrid(records, devices)
-	require.Contains(t, result, "dc1-site13a-r101-prod-eth-tor-01", "device should be selected")
-	dns := result["dc1-site13a-r101-prod-eth-tor-01"]
+	require.Contains(t, result, dev, "device should be selected")
+	dns := result[dev]
 	require.NotNil(t, dns.PrimaryIP, "primary IP should be selected")
-	assert.Equal(t, "172.26.41.73", dns.PrimaryIP.Address, "primary_ip4 join must beat the heuristic")
+	assert.Equal(t, "192.168.26.139", dns.PrimaryIP.Address, "primary_ip4 must override the heuristic's pick")
 	assert.Equal(t, 1, stats.PrimaryIP, "one device via primary_ip4")
 	assert.Equal(t, 0, stats.Fallback, "no fallback used")
 }

@@ -814,6 +814,16 @@ const (
 	loopDevMgmtIP      = "10.9.50.1"
 	loopDevLoopbackIP  = "10.9.58.1"
 	loopDevIfaceRecord = "loopback0." + loopDevCanonical
+
+	// Override device: primary_ip4 (Vlan100) and oob_ip (console0) point at
+	// interfaces the heuristics would never pick, while mgmt0 and idrac (the
+	// heuristics' picks) also carry addresses.
+	overrideDevCanonical = "dc1-h1a-r601-prod-sv-02.mycompany.com"
+	overrideDevBMC       = "dc1-h1a-r601-prod-sv-02-bmc.mycompany.com"
+	overrideDevPrimaryIP = "10.9.61.1" // Vlan100 -- the device's primary_ip4
+	overrideDevMgmt0IP   = "10.9.60.1" // mgmt0 -- the heuristic's pick, must lose
+	overrideDevOOBIP     = "10.9.63.1" // console0 -- the device's oob_ip
+	overrideDevIdracIP   = "10.9.62.1" // idrac -- the BMC heuristic's pick, must lose
 )
 
 func skipUnlessInterfaceRecords(t *testing.T) {
@@ -893,4 +903,35 @@ func TestPrimaryIP4DeviceLoopbackReverseCoverage(t *testing.T) {
 
 	waitForDNS(t, loopDevIfaceRecord, dns.TypeA, loopDevLoopbackIP, 60*time.Second)
 	waitForPTR(t, loopDevLoopbackIP, loopDevIfaceRecord, 60*time.Second)
+}
+
+// requireOnlyA waits for name to answer with want, then asserts every A
+// answer is want and none is the heuristic's pick (notWant).
+func requireOnlyA(t *testing.T, name, want, notWant string) {
+	t.Helper()
+	waitForDNS(t, name, dns.TypeA, want, 60*time.Second)
+
+	r := query(t, name, dns.TypeA)
+	require.Equal(t, dns.RcodeSuccess, r.Rcode)
+	require.NotEmpty(t, r.Answer)
+	for _, ans := range r.Answer {
+		a, ok := ans.(*dns.A)
+		require.True(t, ok, "expected only A record answers for %s", name)
+		assert.Equal(t, want, a.A.String(), "%s must resolve only to %s", name, want)
+		assert.NotEqual(t, notWant, a.A.String(), "%s must never resolve to the heuristic's pick %s", name, notWant)
+	}
+}
+
+// TestPrimaryIP4OverridesHeuristicPick: the device record follows
+// primary_ip4 (Vlan100) even though the heuristic would pick mgmt0.
+func TestPrimaryIP4OverridesHeuristicPick(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	requireOnlyA(t, overrideDevCanonical, overrideDevPrimaryIP, overrideDevMgmt0IP)
+}
+
+// TestOOBIPOverridesBMCHeuristicPick: the -bmc record follows oob_ip
+// (console0) even though the BMC heuristic would pick idrac.
+func TestOOBIPOverridesBMCHeuristicPick(t *testing.T) {
+	skipUnlessNameTemplates(t)
+	requireOnlyA(t, overrideDevBMC, overrideDevOOBIP, overrideDevIdracIP)
 }
