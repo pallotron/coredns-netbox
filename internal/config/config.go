@@ -12,6 +12,16 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/shrinkguard"
 )
 
+// Default interface categorization patterns. The analyzer uses the same
+// values for its flag defaults, so its preview matches the sidecar.
+const (
+	DefaultBMCInterfacePattern  = "(?i)bmc|ipmi|ilo|idrac"
+	DefaultLoopbackPattern      = "^lo$|^lo0|^Loopback"
+	DefaultDataplanePattern     = "(?i)storage|vtep|vsan"
+	DefaultMgmtVRFPattern       = "(?i)mgmt|oob"
+	DefaultMgmtInterfacePattern = "(?i)mgmt|Management|fxp0|^eth[01]|mgt|^net[0-9]|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]"
+)
+
 // Config holds the sidecar configuration populated from environment variables.
 type Config struct {
 	NetboxURL            string
@@ -131,11 +141,11 @@ func Load() (*Config, error) {
 		SOAMinimum:           86400,
 
 		// Interface categorization patterns
-		BMCInterfacePattern:       envOrDefault("BMC_INTERFACE_PATTERN", "(?i)bmc|ipmi|ilo|idrac"),
-		LoopbackInterfacePattern:  envOrDefault("LOOPBACK_PATTERN", "^lo$|^lo0|^Loopback"),
-		DataplaneInterfacePattern: envOrDefault("DATAPLANE_PATTERN", "(?i)storage|vtep|vsan"),
-		MgmtVRFPattern:            envOrDefault("MGMT_VRF_PATTERN", "(?i)mgmt|oob"),
-		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", "(?i)mgmt|Management|fxp0|^eth[01]|mgt|^net[0-9]|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]"),
+		BMCInterfacePattern:       envOrDefault("BMC_INTERFACE_PATTERN", DefaultBMCInterfacePattern),
+		LoopbackInterfacePattern:  envOrDefault("LOOPBACK_PATTERN", DefaultLoopbackPattern),
+		DataplaneInterfacePattern: envOrDefault("DATAPLANE_PATTERN", DefaultDataplanePattern),
+		MgmtVRFPattern:            envOrDefault("MGMT_VRF_PATTERN", DefaultMgmtVRFPattern),
+		MgmtInterfacePattern:      envOrDefault("MGMT_INTERFACE_PATTERN", DefaultMgmtInterfacePattern),
 
 		// InterfaceRecordsEnabled gates per-interface A/PTR generation
 		InterfaceRecordsEnabled: envOrDefault("INTERFACE_RECORDS_ENABLED", "false") == "true",

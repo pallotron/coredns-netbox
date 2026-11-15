@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/pallotron/coredns-netbox/internal/config"
 	"github.com/pallotron/coredns-netbox/internal/ipcategorizer"
 	"github.com/pallotron/coredns-netbox/internal/logging"
 	"github.com/pallotron/coredns-netbox/internal/nameformat"
@@ -31,11 +32,11 @@ func main() {
 	interfaceRecords := flag.Bool("interface-records", false, "Generate per-interface <iface>.<device-fqdn> records")
 
 	// Pattern overrides
-	bmcPattern := flag.String("bmc-pattern", "(?i)bmc|ipmi|ilo|idrac", "Regex pattern for BMC interfaces")
-	loopbackPattern := flag.String("loopback-pattern", "^lo$|^lo0|^Loopback", "Regex pattern for loopback interfaces")
-	dataplanePattern := flag.String("dataplane-pattern", "(?i)storage|vtep|vsan", "Regex pattern for dataplane interfaces")
-	mgmtVRFPattern := flag.String("mgmt-vrf-pattern", "(?i)mgmt|oob", "Regex pattern for management VRFs")
-	mgmtIfacePattern := flag.String("mgmt-iface-pattern", "(?i)mgmt|Management|fxp0|eth[01]|mgt|NET", "Regex pattern for management interfaces")
+	bmcPattern := flag.String("bmc-pattern", config.DefaultBMCInterfacePattern, "Regex pattern for BMC interfaces")
+	loopbackPattern := flag.String("loopback-pattern", config.DefaultLoopbackPattern, "Regex pattern for loopback interfaces")
+	dataplanePattern := flag.String("dataplane-pattern", config.DefaultDataplanePattern, "Regex pattern for dataplane interfaces")
+	mgmtVRFPattern := flag.String("mgmt-vrf-pattern", config.DefaultMgmtVRFPattern, "Regex pattern for management VRFs")
+	mgmtIfacePattern := flag.String("mgmt-iface-pattern", config.DefaultMgmtInterfacePattern, "Regex pattern for management interfaces")
 
 	// Domain configuration
 	domainSuffix := flag.String("domain", "example.com", "Domain suffix for DNS zones")
