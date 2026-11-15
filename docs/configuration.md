@@ -108,7 +108,7 @@ All patterns are configurable via environment variables (see Interface Categoriz
 
 ### Per-Interface Address Records
 
-Behind `interfaceRecords.enabled` / `INTERFACE_RECORDS_ENABLED` (default `false`), the sidecar additionally generates a record for every interface-assigned IP that has no explicit Netbox `dns_name` of its own: `<normalized-interface>.<device-fqdn>` A/AAAA, plus a PTR. The interface name is normalized (lowercased, each run of characters outside `[a-z0-9-]` collapsed to a single `-`; existing dashes are left as-is, e.g. `et-0/2/6` → `et-0-2-6`) before it is prepended to the device's FQDN.
+Behind `interfaceRecords.enabled` / `INTERFACE_RECORDS_ENABLED` (default `false`), the sidecar additionally generates a record for every interface-assigned IP that has no explicit Netbox `dns_name` of its own: `<normalized-interface>.<device-fqdn>` A/AAAA, plus a PTR. The interface name is normalized (lowercased, each run of characters outside `[a-z0-9-]` collapsed to a single `-`; existing dashes are left as-is, e.g. `et-0/2/6` → `et-0-2-6`) before it is prepended to the device's FQDN. An interface whose record name would not fit DNS (a label over 63 characters or a name over 253; NetBox allows 64-character interface names) gets no interface record, so its address keeps the device or BMC PTR. The sidecar logs one warning per poll with the count and a few examples; set `LOG_LEVEL=DEBUG` (via `sidecar.env` in the chart) to list every skipped interface.
 
 This is additive to, not a replacement for, the device and BMC records above, and roughly doubles zone size on a typical fleet — size memory and zone-transfer bandwidth accordingly before enabling it broadly.
 

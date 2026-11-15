@@ -1,6 +1,9 @@
 package ipcategorizer
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -59,4 +62,68 @@ func TestInterfaceRecordsDeterministicOrder(t *testing.T) {
 	a := c.InterfaceRecords(records, nil)
 	b := c.InterfaceRecords([]netboxclient.IPRecord{records[1], records[0]}, nil)
 	assert.Equal(t, a, b, "output must not depend on input order")
+}
+
+// An interface name whose label would exceed 63 characters (NetBox allows
+// 64) gets no interface record: it would be dropped as unsafe later anyway,
+// after first displacing the device's valid PTR. Normal names on the same
+// device still get theirs. One WARN per call reports the count and how to
+// get the full list; each skipped interface is logged at DEBUG.
+func TestInterfaceRecordsSkipsNamesTooLongForDNS(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	c := newTestCategorizer(t)
+	const dev = "dc1-h1a-r101-prod-vm-07"
+	longIface := "port-3f6c2a1e-9b7d-4c5a-8e2f-1d0b9a7c6e54-provider-net-vlan-1001" // 64 chars
+	okIface := "port-3f6c2a1e-9b7d-4c5a-8e2f-1d0b9a7c6e54-provider-net-vlan1001"    // 63 chars
+	require.Len(t, longIface, 64)
+	require.Len(t, okIface, 63)
+	records := []netboxclient.IPRecord{
+		{ID: 1, Address: "10.20.0.15", Family: 4, DeviceName: dev, InterfaceName: longIface},
+		{ID: 2, Address: "10.20.0.16", Family: 4, DeviceName: dev, InterfaceName: okIface},
+		{ID: 3, Address: "10.20.0.17", Family: 4, DeviceName: dev, InterfaceName: "mgmt0"},
+	}
+
+	got := c.InterfaceRecords(records, nil)
+	addrs := make([]string, 0, len(got))
+	for _, r := range got {
+		addrs = append(addrs, r.Address)
+		for _, label := range strings.Split(r.DNSName, ".") {
+			assert.LessOrEqual(t, len(label), 63, "every label must fit DNS: %s", r.DNSName)
+		}
+	}
+	assert.ElementsMatch(t, []string{"10.20.0.16", "10.20.0.17"}, addrs,
+		"the 64-char interface is skipped; the 63-char one and mgmt0 are kept")
+
+	logs := buf.String()
+	assert.Equal(t, 1, strings.Count(logs, "level=WARN"), "exactly one warning per call")
+	assert.Contains(t, logs, "count=1")
+	assert.Contains(t, logs, "LOG_LEVEL=DEBUG", "the warning says how to get the full list")
+	assert.Contains(t, logs, "level=DEBUG", "each skipped interface is logged at debug")
+	assert.Contains(t, logs, longIface)
+}
+
+// A full name over 253 characters is skipped the same way, even when each
+// label fits.
+func TestInterfaceRecordsSkipsFullNameTooLong(t *testing.T) {
+	c := newTestCategorizer(t)
+	// Three valid 60-char labels: the device name fits, but a 63-char
+	// interface label in front pushes the full name past 253.
+	dev := strings.Repeat("a", 60) + "." + strings.Repeat("b", 60) + "." + strings.Repeat("c", 60)
+	iface := strings.Repeat("d", 63)
+	records := []netboxclient.IPRecord{
+		{ID: 1, Address: "10.20.0.20", Family: 4, DeviceName: dev, InterfaceName: iface},
+		{ID: 2, Address: "10.20.0.21", Family: 4, DeviceName: dev, InterfaceName: "mgmt0"},
+	}
+	got := c.InterfaceRecords(records, nil)
+	addrs := make([]string, 0, len(got))
+	for _, r := range got {
+		addrs = append(addrs, r.Address)
+		assert.LessOrEqual(t, len(r.DNSName), 253, "full name must fit DNS: %s", r.DNSName)
+	}
+	assert.NotContains(t, addrs, "10.20.0.20", "the over-253 name is skipped")
+	assert.Contains(t, addrs, "10.20.0.21", "mgmt0 on the same device still fits and is kept")
 }
