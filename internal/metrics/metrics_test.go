@@ -5,6 +5,7 @@ import (
 
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -206,7 +207,7 @@ func TestZoneStalenessSeconds_Registered(t *testing.T) {
 func TestNewSidecarRegistersDeviceAndPTRMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.NewSidecar(reg)
-	m.DevicesTotal.WithLabelValues("primary_ip").Set(5)
+	m.Devices.WithLabelValues("primary_ip").Set(5)
 	m.InterfaceRecords.Set(7)
 	m.PTRUncoveredIPs.WithLabelValues("private").Set(1)
 
@@ -216,7 +217,24 @@ func TestNewSidecarRegistersDeviceAndPTRMetrics(t *testing.T) {
 	for _, f := range families {
 		names[f.GetName()] = true
 	}
-	assert.True(t, names["netbox_sidecar_devices_total"], "devices gauge registered")
+	assert.True(t, names["netbox_sidecar_devices"], "devices gauge registered")
 	assert.True(t, names["netbox_sidecar_interface_records"], "interface records gauge registered")
 	assert.True(t, names["netbox_sidecar_ptr_uncovered_ips"], "ptr uncovered gauge registered")
+}
+
+// Every sidecar metric passes Prometheus's own naming lint (promlint), e.g.
+// no gauge named *_total.
+func TestSidecarMetricsPassPromlint(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewSidecar(reg)
+	// Touch the label-only vectors so every family is gathered.
+	m.PollTotal.WithLabelValues("success").Inc()
+	m.ZoneWritesTotal.WithLabelValues("create").Inc()
+	m.Devices.WithLabelValues("primary_ip").Set(1)
+	m.CoreDNSReloadTotal.WithLabelValues("success").Inc()
+	m.WebhookRequestsTotal.WithLabelValues("ok").Inc()
+
+	problems, err := testutil.GatherAndLint(reg)
+	require.NoError(t, err)
+	assert.Empty(t, problems, "promlint problems")
 }
