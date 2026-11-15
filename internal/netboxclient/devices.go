@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -82,17 +81,20 @@ func (c *Client) FetchDevices(ctx context.Context) ([]DeviceRecord, error) {
 		if err == nil {
 			return devices, nil
 		}
+		if isAuthError(err) {
+			return nil, err
+		}
 		lastErr = err
 	}
 	return nil, lastErr
 }
 
 func (c *Client) fetchDevicesOnce(ctx context.Context) ([]DeviceRecord, error) {
-	devices, err := c.fetchAllDevicePages(ctx, "/api/dcim/devices/")
+	devices, err := c.fetchAllDevicePages(ctx, devicesPath)
 	if err != nil {
 		return nil, fmt.Errorf("fetch devices: %w", err)
 	}
-	vms, err := c.fetchAllDevicePages(ctx, "/api/virtualization/virtual-machines/")
+	vms, err := c.fetchAllDevicePages(ctx, virtualMachinesPath)
 	if err != nil {
 		return nil, fmt.Errorf("fetch virtual machines: %w", err)
 	}
@@ -170,8 +172,7 @@ func (c *Client) fetchDevicePage(ctx context.Context, apiPath string, offset, li
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("netbox API returned %d: %s", resp.StatusCode, string(body))
+		return nil, statusError(resp, apiPath)
 	}
 
 	var result deviceListResponse

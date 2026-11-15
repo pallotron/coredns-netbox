@@ -148,6 +148,9 @@ netbox:
   # Set token directly, or use existingSecret to reference a pre-created Secret
   token: ""
   # Name of an existing Secret with a "token" key containing the Netbox API token
+  # The token needs ipam.view_ipaddress, dcim.view_device and
+  # virtualization.view_virtualmachine. See "NetBox token permissions" in
+  # docs/deployment.md.
   existingSecret: ""
 
 pollInterval: "60s"

@@ -492,3 +492,25 @@ func TestRecordFromJSONParsesID(t *testing.T) {
 	assert.Equal(t, 32374, rec.ID, "NetBox IP object id should be parsed")
 	assert.Equal(t, "", rec.Kind, "fetched records default to explicit kind (zero value)")
 }
+
+// The IP fetch reports a 403 the same way, naming
+// ipam.view_ipaddress, without burning retries on it.
+func TestFetchIPAddressesForbiddenNamesPermissionAndSkipsRetries(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Error(w, `{"detail":"Invalid token"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "token", 100, 1, 3, time.Millisecond, 10*time.Millisecond)
+	require.NoError(t, err, "New")
+
+	_, err = c.FetchIPAddresses(context.Background())
+	require.Error(t, err, "a 403 must fail the fetch")
+	var authErr *AuthError
+	require.ErrorAs(t, err, &authErr, "a 403 must surface as an AuthError")
+	assert.Equal(t, "ipam.view_ipaddress", authErr.Permission)
+	assert.ErrorContains(t, err, "invalid or expired", "a 403 can also mean a bad token, so the message must say so")
+	assert.Equal(t, 1, hits, "a 403 must not be retried")
+}
