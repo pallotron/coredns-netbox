@@ -269,3 +269,27 @@ func TestDeviceDNSToRecordsStampsKinds(t *testing.T) {
 	assert.Equal(t, netboxclient.KindDevice, kinds["172.16.5.9"], "primary record kind")
 	assert.Equal(t, netboxclient.KindBMC, kinds["10.9.0.9"], "bmc record kind")
 }
+
+// A device and a VM sharing a name: the device (first) has only an oob_ip,
+// the VM has a resolvable primary_ip4. The VM wins the primary, but the
+// device's published oob_ip must still produce the BMC record.
+func TestHybridDuplicateNameLaterPrimaryKeepsEarlierOOB(t *testing.T) {
+	c := newTestCategorizer(t)
+	const name = "dc1-site13a-r101-prod-hv-07"
+	records := []netboxclient.IPRecord{
+		{ID: 6, Address: "10.9.20.6", Family: 4, DeviceName: name, InterfaceName: "oob-eth0"},
+		{ID: 5, Address: "172.16.20.5", Family: 4, DeviceName: name, InterfaceName: "eth0"},
+	}
+	devices := []netboxclient.DeviceRecord{
+		{Name: name, Status: "active", OOBIPID: 6},       // dcim device: oob_ip only
+		{Name: name, Status: "active", PrimaryIP4ID: 5}, // VM: primary_ip4 only
+	}
+
+	result, stats := c.SelectDeviceIPsHybrid(records, devices)
+	require.Contains(t, result, name)
+	require.NotNil(t, result[name].PrimaryIP, "primary IP should be selected")
+	require.NotNil(t, result[name].BMCIP, "the device's oob_ip must not be dropped")
+	assert.Equal(t, "172.16.20.5", result[name].PrimaryIP.Address, "the VM's resolvable primary wins")
+	assert.Equal(t, "10.9.20.6", result[name].BMCIP.Address, "the device's oob_ip still drives the BMC record")
+	assert.Equal(t, 1, stats.PrimaryIP, "counted once")
+}
