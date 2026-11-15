@@ -712,7 +712,7 @@ func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, devices []net
 
 	slog.Info("record split", "with_dns_name", len(withDNSName), "without_dns_name", len(withoutDNSName))
 
-	deviceDNS, stats := categorizer.SelectDeviceIPsHybrid(withoutDNSName, devices)
+	deviceDNS, stats := categorizer.SelectDeviceIPsHybrid(records, devices)
 	generatedRecords := ipcategorizer.DeviceDNSToRecords(deviceDNS, formatter)
 
 	var ifaceRecords []netboxclient.IPRecord

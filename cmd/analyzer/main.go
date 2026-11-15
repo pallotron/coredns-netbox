@@ -271,7 +271,7 @@ func main() {
 	var deviceDNS map[string]*ipcategorizer.DeviceDNSRecords
 	if len(devices) > 0 {
 		var stats ipcategorizer.SelectionStats
-		deviceDNS, stats = cat.SelectDeviceIPsHybrid(withoutDNSName, devices)
+		deviceDNS, stats = cat.SelectDeviceIPsHybrid(records, devices)
 		// stderr, not stdout: this line otherwise corrupts -format
 		// records/csv output that operators pipe to a file or diff.
 		fmt.Fprintf(os.Stderr, "devices: primary_ip=%d fallback=%d none=%d\n", stats.PrimaryIP, stats.Fallback, stats.None)
