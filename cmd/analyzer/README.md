@@ -73,13 +73,20 @@ go build -o analyzer ./cmd/analyzer/main.go
 
 ### Pattern Customization
 
-You can customize the interface categorization patterns:
+You can customize the interface categorization patterns. Each flag defaults
+to the sidecar's default for the matching environment variable, so the
+preview matches what the sidecar publishes unless you override one. Run
+`analyzer -h` for the current values, or see the environment variable table
+in [docs/configuration.md](../../docs/configuration.md).
 
-- `-bmc-pattern` - Regex for BMC interfaces (default: `(?i)bmc|ipmi|ilo|idrac`)
-- `-loopback-pattern` - Regex for loopback interfaces (default: `^lo$|^lo0|^Loopback`)
-- `-dataplane-pattern` - Regex for dataplane interfaces (default: `(?i)storage|vtep|vsan`)
-- `-mgmt-vrf-pattern` - Regex for management VRFs (default: `(?i)mgmt|oob`)
-- `-mgmt-iface-pattern` - Regex for management interfaces (default: `(?i)mgmt|Management|fxp0|eth[01]|mgt|NET`)
+- `-bmc-pattern` - Regex for BMC interfaces (`BMC_INTERFACE_PATTERN`)
+- `-loopback-pattern` - Regex for loopback interfaces (`LOOPBACK_PATTERN`)
+- `-dataplane-pattern` - Regex for dataplane interfaces (`DATAPLANE_PATTERN`)
+- `-mgmt-vrf-pattern` - Regex for management VRFs (`MGMT_VRF_PATTERN`)
+- `-mgmt-iface-pattern` - Regex for management interfaces (`MGMT_INTERFACE_PATTERN`)
+
+If your sidecar deployment overrides any of these (for example through the
+chart's `interfacePatterns` values), pass the same value to the analyzer.
 
 ## How It Works
 
