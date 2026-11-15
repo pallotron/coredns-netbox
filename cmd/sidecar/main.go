@@ -577,7 +577,7 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	slog.Info("fetching IP addresses from netbox")
 	fetchStart := time.Now()
 	records, err := client.FetchIPAddresses(ctx)
-	m.NetboxFetchDurationSeconds.Observe(time.Since(fetchStart).Seconds())
+	m.NetboxFetchDurationSeconds.WithLabelValues("ip_addresses").Observe(time.Since(fetchStart).Seconds())
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
 		return nil, shrinkguard.Baseline{}, fmt.Errorf("fetch IP addresses: %w", err)
@@ -604,7 +604,7 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 	slog.Info("fetching devices from netbox")
 	devFetchStart := time.Now()
 	devices, err := client.FetchDevices(ctx)
-	m.NetboxFetchDurationSeconds.Observe(time.Since(devFetchStart).Seconds())
+	m.NetboxFetchDurationSeconds.WithLabelValues("devices").Observe(time.Since(devFetchStart).Seconds())
 	if err != nil {
 		m.PollTotal.WithLabelValues("error").Inc()
 		return nil, shrinkguard.Baseline{}, fmt.Errorf("fetch devices: %w", err)

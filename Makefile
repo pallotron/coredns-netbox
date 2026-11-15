@@ -389,7 +389,7 @@ dev.scale.report:
 	@echo "=== poll cycle (fetch + merge + write) vs POLL_INTERVAL ==="
 	@$(KUBECTL) exec -n $(HELM_NAMESPACE) deploy/coredns-netbox-sidecar -- \
 		wget -qO- http://127.0.0.1:8082/metrics 2>/dev/null | \
-		grep -E '^netbox_sidecar_(poll_cycle_duration_seconds_(sum|count)|netbox_fetch_duration_seconds_(sum|count)|poll_duration_seconds_(sum|count)|netbox_records_fetched|zones_active) ' || \
+		grep -E '^netbox_sidecar_(poll_cycle_duration_seconds_(sum|count)|netbox_fetch_duration_seconds_(sum|count)|poll_duration_seconds_(sum|count)|netbox_records_fetched|zones_active)[ {]' || \
 		echo "(scrape failed — port-forward 8082 and curl /metrics instead)"
 	@echo "=== memory vs limits ==="
 	@$(KUBECTL) top pods -n $(HELM_NAMESPACE) || true

@@ -20,7 +20,7 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_poll_total` | Counter | `result=success\|error` | Total poll attempts |
 | `netbox_sidecar_poll_duration_seconds` | Histogram | — | Full poll cycle duration (fetch + discover + write) |
 | `netbox_sidecar_last_successful_poll_timestamp_seconds` | Gauge | — | Unix timestamp of the last successful poll |
-| `netbox_sidecar_netbox_fetch_duration_seconds` | Histogram | — | Netbox HTTP fetch duration |
+| `netbox_sidecar_netbox_fetch_duration_seconds` | Histogram | `fetch=ip_addresses\|devices` | Duration of each Netbox fetch per poll, including retries: the IP address fetch, and the device and virtual machine fetch |
 | `netbox_sidecar_netbox_records_fetched` | Gauge | — | IP records returned by Netbox in the last poll |
 | `netbox_sidecar_netbox_empty_response_total` | Counter | — | Polls where Netbox returned zero records |
 | `netbox_sidecar_ptr_uncovered_ips` | Gauge | `scope=private\|public` | Distinct IPs in the last published poll that no configured reverse zone covers, so they get no PTR. A non-zero `private` value (RFC 1918, ULA, link-local, loopback) usually means a reverse zone is missing; `public` is expected unless you serve public reverse zones |

@@ -77,7 +77,8 @@ What to record, and what each one tells you:
 1. `netbox_sidecar_poll_cycle_duration_seconds` versus `POLL_INTERVAL` —
    the headroom number.
 2. `netbox_sidecar_netbox_fetch_duration_seconds` — confirms whether the
-   cycle is still fetch-bound (it should be).
+   cycle is still fetch-bound (it should be). The `fetch` label splits the
+   IP address fetch from the device and virtual machine fetch.
 3. `kubectl top pods` for sidecar and CoreDNS versus their chart limits —
    peak RSS, remembering CoreDNS holds two zone sets mid-reload.
 4. `netbox_sidecar_zones_active` and the emitted record count — that the

@@ -8,7 +8,7 @@ type Sidecar struct {
 	PollDurationSeconds         prometheus.Histogram
 	PollCycleDurationSeconds    prometheus.Histogram
 	LastSuccessfulPollTimestamp prometheus.Gauge
-	NetboxFetchDurationSeconds  prometheus.Histogram
+	NetboxFetchDurationSeconds  *prometheus.HistogramVec
 	NetboxRecordsFetched        prometheus.Gauge
 	NetboxEmptyResponseTotal    prometheus.Counter
 	ShrinkGuardRefusalsTotal    *prometheus.CounterVec
@@ -61,11 +61,11 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Help: "Unix timestamp of the last successful poll.",
 		}),
 
-		NetboxFetchDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+		NetboxFetchDurationSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "netbox_sidecar_netbox_fetch_duration_seconds",
-			Help:    "Duration of the Netbox IP address fetch (HTTP).",
+			Help:    "Duration of each Netbox fetch (HTTP, including retries), by fetch (ip_addresses, devices).",
 			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 30},
-		}),
+		}, []string{"fetch"}),
 
 		NetboxRecordsFetched: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "netbox_sidecar_netbox_records_fetched",
@@ -166,6 +166,9 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 	// internal/shrinkguard) so a dashboard or alert reads 0 from the first
 	// scrape instead of a missing series that only appears once something
 	// has already gone wrong.
+	for _, fetch := range []string{"ip_addresses", "devices"} {
+		m.NetboxFetchDurationSeconds.WithLabelValues(fetch)
+	}
 	for _, scope := range []string{"private", "public"} {
 		m.PTRUncoveredIPs.WithLabelValues(scope)
 	}

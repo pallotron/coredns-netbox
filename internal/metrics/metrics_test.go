@@ -31,7 +31,7 @@ func TestNewSidecar_RegistersAllMetrics(t *testing.T) {
 	m.PollTotal.WithLabelValues("success").Inc()
 	m.PollDurationSeconds.Observe(1.0)
 	m.LastSuccessfulPollTimestamp.Set(1_700_000_000)
-	m.NetboxFetchDurationSeconds.Observe(0.5)
+	m.NetboxFetchDurationSeconds.WithLabelValues("ip_addresses").Observe(0.5)
 	m.NetboxRecordsFetched.Set(42)
 	m.NetboxEmptyResponseTotal.Inc()
 	m.ZonesActive.Set(3)
@@ -158,16 +158,23 @@ func TestNetboxFetchDurationSeconds_CustomBuckets(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.NewSidecar(reg)
 
-	m.NetboxFetchDurationSeconds.Observe(0.05)
-	m.NetboxFetchDurationSeconds.Observe(1.5)
+	m.NetboxFetchDurationSeconds.WithLabelValues("ip_addresses").Observe(0.05)
+	m.NetboxFetchDurationSeconds.WithLabelValues("ip_addresses").Observe(1.5)
+	m.NetboxFetchDurationSeconds.WithLabelValues("devices").Observe(0.2)
 
 	mfs := gather(t, reg)
 	mf, ok := mfs["netbox_sidecar_netbox_fetch_duration_seconds"]
 	require.True(t, ok, "netbox_sidecar_netbox_fetch_duration_seconds not found")
-	h := mf.GetMetric()[0].GetHistogram()
-	if h.GetSampleCount() != 2 {
-		t.Errorf("expected sample_count=2, got %d", h.GetSampleCount())
+	counts := map[string]uint64{}
+	for _, metric := range mf.GetMetric() {
+		for _, l := range metric.GetLabel() {
+			if l.GetName() == "fetch" {
+				counts[l.GetValue()] = metric.GetHistogram().GetSampleCount()
+			}
+		}
 	}
+	assert.Equal(t, map[string]uint64{"ip_addresses": 2, "devices": 1}, counts,
+		"each fetch is observed in its own series")
 }
 
 func TestNetboxFetchRetriesTotal_Registered(t *testing.T) {
