@@ -346,3 +346,28 @@ func TestEnrichPrimaryAndOOBWithDNSName(t *testing.T) {
 	assert.ElementsMatch(t, []string{"web.example.org", "web-oob.example.org"}, explicit,
 		"explicit dns_name records are still published unchanged")
 }
+
+// An interface name too long for DNS must not cost its address the device
+// PTR: with interface records on, the address still reverse-resolves to the
+// device name, exactly as with them off.
+func TestEnrichTooLongInterfaceKeepsDevicePTR(t *testing.T) {
+	cat, err := ipcategorizer.NewCategorizer("bmc", "^lo$", "storage", "mgmt", "mgmt", "example.org")
+	require.NoError(t, err)
+
+	const vm = "dc1-h1a-r101-prod-vm-07"
+	records := []netboxclient.IPRecord{{
+		ID: 15, Address: "10.20.0.15", Family: 4, DeviceName: vm,
+		InterfaceName: "port-3f6c2a1e-9b7d-4c5a-8e2f-1d0b9a7c6e54-provider-net-vlan-1001", // 64 chars
+	}}
+	devices := []netboxclient.DeviceRecord{{Name: vm, Status: "active", PrimaryIP4ID: 15}}
+
+	for _, ifaceRecords := range []bool{false, true} {
+		enriched := enrichRecordsWithDeviceNames(records, devices, cat, "example.org", nil, ifaceRecords, nil)
+		zones, err := zonediscovery.NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil).Discover(enriched)
+		require.NoError(t, err)
+		ptrs := zones["10.in-addr.arpa"]
+		require.Len(t, ptrs, 1, "interfaceRecords=%v: exactly one PTR", ifaceRecords)
+		assert.True(t, strings.HasPrefix(ptrs[0].DNSName, vm+"."),
+			"interfaceRecords=%v: PTR must target the device name, got %s", ifaceRecords, ptrs[0].DNSName)
+	}
+}
