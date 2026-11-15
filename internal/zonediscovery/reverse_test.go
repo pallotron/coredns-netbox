@@ -333,3 +333,28 @@ func TestDiscoverCountsSkippedByScope(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(priv), "one private skip")
 	assert.Equal(t, 1.0, testutil.ToFloat64(pub), "one public skip")
 }
+
+// Generated records of the same kind tying on one address (an anycast
+// gateway on many leaves, or the same address in two VRFs) publish exactly
+// one PTR: the lowest name, whatever order the records arrive in.
+func TestDiscoverPTRGeneratedTiesKeepOne(t *testing.T) {
+	d := NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	for _, kind := range []string{netboxclient.KindInterface, netboxclient.KindDevice, netboxclient.KindBMC} {
+		t.Run(kind, func(t *testing.T) {
+			leaves := []netboxclient.IPRecord{
+				{DNSName: "vlan100.leaf-03.example.com", Address: "10.100.0.1", Family: 4, Kind: kind},
+				{DNSName: "vlan100.leaf-01.example.com", Address: "10.100.0.1", Family: 4, Kind: kind},
+				{DNSName: "vlan100.leaf-02.example.com", Address: "10.100.0.1", Family: 4, Kind: kind},
+			}
+			reversed := []netboxclient.IPRecord{leaves[2], leaves[1], leaves[0]}
+
+			for _, records := range [][]netboxclient.IPRecord{leaves, reversed} {
+				zones, err := d.Discover(records)
+				require.NoError(t, err, "discover should succeed")
+				ptrs := zones["10.in-addr.arpa"]
+				require.Len(t, ptrs, 1, "exactly one PTR per address for generated ties")
+				assert.Equal(t, "vlan100.leaf-01.example.com", ptrs[0].DNSName, "lowest name wins, regardless of input order")
+			}
+		})
+	}
+}

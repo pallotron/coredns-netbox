@@ -101,8 +101,16 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 		case prio < cur:
 			best[k] = prio
 			candidates[k] = []netboxclient.IPRecord{rec}
-		case prio == cur:
+		case prio == cur && prio == ptrPriority(""):
+			// Explicit records keep every tie: each was named by an operator.
 			candidates[k] = append(candidates[k], rec)
+		case prio == cur:
+			// Generated ties (anycast gateways, the same address in several
+			// VRFs) publish one PTR: the lowest name, so the choice does not
+			// depend on input order.
+			if rec.DNSName < candidates[k][0].DNSName {
+				candidates[k][0] = rec
+			}
 		}
 	}
 
