@@ -110,7 +110,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "^lo$|^lo0|^Loopback", cfg.LoopbackInterfacePattern)
 	assert.Equal(t, "(?i)storage|vtep|vsan", cfg.DataplaneInterfacePattern)
 	assert.Equal(t, "(?i)mgmt|oob", cfg.MgmtVRFPattern)
-	assert.Equal(t, "(?i)mgmt|Management|fxp0|^eth[01]|^mgt|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]", cfg.MgmtInterfacePattern)
+	assert.Equal(t, "(?i)mgmt|Management|fxp0|^eth[01]|mgt|^net[0-9]|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]", cfg.MgmtInterfacePattern)
 
 	// Reverse zones
 	assert.True(t, cfg.EnableReverseZones)
@@ -442,4 +442,22 @@ func TestMgmtInterfacePatternDefaultHasNoUnanchoredNET(t *testing.T) {
 	assert.True(t, re.MatchString("me0"), "Juniper me0 now matches")
 	assert.True(t, re.MatchString("eth0"), "eth0 still matches (anchored)")
 	assert.False(t, re.MatchString("sfp-eth1"), "embedded eth1 no longer matches")
+}
+
+// Tightening the pattern to drop EthernetN must not drop real management
+// ports that matched before: Opengear NETn, netN, and *-mgt names.
+func TestMgmtInterfacePatternDefaultKeepsRealMgmtPorts(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("NETBOX_TOKEN", "test-token")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	re := regexp.MustCompile(cfg.MgmtInterfacePattern)
+
+	for _, name := range []string{"NET1", "net0", "oob-mgt", "eth-mgt", "mgt0", "Management1", "mgmt0", "me0", "eno1"} {
+		assert.True(t, re.MatchString(name), "%s is a management port and must match", name)
+	}
+	for _, name := range []string{"Ethernet1/1", "Ethernet49/1", "network0", "sfp-eth1", "bond0-eth0", "et-0/0/1"} {
+		assert.False(t, re.MatchString(name), "%s is not a management port and must not match", name)
+	}
 }

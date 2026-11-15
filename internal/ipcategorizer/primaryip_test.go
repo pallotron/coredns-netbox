@@ -17,7 +17,7 @@ func newTestCategorizer(t *testing.T) *Categorizer {
 		"^lo$|^lo0|^Loopback",
 		"(?i)storage|vtep|vsan",
 		"(?i)mgmt|oob",
-		"(?i)mgmt|Management|fxp0|^eth[01]|^mgt|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]",
+		"(?i)mgmt|Management|fxp0|^eth[01]|mgt|^net[0-9]|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]",
 		"example.com",
 	)
 	require.NoError(t, err, "categorizer construction should succeed")
