@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sync"
 )
 
 // DeviceRecord is the slice of a NetBox device (or virtual machine) that
@@ -59,14 +60,24 @@ func (c *Client) FetchDevices(ctx context.Context) ([]DeviceRecord, error) {
 	return withRetry(ctx, c, "Netbox device fetch", c.fetchDevicesOnce)
 }
 
+// fetchDevicesOnce fetches devices and virtual machines concurrently (within
+// the client-wide request limit) and returns devices first, then VMs.
 func (c *Client) fetchDevicesOnce(ctx context.Context) ([]DeviceRecord, error) {
+	var vms []DeviceRecord
+	var vmErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		vms, vmErr = fetchAllPages(ctx, c, c.devicePager(virtualMachinesPath))
+	}()
 	devices, err := fetchAllPages(ctx, c, c.devicePager(devicesPath))
+	wg.Wait()
 	if err != nil {
 		return nil, fmt.Errorf("fetch devices: %w", err)
 	}
-	vms, err := fetchAllPages(ctx, c, c.devicePager(virtualMachinesPath))
-	if err != nil {
-		return nil, fmt.Errorf("fetch virtual machines: %w", err)
+	if vmErr != nil {
+		return nil, fmt.Errorf("fetch virtual machines: %w", vmErr)
 	}
 	return append(devices, vms...), nil
 }

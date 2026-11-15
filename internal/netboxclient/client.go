@@ -88,6 +88,10 @@ type Client struct {
 	// Caps on how much of a response body is read (see fetch.go).
 	maxErrorBodyBytes int64
 	maxPageBodyBytes  int64
+	// sem bounds requests in flight across every fetch on this client, so
+	// fetches running concurrently never put more than maxConcurrency
+	// requests on NetBox at once.
+	sem chan struct{}
 }
 
 // ipListResponse is the paginated response from /api/ipam/ip-addresses/.
@@ -138,6 +142,7 @@ func New(baseURL, token string, pageSize, maxConcurrency, retryCount int, retryB
 
 		maxErrorBodyBytes: DefaultMaxErrorBodyBytes,
 		maxPageBodyBytes:  DefaultMaxPageBodyBytes,
+		sem:               make(chan struct{}, max(maxConcurrency, 1)),
 	}, nil
 }
 
