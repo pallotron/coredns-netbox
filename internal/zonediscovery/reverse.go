@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // ReverseZoneDiscoverer creates reverse DNS zones (in-addr.arpa, ip6.arpa) from IP addresses
@@ -14,11 +13,6 @@ import (
 type ReverseZoneDiscoverer struct {
 	IPv4Zones []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa", "172.16.in-addr.arpa"])
 	IPv6Zones []string // Static IPv6 reverse zones (e.g., ["8.b.d.0.1.0.0.2.ip6.arpa"])
-	// SkippedPrivate / SkippedPublic count IPs that matched no configured
-	// reverse zone, split by RFC1918/ULA scope. Private skips are actionable
-	// (a missing reverse zone); public skips are by design. Nil-safe.
-	SkippedPrivate prometheus.Counter
-	SkippedPublic  prometheus.Counter
 }
 
 // NewReverseZoneDiscoverer creates a new reverse zone discoverer with static parent zones.
@@ -67,26 +61,9 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 			continue
 		}
 
-		var zoneName, ptrName string
-		var err error
-		switch rec.Family {
-		case 4:
-			zoneName, ptrName, err = d.reverseIPv4(ip)
-		case 6:
-			zoneName, ptrName, err = d.reverseIPv6(ip)
-		default:
-			continue
-		}
-		if err != nil {
-			// No configured reverse zone covers this IP. Private-range skips
-			// are actionable gaps; public ones are by design (spec §4, §6).
-			if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
-				if d.SkippedPrivate != nil {
-					d.SkippedPrivate.Inc()
-				}
-			} else if d.SkippedPublic != nil {
-				d.SkippedPublic.Inc()
-			}
+		zoneName, ptrName, ok := d.reverseName(rec.Family, ip)
+		if !ok {
+			// No configured reverse zone covers this IP (see Uncovered).
 			continue
 		}
 
@@ -131,6 +108,49 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 		}
 	}
 	return zones, nil
+}
+
+// reverseName returns the reverse zone and PTR owner for ip, or ok=false
+// when the family is unknown or no configured reverse zone covers it.
+func (d *ReverseZoneDiscoverer) reverseName(family int, ip net.IP) (zone, ptrName string, ok bool) {
+	var err error
+	switch family {
+	case 4:
+		zone, ptrName, err = d.reverseIPv4(ip)
+	case 6:
+		zone, ptrName, err = d.reverseIPv6(ip)
+	default:
+		return "", "", false
+	}
+	return zone, ptrName, err == nil
+}
+
+// Uncovered counts the distinct IPs among records that would need a PTR but
+// that no configured reverse zone covers, split by scope. Private (RFC 1918,
+// ULA, link-local, loopback) gaps are actionable: a reverse zone is missing.
+// Public ones are expected (spec §4, §6). It has no side effects, so the
+// caller decides when to measure.
+func (d *ReverseZoneDiscoverer) Uncovered(records []netboxclient.IPRecord) (private, public int) {
+	seen := make(map[string]bool)
+	for _, rec := range records {
+		if rec.DNSName == "" || rec.Type == netboxclient.RecordTypeCNAME || seen[rec.Address] {
+			continue
+		}
+		ip := net.ParseIP(rec.Address)
+		if ip == nil || (rec.Family != 4 && rec.Family != 6) {
+			continue
+		}
+		seen[rec.Address] = true
+		if _, _, ok := d.reverseName(rec.Family, ip); ok {
+			continue
+		}
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+			private++
+		} else {
+			public++
+		}
+	}
+	return private, public
 }
 
 // reverseIPv4 converts an IPv4 address to reverse zone name and PTR record name.

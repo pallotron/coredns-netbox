@@ -7,8 +7,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -316,22 +314,25 @@ func TestDiscoverPTRExplicitTiesAllSurvive(t *testing.T) {
 	assert.Len(t, zones["10.in-addr.arpa"], 2, "equal-priority explicit records keep today's multi-PTR behavior")
 }
 
-func TestDiscoverCountsSkippedByScope(t *testing.T) {
-	priv := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_skipped_private"})
-	pub := prometheus.NewCounter(prometheus.CounterOpts{Name: "test_skipped_public"})
+func TestUncoveredCountsDistinctIPsByScope(t *testing.T) {
 	d := NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
-	d.SkippedPrivate = priv
-	d.SkippedPublic = pub
-
 	records := []netboxclient.IPRecord{
-		{DNSName: "a.example.com", Address: "192.168.1.1", Family: 4}, // private, no zone → actionable
-		{DNSName: "b.example.com", Address: "203.0.113.5", Family: 4}, // public, no zone → by design
-		{DNSName: "c.example.com", Address: "10.1.2.3", Family: 4},    // matches → not counted
+		{DNSName: "a.example.com", Address: "192.168.1.1", Family: 4, Kind: netboxclient.KindDevice},         // private, no zone
+		{DNSName: "eth0.a.example.com", Address: "192.168.1.1", Family: 4, Kind: netboxclient.KindInterface}, // same IP: counted once
+		{DNSName: "b.example.com", Address: "203.0.113.5", Family: 4},                                        // public, no zone
+		{DNSName: "c.example.com", Address: "10.1.2.3", Family: 4},                                           // covered
+		{DNSName: "alias.example.com", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "a.example.com"},     // no address
 	}
+	private, public := d.Uncovered(records)
+	assert.Equal(t, 1, private, "one distinct private IP without a reverse zone")
+	assert.Equal(t, 1, public, "one distinct public IP without a reverse zone")
+
+	// Pure: calling Discover (as every poll and every merge does) changes nothing.
 	_, err := d.Discover(records)
-	require.NoError(t, err, "discover should succeed")
-	assert.Equal(t, 1.0, testutil.ToFloat64(priv), "one private skip")
-	assert.Equal(t, 1.0, testutil.ToFloat64(pub), "one public skip")
+	require.NoError(t, err)
+	private2, public2 := d.Uncovered(records)
+	assert.Equal(t, private, private2)
+	assert.Equal(t, public, public2)
 }
 
 // Generated records of the same kind tying on one address (an anycast

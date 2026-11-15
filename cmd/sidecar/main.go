@@ -154,11 +154,6 @@ func main() {
 			cfg.ReverseZonesIPv4,
 			cfg.ReverseZonesIPv6,
 		)
-		// Set on the concrete type before it is narrowed to the
-		// zonediscovery.Discoverer interface below, since the interface
-		// does not expose these fields.
-		rzd.SkippedPrivate = m.PTRSkippedTotal.WithLabelValues("private")
-		rzd.SkippedPublic = m.PTRSkippedTotal.WithLabelValues("public")
 		reverseDisc = rzd
 		slog.Info("reverse zones enabled", "ipv4_zones", cfg.ReverseZonesIPv4, "ipv6_zones", cfg.ReverseZonesIPv6)
 	}
@@ -661,6 +656,16 @@ func fetchNetbox(ctx context.Context, client *netboxclient.Client,
 		return nil, shrinkguard.Baseline{}, fmt.Errorf("refusing to publish: %s", verdict.Reason())
 	}
 	m.ShrinkGuardBlocked.Set(0)
+
+	// Measured once per published poll, not inside discovery: discovery also
+	// runs on every webhook merge.
+	if u, ok := reverseDisc.(interface {
+		Uncovered([]netboxclient.IPRecord) (int, int)
+	}); ok {
+		private, public := u.Uncovered(enriched)
+		m.PTRUncoveredIPs.WithLabelValues("private").Set(float64(private))
+		m.PTRUncoveredIPs.WithLabelValues("public").Set(float64(public))
+	}
 
 	return combined, now, nil
 }
