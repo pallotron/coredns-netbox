@@ -44,6 +44,66 @@ func TestHybridPrimaryIPWins(t *testing.T) {
 	assert.Equal(t, 0, stats.Fallback, "no fallback used")
 }
 
+// primary_ip4 and oob_ip are the source of truth even when the IP object
+// carries an explicit dns_name: the id join must see every published IP,
+// not just the ones the heuristic generates names for.
+func TestHybridPrimaryAndOOBWithDNSNameStillResolve(t *testing.T) {
+	c := newTestCategorizer(t)
+	const dev = "dc1-site13a-r101-prod-hv-01"
+	records := []netboxclient.IPRecord{
+		{ID: 50, Address: "10.0.0.50", Family: 4, DeviceName: dev, InterfaceName: "eno1", DNSName: "hv01.example.com"},
+		{ID: 51, Address: "10.0.0.51", Family: 4, DeviceName: dev, InterfaceName: "eno2"},
+		{ID: 60, Address: "10.9.0.60", Family: 4, DeviceName: dev, InterfaceName: "idrac", DNSName: "hv01-oob.example.com"},
+		{ID: 61, Address: "10.9.0.61", Family: 4, DeviceName: dev, InterfaceName: "idrac-shared"},
+	}
+	devices := []netboxclient.DeviceRecord{
+		{Name: dev, Status: "active", PrimaryIP4ID: 50, OOBIPID: 60},
+	}
+
+	result, stats := c.SelectDeviceIPsHybrid(records, devices)
+	require.Contains(t, result, dev)
+	require.NotNil(t, result[dev].PrimaryIP, "primary IP should be selected")
+	require.NotNil(t, result[dev].BMCIP, "BMC IP should be selected")
+	assert.Equal(t, "10.0.0.50", result[dev].PrimaryIP.Address, "primary_ip4 with a dns_name must still win")
+	assert.Equal(t, "10.9.0.60", result[dev].BMCIP.Address, "oob_ip with a dns_name must still win the BMC record")
+	assert.Equal(t, 1, stats.PrimaryIP, "resolved via primary_ip4")
+	assert.Equal(t, 0, stats.Fallback, "no heuristic fallback")
+}
+
+// A device whose only IP is its dns_name'd primary_ip4 still gets its
+// generated device record.
+func TestHybridPrimaryWithDNSNameOnlyIP(t *testing.T) {
+	c := newTestCategorizer(t)
+	const dev = "dc1-site13a-r101-prod-hv-02"
+	records := []netboxclient.IPRecord{
+		{ID: 70, Address: "10.0.0.70", Family: 4, DeviceName: dev, InterfaceName: "eno1", DNSName: "hv02.example.com"},
+	}
+	devices := []netboxclient.DeviceRecord{
+		{Name: dev, Status: "active", PrimaryIP4ID: 70},
+	}
+
+	result, stats := c.SelectDeviceIPsHybrid(records, devices)
+	require.Contains(t, result, dev)
+	require.NotNil(t, result[dev].PrimaryIP, "primary IP should be selected")
+	assert.Equal(t, "10.0.0.70", result[dev].PrimaryIP.Address)
+	assert.Equal(t, 1, stats.PrimaryIP)
+	assert.Equal(t, 0, stats.None)
+}
+
+// The regex heuristic still only considers IPs without a dns_name, exactly
+// as before: a dns_name'd IP is never a fallback pick.
+func TestHybridHeuristicIgnoresDNSNameIPs(t *testing.T) {
+	c := newTestCategorizer(t)
+	const dev = "dc1-site13a-r101-prod-hv-03"
+	records := []netboxclient.IPRecord{
+		{ID: 80, Address: "10.0.0.80", Family: 4, DeviceName: dev, InterfaceName: "eno1", DNSName: "hv03.example.com"},
+	}
+
+	result, stats := c.SelectDeviceIPsHybrid(records, nil)
+	assert.NotContains(t, result, dev, "dns_name'd IPs are not heuristic candidates")
+	assert.Equal(t, 0, stats.Fallback)
+}
+
 func TestHybridFallbackWhenNoPrimary(t *testing.T) {
 	c := newTestCategorizer(t)
 	records := []netboxclient.IPRecord{

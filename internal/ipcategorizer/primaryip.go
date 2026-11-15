@@ -30,19 +30,27 @@ type SelectionStats struct {
 // (a device with no usable primary_ip4 can still have a published oob_ip).
 // The bmc/ipmi/ilo/idrac interface-name heuristic is only the BMC source
 // for devices with no published oob_ip.
+//
+// records must be every published IP, including those with an explicit
+// dns_name: primary_ip4 and oob_ip are joined against all of them, while the
+// regex heuristic only considers IPs without a dns_name.
 func (c *Categorizer) SelectDeviceIPsHybrid(
 	records []netboxclient.IPRecord,
 	devices []netboxclient.DeviceRecord,
 ) (map[string]*DeviceDNSRecords, SelectionStats) {
 	byID := make(map[int]netboxclient.IPRecord, len(records))
+	heuristic := make([]netboxclient.IPRecord, 0, len(records))
 	for _, r := range records {
 		if r.ID != 0 {
 			byID[r.ID] = r
 		}
+		if r.DNSName == "" {
+			heuristic = append(heuristic, r)
+		}
 	}
 
 	// Heuristic result for every device seen in IP assignments.
-	result := c.SelectDeviceIPs(records)
+	result := c.SelectDeviceIPs(heuristic)
 
 	var stats SelectionStats
 

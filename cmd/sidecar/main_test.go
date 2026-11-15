@@ -312,3 +312,37 @@ func TestFetchNetboxRefusesEmptyOverPublished(t *testing.T) {
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.NetboxEmptyResponseTotal), "empty_response_total must increment")
 	assert.Equal(t, 1.0, testutil.ToFloat64(m.PollTotal.WithLabelValues("error")), "poll_total{result=\"error\"} must increment")
 }
+
+// A primary_ip4 / oob_ip that carries an explicit dns_name must still
+// drive the device and BMC records. The explicit record is kept as-is
+// alongside them.
+func TestEnrichPrimaryAndOOBWithDNSName(t *testing.T) {
+	cat, err := ipcategorizer.NewCategorizer("(?i)bmc|idrac", "^lo$", "storage", "mgmt", "(?i)mgmt|^eno[0-9]", "example.org")
+	require.NoError(t, err)
+
+	const dev = "web-01"
+	records := []netboxclient.IPRecord{
+		{ID: 50, Address: "10.0.0.50", Family: 4, DeviceName: dev, InterfaceName: "eno1", DNSName: "web.example.org"},
+		{ID: 51, Address: "10.0.0.51", Family: 4, DeviceName: dev, InterfaceName: "eno2"},
+		{ID: 60, Address: "10.9.0.60", Family: 4, DeviceName: dev, InterfaceName: "idrac", DNSName: "web-oob.example.org"},
+		{ID: 61, Address: "10.9.0.61", Family: 4, DeviceName: dev, InterfaceName: "idrac-shared"},
+	}
+	devices := []netboxclient.DeviceRecord{{Name: dev, Status: "active", PrimaryIP4ID: 50, OOBIPID: 60}}
+
+	got := enrichRecordsWithDeviceNames(records, devices, cat, "example.org", nil, false, nil)
+
+	byKind := map[string]string{}
+	var explicit []string
+	for _, r := range got {
+		switch r.Kind {
+		case netboxclient.KindDevice, netboxclient.KindBMC:
+			byKind[r.Kind] = r.Address
+		case "":
+			explicit = append(explicit, r.DNSName)
+		}
+	}
+	assert.Equal(t, "10.0.0.50", byKind[netboxclient.KindDevice], "device record must use primary_ip4")
+	assert.Equal(t, "10.9.0.60", byKind[netboxclient.KindBMC], "BMC record must use oob_ip")
+	assert.ElementsMatch(t, []string{"web.example.org", "web-oob.example.org"}, explicit,
+		"explicit dns_name records are still published unchanged")
+}
