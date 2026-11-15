@@ -7,7 +7,9 @@ import (
 // SelectionStats reports how device records were resolved, feeding the
 // netbox_sidecar_devices metric. Fallback is the NetBox-hygiene
 // burn-down number: devices still resolved by the regex heuristic because
-// primary_ip4 is unset or points at an unpublished IP.
+// primary_ip4 is unset or points at an unpublished IP. None counts devices
+// with no device record (no primary address found), even when they still
+// get a -bmc record.
 type SelectionStats struct {
 	PrimaryIP int
 	Fallback  int
@@ -122,7 +124,7 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 			dns, hadEntry := result[name]
 			if !hadEntry {
 				if oobIP == nil {
-					stats.None++
+					stats.None++ // nothing found at all
 					continue
 				}
 				// No heuristic primary or BMC match at all, but a published
@@ -130,10 +132,8 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 				// dev.OOBIPID just because the primary is unresolvable.
 				dns = &DeviceDNSRecords{DeviceName: name, Zone: c.extractZone(name)}
 				result[name] = dns
-				stats.None++ // no primary IP was found for this device
-			} else {
-				stats.Fallback++
 			}
+			stats.count(dns)
 			if oobIP != nil {
 				dns.BMCIP = oobIP
 			}
@@ -158,11 +158,22 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 	}
 
 	// Fallback union: heuristic entries for names absent from devices
-	// entirely (never seen above) stay untouched and count as Fallback.
-	for name := range result {
+	// entirely (never seen above) stay untouched.
+	for name, dns := range result {
 		if !seen[name] {
-			stats.Fallback++
+			stats.count(dns)
 		}
 	}
 	return result, stats
+}
+
+// count records a heuristic-path device: Fallback when the heuristic found
+// a primary address (the device record exists), None otherwise, even if a
+// BMC record exists, since the stats describe the device's own record.
+func (s *SelectionStats) count(dns *DeviceDNSRecords) {
+	if dns != nil && dns.PrimaryIP != nil {
+		s.Fallback++
+	} else {
+		s.None++
+	}
 }

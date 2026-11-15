@@ -301,3 +301,31 @@ func TestHybridDuplicateNameLaterPrimaryKeepsEarlierOOB(t *testing.T) {
 	assert.Equal(t, "10.9.20.6", result[name].BMCIP.Address, "the device's oob_ip still drives the BMC record")
 	assert.Equal(t, 1, stats.PrimaryIP, "counted once")
 }
+
+// Stats describe the device's own record: fallback means the heuristic found
+// a primary address. A device with only a BMC address (heuristic or oob_ip)
+// has no device record and counts as none, the same either way.
+func TestHybridStatsCountDevicesWithoutPrimaryAsNone(t *testing.T) {
+	c := newTestCategorizer(t)
+	records := []netboxclient.IPRecord{
+		// bmcOnly: the heuristic finds only a BMC interface.
+		{ID: 1, Address: "10.9.0.1", Family: 4, DeviceName: "bmc-only", InterfaceName: "idrac"},
+		// oobOnly: NetBox oob_ip, no primary and no heuristic match.
+		{ID: 2, Address: "10.9.0.2", Family: 4, DeviceName: "oob-only", InterfaceName: "console0"},
+		// fallback: the heuristic finds a primary address.
+		{ID: 3, Address: "10.0.0.3", Family: 4, DeviceName: "fallback", InterfaceName: "mgmt0"},
+		// notListed: in IP data but not in the device list, BMC address only.
+		{ID: 4, Address: "10.9.0.4", Family: 4, DeviceName: "not-listed", InterfaceName: "ipmi"},
+	}
+	devices := []netboxclient.DeviceRecord{
+		{Name: "bmc-only", Status: "active"},
+		{Name: "oob-only", Status: "active", OOBIPID: 2},
+		{Name: "fallback", Status: "active"},
+	}
+
+	result, stats := c.SelectDeviceIPsHybrid(records, devices)
+	assert.NotNil(t, result["bmc-only"].BMCIP, "bmc-only still gets its -bmc record")
+	assert.NotNil(t, result["oob-only"].BMCIP, "oob-only still gets its -bmc record")
+	assert.Equal(t, SelectionStats{PrimaryIP: 0, Fallback: 1, None: 3}, stats,
+		"only the device whose heuristic found a primary counts as fallback")
+}
