@@ -1,6 +1,7 @@
 package ipcategorizer
 
 import (
+	"net"
 	"regexp"
 	"sort"
 	"strings"
@@ -121,12 +122,22 @@ type DeviceDNSRecords struct {
 	Zone       string                  // DNS zone (extracted from device name)
 }
 
+// isLinkLocal reports whether addr is IPv4 169.254.0.0/16 or IPv6
+// fe80::/10. Such addresses are only meaningful on their own link (and are
+// often the same on every host, like Dell's 169.254.0.2 iDRAC passthrough
+// or fe80::1 on every VLAN), so the sidecar never picks one on its own.
+// An explicit dns_name, primary_ip4 or oob_ip choice is still honoured.
+func isLinkLocal(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast())
+}
+
 // SelectDeviceIPs groups IPs by device and selects the primary management and BMC IPs
 func (c *Categorizer) SelectDeviceIPs(records []netboxclient.IPRecord) map[string]*DeviceDNSRecords {
 	// Group by device name
 	deviceIPs := make(map[string][]CategorizedIP)
 	for _, record := range records {
-		if record.DeviceName == "" {
+		if record.DeviceName == "" || isLinkLocal(record.Address) {
 			continue
 		}
 		cat := c.Categorize(record)

@@ -46,7 +46,7 @@ func (c *Categorizer) InterfaceRecords(
 	var out []netboxclient.IPRecord
 	var skipped []string
 	for _, r := range records {
-		if r.DeviceName == "" || r.InterfaceName == "" || r.DNSName != "" {
+		if r.DeviceName == "" || r.InterfaceName == "" || r.DNSName != "" || isLinkLocal(r.Address) {
 			continue
 		}
 		label := NormalizeInterfaceName(r.InterfaceName)
