@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/pallotron/coredns-netbox/internal/netboxclient"
@@ -302,4 +303,20 @@ func TestCNAMEOnlyZones(t *testing.T) {
 		"empty.example.org": {},
 	}
 	assert.Equal(t, []string{"cnames.example.org"}, CNAMEOnlyZones(zm))
+}
+
+// A huge error page from the netbox-dns plugin is read only up to the cap.
+func TestNetboxDNSFetchZonesCapsErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprint(w, strings.Repeat("x", 2<<20))
+	}))
+	defer srv.Close()
+
+	d := NewNetboxDNSDiscoverer(srv.URL, "test-token")
+	_, err := d.FetchZones(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned 502")
+	assert.LessOrEqual(t, len(err.Error()), int(netboxclient.DefaultMaxErrorBodyBytes)+200,
+		"the error body must be cut at the cap")
 }

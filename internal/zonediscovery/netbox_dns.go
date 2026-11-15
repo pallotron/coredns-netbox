@@ -62,13 +62,13 @@ func (d *NetboxDNSDiscoverer) FetchZones(ctx context.Context) ([]string, error) 
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, netboxclient.DefaultMaxErrorBodyBytes))
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("netbox-dns zones API returned %d: %s", resp.StatusCode, string(body))
 		}
 
 		var result netboxDNSZoneList
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		if err := json.NewDecoder(netboxclient.LimitBody(resp.Body, netboxclient.DefaultMaxPageBodyBytes)).Decode(&result); err != nil {
 			_ = resp.Body.Close()
 			return nil, fmt.Errorf("decode zones response: %w", err)
 		}
