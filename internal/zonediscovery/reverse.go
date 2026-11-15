@@ -116,6 +116,9 @@ func (d *ReverseZoneDiscoverer) Discover(records []netboxclient.IPRecord) (ZoneM
 				DeviceName:    rec.DeviceName,
 				InterfaceName: rec.InterfaceName,
 				VRF:           rec.VRF,
+				// StripDCLabel also runs over reverse zones and strips
+				// interface PTR targets by structure, so keep the kind.
+				Kind: rec.Kind,
 			})
 		}
 	}

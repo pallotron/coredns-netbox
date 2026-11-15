@@ -12,15 +12,11 @@ import (
 //
 // Example: "host.nyc.example.org" with domainSuffix "example.org" → "host.example.org"
 //
-// A device's own name is never eligible to be discarded as a DC label (see
-// stripDCFromName) even when it lands at that position, which happens
-// whenever a generated record prepends an extra label onto an
-// already-complete device canonical — an interface record
-// ("mgmt0.dc1-h1a-r101-prod-hv-01.example.org") being the case that exposed
-// it: positionally this looks identical to a true "host.dc.domain" name, but
-// the candidate label here is the device's own identity, not a discardable
-// DC tag, and stripping it collapses every device's interface records onto
-// the same non-unique "<iface>.example.org" name.
+// Interface records ("<iface>.<device canonical>") are stripped structurally:
+// the canonical part is stripped exactly as the device record is, and the
+// interface label is put back in front. Stripping the whole name instead
+// would treat a flat canonical's host label as the DC label and collapse
+// every device's interface records onto "<iface>.<domain>".
 func StripDCLabel(records []netboxclient.IPRecord, domainSuffix string) []netboxclient.IPRecord {
 	if len(records) == 0 {
 		return records
@@ -28,22 +24,33 @@ func StripDCLabel(records []netboxclient.IPRecord, domainSuffix string) []netbox
 
 	result := make([]netboxclient.IPRecord, len(records))
 	for i, r := range records {
-		r.DNSName = stripDCFromName(r.DNSName, domainSuffix, r.DeviceName)
+		if r.Kind == netboxclient.KindInterface {
+			r.DNSName = stripDCFromInterfaceName(r.DNSName, domainSuffix)
+		} else {
+			r.DNSName = stripDCFromName(r.DNSName, domainSuffix)
+		}
 		if r.CNAMETarget != "" {
-			r.CNAMETarget = stripDCFromName(r.CNAMETarget, domainSuffix, r.DeviceName)
+			r.CNAMETarget = stripDCFromName(r.CNAMETarget, domainSuffix)
 		}
 		result[i] = r
 	}
 	return result
 }
 
+// stripDCFromInterfaceName strips the DC label from the device canonical
+// that follows an interface record's leading interface label.
+func stripDCFromInterfaceName(name, domainSuffix string) string {
+	iface, canonical, ok := strings.Cut(name, ".")
+	if !ok {
+		return name
+	}
+	return iface + "." + stripDCFromName(canonical, domainSuffix)
+}
+
 // stripDCFromName removes the DC label — the label immediately before the
 // base domain suffix — from a single name. Names not under domainSuffix, or
-// already at hostname.domain depth, are returned unchanged. deviceName (the
-// record's own device, "" for explicit/operator-named records) guards
-// against discarding a generated record's own device identity: if the
-// candidate DC label is actually the device's name, the name is left alone.
-func stripDCFromName(name, domainSuffix, deviceName string) string {
+// already at hostname.domain depth, are returned unchanged.
+func stripDCFromName(name, domainSuffix string) string {
 	trimmed := strings.TrimSuffix(name, ".")
 	labels := strings.Split(trimmed, ".")
 	domainDepth := len(strings.Split(domainSuffix, "."))
@@ -54,9 +61,6 @@ func stripDCFromName(name, domainSuffix, deviceName string) string {
 	}
 	suffix := strings.Join(labels[len(labels)-domainDepth:], ".")
 	if !strings.EqualFold(suffix, domainSuffix) {
-		return name
-	}
-	if deviceName != "" && strings.EqualFold(labels[dcIdx], deviceName) {
 		return name
 	}
 	stripped := append(labels[:dcIdx:dcIdx], labels[dcIdx+1:]...)
