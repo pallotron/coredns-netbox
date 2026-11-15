@@ -42,9 +42,10 @@ func isAuthError(err error) bool {
 	return errors.As(err, &ae)
 }
 
-// statusError builds the error for a non-200 response from apiPath.
-func statusError(resp *http.Response, apiPath string) error {
-	body, _ := io.ReadAll(resp.Body)
+// statusError builds the error for a non-200 response from apiPath, reading
+// at most maxBody bytes of the body.
+func statusError(resp *http.Response, apiPath string, maxBody int64) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return &AuthError{
 			Status:     resp.StatusCode,

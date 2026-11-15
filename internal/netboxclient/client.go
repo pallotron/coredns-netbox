@@ -8,13 +8,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -88,6 +85,9 @@ type Client struct {
 	// RetryCounter is an optional Prometheus counter incremented on each retry attempt.
 	// Set after construction. Safe to leave nil (no-op).
 	RetryCounter prometheus.Counter
+	// Caps on how much of a response body is read (see fetch.go).
+	maxErrorBodyBytes int64
+	maxPageBodyBytes  int64
 }
 
 // ipListResponse is the paginated response from /api/ipam/ip-addresses/.
@@ -135,6 +135,9 @@ func New(baseURL, token string, pageSize, maxConcurrency, retryCount int, retryB
 		retryBaseDelay:  retryBaseDelay,
 		retryMaxDelay:   retryMaxDelay,
 		publishStatuses: []string{"active"},
+
+		maxErrorBodyBytes: DefaultMaxErrorBodyBytes,
+		maxPageBodyBytes:  DefaultMaxPageBodyBytes,
 	}, nil
 }
 
@@ -152,35 +155,7 @@ func (c *Client) SetPublishStatuses(statuses []string) {
 // FetchIPAddresses retrieves all active IP addresses from Netbox,
 // retrying on transient errors with exponential backoff.
 func (c *Client) FetchIPAddresses(ctx context.Context) ([]IPRecord, error) {
-	var lastErr error
-	for attempt := 0; attempt <= c.retryCount; attempt++ {
-		if attempt > 0 {
-			delay := c.retryDelay(attempt)
-			slog.Warn("retrying Netbox fetch",
-				"attempt", attempt,
-				"max_retries", c.retryCount,
-				"delay", delay,
-				"err", lastErr,
-			)
-			if c.RetryCounter != nil {
-				c.RetryCounter.Inc()
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(delay):
-			}
-		}
-		records, err := c.fetchIPAddressesOnce(ctx)
-		if err == nil {
-			return records, nil
-		}
-		if isAuthError(err) {
-			return nil, err
-		}
-		lastErr = err
-	}
-	return nil, lastErr
+	return withRetry(ctx, c, "Netbox fetch", c.fetchIPAddressesOnce)
 }
 
 // retryDelay returns the backoff duration for the given attempt number (1-based).
@@ -256,105 +231,34 @@ func ipItemToRecord(ip ipItem) IPRecord {
 	}
 }
 
-// fetchIPAddressesOnce retrieves all active IP addresses from Netbox
+// fetchIPAddressesOnce retrieves all published IP addresses from Netbox
 // using parallel paginated requests (single attempt, no retry).
 func (c *Client) fetchIPAddressesOnce(ctx context.Context) ([]IPRecord, error) {
-	// Probe request to get total count
-	probeResp, err := c.fetchPage(ctx, 0, 1)
-	if err != nil {
-		return nil, fmt.Errorf("probe request failed: %w", err)
-	}
-
-	total := probeResp.Count
-	if total == 0 {
-		return nil, nil
-	}
-
-	totalPages := int(math.Ceil(float64(total) / float64(c.pageSize)))
-
-	// Fan-out with bounded concurrency
-	// Use indexed results to ensure deterministic ordering
-	sem := make(chan struct{}, c.maxConcurrency)
-	results := make([][]IPRecord, totalPages)
-	errsCh := make(chan error, totalPages)
-
-	var wg sync.WaitGroup
-	for page := 0; page < totalPages; page++ {
-		wg.Add(1)
-		go func(pageNum int, offset int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			resp, err := c.fetchPage(ctx, offset, c.pageSize)
-			if err != nil {
-				errsCh <- fmt.Errorf("fetch page offset=%d: %w", offset, err)
-				return
-			}
-
-			records := make([]IPRecord, 0, len(resp.Results))
-			for _, ip := range resp.Results {
-				records = append(records, ipItemToRecord(ip))
-			}
-			results[pageNum] = records
-		}(page, page*c.pageSize)
-	}
-
-	wg.Wait()
-	close(errsCh)
-
-	// Check for errors
-	if err := <-errsCh; err != nil {
-		return nil, err
-	}
-
-	// Collect results in deterministic page order
-	var all []IPRecord
-	for _, records := range results {
-		all = append(all, records...)
-	}
-
-	return all, nil
+	return fetchAllPages(ctx, c, c.fetchIPPage)
 }
 
-// fetchPage retrieves a single page of IP addresses from the Netbox API.
+// fetchIPPage retrieves a single page of IP addresses from the Netbox API.
 // Status filtering is server-side: one status= param per published status
 // (NetBox ORs repeated filters). This query is the only thing keeping
 // non-published IPs (reserved/deprecated/...) out of the zones on the poll
 // path — pinned by N1 in the acceptance matrix.
-func (c *Client) fetchPage(ctx context.Context, offset, limit int) (*ipListResponse, error) {
+func (c *Client) fetchIPPage(ctx context.Context, offset, limit int) (int, []IPRecord, error) {
 	q := url.Values{}
-	for _, s := range c.publishStatuses {
-		q.Add("status", s)
+	for _, st := range c.publishStatuses {
+		q.Add("status", st)
 	}
 	q.Set("limit", fmt.Sprint(limit))
 	q.Set("offset", fmt.Sprint(offset))
-	reqURL := fmt.Sprintf("%s%s?%s", c.baseURL, ipAddressesPath, q.Encode())
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+	var resp ipListResponse
+	if err := c.getPage(ctx, ipAddressesPath, q, &resp); err != nil {
+		return 0, nil, err
 	}
-
-	req.Header.Set("Authorization", AuthHeader(c.token))
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
+	records := make([]IPRecord, 0, len(resp.Results))
+	for _, ip := range resp.Results {
+		records = append(records, ipItemToRecord(ip))
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, statusError(resp, ipAddressesPath)
-	}
-
-	var result ipListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	return &result, nil
+	return resp.Count, records, nil
 }
 
 // stripCIDR removes the /prefix from an address like "10.0.0.1/24".
