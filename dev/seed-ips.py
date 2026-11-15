@@ -196,5 +196,33 @@ if loopback_ip is None:
     loopback_ip.assigned_object = loopback_iface
     loopback_ip.save()
 
+# Override device: primary_ip4 and oob_ip both point at interfaces the
+# heuristics would never pick, while the interfaces they WOULD pick (mgmt0
+# for the device record, idrac for the BMC record) also carry addresses. The
+# published records can then only match NetBox if both overrides work.
+override_dev, _ = Device.objects.get_or_create(
+    name="dc1-h1a-r601-prod-sv-02",
+    defaults={"device_type": dtype, "role": role, "site": site},
+)
+
+def _iface_ip(device, iface_name, address, iface_type="1000base-t"):
+    iface, _ = Interface.objects.get_or_create(
+        device=device, name=iface_name, defaults={"type": iface_type}
+    )
+    ip = IPAddress.objects.filter(address=address).first()
+    if ip is None:
+        ip = IPAddress(address=address, status="active")
+        ip.assigned_object = iface
+        ip.save()
+    return ip
+
+_iface_ip(override_dev, "mgmt0", "10.9.60.1/24")                      # heuristic's device pick
+override_primary = _iface_ip(override_dev, "Vlan100", "10.9.61.1/24", "virtual")
+_iface_ip(override_dev, "idrac", "10.9.62.1/24")                      # heuristic's BMC pick
+override_oob = _iface_ip(override_dev, "console0", "10.9.63.1/24")
+override_dev.primary_ip4 = override_primary
+override_dev.oob_ip = override_oob
+override_dev.save()
+
 print("Task 11 fixture complete: primary_ip4 switch, eno1 fallback device, "
-      "primary_ip4+loopback device seeded")
+      "primary_ip4+loopback device, primary_ip4/oob_ip override device seeded")
