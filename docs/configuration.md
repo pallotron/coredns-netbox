@@ -116,7 +116,7 @@ This is additive to, not a replacement for, the device and BMC records above, an
 
 **PTR priority:** exactly one PTR is published per address. When more than one record kind could claim the same IP, priority is: explicit Netbox `dns_name` > per-interface record > device (primary) record > BMC record. This keeps the PTR stable and predictable even when, for example, a device's primary IP is also separately exposed as a named interface record.
 
-**Turning `interfaceRecords.enabled` back off:** disabling it after it has been on drops roughly half the records in every zone (reverse zones that exist only because of interface PTRs can drop entirely), so expect the [shrink guard](#shrink-guard) to refuse the first poll after the change and `netbox_sidecar_shrink_guard_blocked` to go to 1 — that refusal is the designed consent channel, not a bug. Clear it with the single-use `ForceNetboxPoll(allow_shrink=true)` override (see [Clearing a refusal](#clearing-a-refusal)) once the drop is confirmed intentional.
+**Turning `interfaceRecords.enabled` back off:** disabling it after it has been on drops roughly half the records in every zone, and reverse zones that exist only because of interface PTRs are removed. The [shrink guard](#shrink-guard) does **not** catch this: the setting change restarts the pods, and a restarted sidecar has no previous record set to compare against, so the first poll publishes the smaller zones straight away and secondaries transfer them. Treat it as a planned change: check that nothing still resolves interface names (`<iface>.<device-fqdn>`) or relies on their PTRs before rolling it out.
 
 ## Reverse DNS (PTR Records)
 
@@ -239,6 +239,14 @@ Two rules, both needing a percentage **and** a record count to be exceeded:
 
 A truncated fetch is *not* among the cases to worry about here: any page error
 aborts the whole fetch, so a partial result never reaches zone generation.
+
+The guard compares each fetch with what the **running process** last
+published. After a restart, the first poll has nothing to compare against,
+so it publishes whatever NetBox returns. The one exception is an empty
+result while zones are already on disk, which is always refused. So a
+shrink caused by a configuration change rolled out with a restart (for
+example turning off `interfaceRecords.enabled`, or narrowing
+`publishStatuses`) is published without the guard.
 
 The percentage is the trigger and the record count only a noise gate. Churn
 scales with the fleet, so a fixed count tuned for today starts firing on

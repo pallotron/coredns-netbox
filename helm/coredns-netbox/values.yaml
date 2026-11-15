@@ -307,11 +307,11 @@ interfacePatterns:
 #
 # Turning this back OFF after it has been enabled drops roughly half the
 # records in every zone (more in reverse zones that exist only because of
-# interface PTRs) — expect the shrinkGuard above to refuse the first poll
-# after the change and netbox_sidecar_shrink_guard_blocked to go to 1. That
-# refusal is the guard doing its job, not a bug: clear it with the single-use
-# ForceNetboxPoll(allow_shrink=true) override once you've confirmed the drop
-# is intentional (see "Clearing a refusal" in docs/configuration.md).
+# interface PTRs). The shrinkGuard does NOT catch it: the change restarts the
+# pods and a restarted sidecar has no previous record set to compare against,
+# so the first poll publishes the smaller zones at once. Plan it as a
+# deliberate change (see "Per-Interface Address Records" in
+# docs/configuration.md).
 interfaceRecords:
   enabled: false
 
