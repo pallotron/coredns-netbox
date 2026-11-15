@@ -96,7 +96,13 @@ func (c *Categorizer) SelectDeviceIPsHybrid(
 			continue
 		}
 
-		winners[dev.Name] = &winner{primary: primary, oobID: dev.OOBIPID, resolved: true}
+		oobID := dev.OOBIPID
+		if oobID == 0 && ok {
+			// An earlier entry for this name (a device, ahead of a same-named
+			// VM, which has no oob_ip) keeps its oob_ip for the BMC record.
+			oobID = w.oobID
+		}
+		winners[dev.Name] = &winner{primary: primary, oobID: oobID, resolved: true}
 	}
 
 	for name := range seen {
