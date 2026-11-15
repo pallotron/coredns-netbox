@@ -222,9 +222,9 @@ Sample Forward DNS records (first 10 devices):
   ...
 
 Sample Reverse DNS (PTR) records (first 10):
-  1.33.26.172.26.172.in-addr.arpa. → dc1-r01-hv-01.dc1-site.yourcompany.com.
-  1.1.26.172.26.172.in-addr.arpa. → dc1-r01-hv-01-bmc.dc1-site.yourcompany.com.
-  2.33.26.172.26.172.in-addr.arpa. → dc1-r01-hv-02.dc1-site.yourcompany.com.
+  1.33.26.172.in-addr.arpa. → dc1-r01-hv-01.dc1-site.yourcompany.com.
+  1.1.26.172.in-addr.arpa. → dc1-r01-hv-01-bmc.dc1-site.yourcompany.com.
+  2.33.26.172.in-addr.arpa. → dc1-r01-hv-02.dc1-site.yourcompany.com.
   ...
 ```
 
@@ -249,19 +249,20 @@ Device: dc1-r101-prod-hv-01
 The CSV export includes both forward (A/AAAA) and reverse (PTR) records:
 
 ```bash
-$ ./analyzer -file all_ips.json -format csv | head -20
+$ ./analyzer -file all_ips.json -domain yourcompany.com \
+    -ipv4-zones "10.in-addr.arpa,26.172.in-addr.arpa" -format csv | head -20
 record_type,zone,name,value,device,interface,vrf
 A,dc1.yourcompany.com,dc1-r01-hv-01,172.26.33.64,dc1-r01-hv-01,mgmt-front-1,dc1mgmt
 A,dc1.yourcompany.com,dc1-r01-hv-01-bmc,172.26.1.64,dc1-r01-hv-01,bmc-front,dc1mgmt
-PTR,64.33.26.172.in-addr.arpa,64,dc1-r01-hv-01.dc1.yourcompany.com,dc1-r01-hv-01,mgmt-front-1,dc1mgmt
-PTR,64.1.26.172.in-addr.arpa,64,dc1-r01-hv-01-bmc.dc1.yourcompany.com,dc1-r01-hv-01,bmc-front,dc1mgmt
+PTR,26.172.in-addr.arpa,64.1,dc1-r01-hv-01-bmc.dc1.yourcompany.com,dc1-r01-hv-01,bmc-front,dc1mgmt
+PTR,26.172.in-addr.arpa,64.33,dc1-r01-hv-01.dc1.yourcompany.com,dc1-r01-hv-01,mgmt-front-1,dc1mgmt
 ...
 ```
 
 **CSV Columns:**
 - `record_type` - Record type (A, AAAA, or PTR)
-- `zone` - DNS zone name (forward or reverse)
-- `name` - Record name (hostname for A/AAAA, PTR name for PTR)
+- `zone` - DNS zone name: the forward zone for device A/AAAA rows, the reverse zone for PTR rows, and `-` for per-interface A/AAAA and CNAME rows (whose `name` is already a full name)
+- `name` - Record name: the device hostname (plus `-bmc`) for device rows, the full name for per-interface and CNAME rows, and the PTR owner relative to `zone` for PTR rows
 - `value` - Record value (IP address for A/AAAA, target hostname for PTR)
 - `device` - Source device name
 - `interface` - Source interface name
@@ -270,14 +271,19 @@ PTR,64.1.26.172.in-addr.arpa,64,dc1-r01-hv-01-bmc.dc1.yourcompany.com,dc1-r01-hv
 
 ### Records Export
 
-`-format records` prints one sorted, tab-separated `<name> <type> <value>` line per record (forward A/AAAA/CNAME, then reverse PTR) — meant to be diffed between runs:
+`-format records` prints one tab-separated `<name> <type> <value>` line per record (A/AAAA, CNAME and PTR), with no trailing dots, sorted as plain text so two runs can be diffed. PTR owners start with digits, so they sort first. With `-interface-records`, an interface's PTR targets the interface name, which wins PTR priority over the device name:
 
 ```bash
-$ ./analyzer -file all_ips.json -devices-file devices.json -interface-records -format records
-dc1-r01-hv-01-bmc.dc1.yourcompany.com. A       172.26.1.1
-dc1-r01-hv-01.dc1.yourcompany.com.     A       172.26.33.1
-eno1.dc1-r01-hv-01.dc1.yourcompany.com. A      10.0.0.5
-1.33.26.172.26.172.in-addr.arpa.       PTR     dc1-r01-hv-01.dc1.yourcompany.com.
+$ ./analyzer -file all_ips.json -devices-file devices.json -interface-records \
+    -domain yourcompany.com -ipv4-zones "10.in-addr.arpa,26.172.in-addr.arpa" -format records
+1.1.26.172.in-addr.arpa	PTR	bmc-front.dc1-r01-hv-01.dc1.yourcompany.com
+1.33.26.172.in-addr.arpa	PTR	mgmt-front-1.dc1-r01-hv-01.dc1.yourcompany.com
+5.0.0.10.in-addr.arpa	PTR	eno1.dc1-r01-hv-01.dc1.yourcompany.com
+bmc-front.dc1-r01-hv-01.dc1.yourcompany.com	A	172.26.1.1
+dc1-r01-hv-01-bmc.dc1.yourcompany.com	A	172.26.1.1
+dc1-r01-hv-01.dc1.yourcompany.com	A	172.26.33.1
+eno1.dc1-r01-hv-01.dc1.yourcompany.com	A	10.0.0.5
+mgmt-front-1.dc1-r01-hv-01.dc1.yourcompany.com	A	172.26.33.1
 ...
 ```
 
