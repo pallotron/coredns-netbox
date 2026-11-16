@@ -89,6 +89,11 @@ func (c *Client) devicePager(apiPath string) pageFunc[DeviceRecord] {
 		q := url.Values{}
 		q.Set("limit", fmt.Sprint(limit))
 		q.Set("offset", fmt.Sprint(offset))
+		// Only the fields deviceItem parses: on NetBox <= 4.6 a full device
+		// object pays the per-row config-context aggregation, making the
+		// response ~20x larger and slower. NetBox ignores unknown names
+		// (oob_ip on VMs), so devices and VMs share the list.
+		q.Set("fields", "id,name,status,primary_ip4,oob_ip")
 
 		var resp deviceListResponse
 		if err := c.getPage(ctx, apiPath, q, &resp); err != nil {
