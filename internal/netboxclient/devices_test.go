@@ -47,6 +47,36 @@ func TestFetchDevices(t *testing.T) {
 	assert.Equal(t, DeviceRecord{Name: "dc1-vm-01", Status: "active", PrimaryIP4ID: 303}, devices[2])
 }
 
+func TestFetchDevicesRequestsReducedFields(t *testing.T) {
+	// NetBox 4.6 and earlier run the per-row config-context aggregation when
+	// serializing full device objects, so a fleet-sized fetch is ~20x larger
+	// and slower than one restricted to the fields the sidecar parses.
+	// NetBox ignores unknown names in fields= (oob_ip on VMs), so both
+	// endpoints can share one list.
+	var deviceFields, vmFields atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/dcim/devices/":
+			deviceFields.Store(r.URL.Query().Get("fields"))
+		case "/api/virtualization/virtual-machines/":
+			vmFields.Store(r.URL.Query().Get("fields"))
+		}
+		_, _ = fmt.Fprint(w, `{"count": 0, "results": []}`)
+	}))
+	defer srv.Close()
+
+	c, err := New(srv.URL, "test-token", 1000, 4, 0, time.Millisecond, time.Millisecond)
+	require.NoError(t, err, "client construction should succeed")
+
+	_, err = c.FetchDevices(context.Background())
+	require.NoError(t, err, "FetchDevices should succeed")
+
+	const want = "id,name,status,primary_ip4,oob_ip"
+	assert.Equal(t, want, deviceFields.Load(), "device fetch should request only the parsed fields")
+	assert.Equal(t, want, vmFields.Load(), "VM fetch should request only the parsed fields")
+}
+
 func TestFetchDevicesPagination(t *testing.T) {
 	// 3 devices with pageSize 2 → a probe, then two pages.
 	devices := []string{"dev-a", "dev-b", "dev-c"}
