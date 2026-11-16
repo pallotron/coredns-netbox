@@ -91,24 +91,26 @@ The sidecar selects the appropriate IP for each device's primary address record 
 
 **BMC record selection (`{hostname}-bmc`):** the device's Netbox `oob_ip` is used when it is set and resolves to a published IP, and always overrides any other candidate. Only when there is no published `oob_ip` does the sidecar fall back to the BMC interface-name pattern (`(?i)bmc|ipmi|ilo|idrac`).
 
-**Interface categories** (used for BMC selection, the management fallback, and per-interface record generation):
+**Interface categories** (used when *selecting* the device's primary and BMC record addresses; they do not filter the optional per-interface records — see below):
 - **BMC**: `(?i)bmc|ipmi|ilo|idrac` → `{hostname}-bmc` DNS records
 - **Management (VRF-based)**: `(?i)mgmt|oob` → primary-record fallback (preferred over interface-name matching)
 - **Management (interface name)**: fallback-only, see default pattern in [Interface Categorization Patterns](#interface-categorization-patterns)
-- **Loopback**: `^lo$|^lo0|^Loopback` → skipped
-- **Dataplane**: `(?i)storage|vtep|vsan` → skipped
+- **Loopback**: `^lo$|^lo0|^Loopback` → never selected as the device's primary or BMC address
+- **Dataplane**: `(?i)storage|vtep|vsan` → never selected as the device's primary or BMC address
 
 **Example:** A hypervisor `dc1-r101-prod-hv-01` with a Netbox `primary_ip4` and 5 interfaces generates:
 - `dc1-r101-prod-hv-01.dc1.example.com` → `primary_ip4` (172.26.33.64)
 - `dc1-r101-prod-hv-01-bmc.dc1.example.com` → BMC IP (172.26.1.64)
 
-Dataplane interfaces (ovn-vtep-if, storage-if) are automatically excluded from DNS.
+The dataplane interfaces (ovn-vtep-if, storage-if) are never *selected* for those two records. They are not otherwise excluded from DNS: with `interfaceRecords.enabled` they get per-interface records like every other interface-assigned IP (see the next section).
 
 All patterns are configurable via environment variables (see Interface Categorization Patterns below).
 
 ### Per-Interface Address Records
 
 Behind `interfaceRecords.enabled` / `INTERFACE_RECORDS_ENABLED` (default `false`), the sidecar additionally generates a record for every interface-assigned IP that has no explicit Netbox `dns_name` of its own: `<normalized-interface>.<device-fqdn>` A/AAAA, plus a PTR. The interface name is normalized (lowercased, each run of characters outside `[a-z0-9-]` collapsed to a single `-`; existing dashes are left as-is, e.g. `et-0/2/6` → `et-0-2-6`) before it is prepended to the device's FQDN. An interface whose record name would not fit DNS (a label over 63 characters or a name over 253; NetBox allows 64-character interface names) gets no interface record, so its address keeps the device or BMC PTR. The sidecar logs one warning per poll with the count and a few examples; set `LOG_LEVEL=DEBUG` (via `sidecar.env` in the chart) to list every skipped interface. Link-local addresses (`169.254.0.0/16`, `fe80::/10`, such as `fe80::1` on every VLAN or NodeLocal DNSCache's `169.254.20.10` on every Kubernetes node) never get interface records.
+
+The interface categories above play no part here: loopback, dataplane and BMC interfaces all get interface records too. That is deliberate — switch/host loopbacks are often exactly the addresses you want reverse records for, and on a hypervisor fleet the storage/VTEP backplane interfaces can be the single largest share of interface-assigned IPs (about 40% in one production NetBox), so filtering them would silently shrink live zones on upgrade.
 
 This is additive to, not a replacement for, the device and BMC records above, and roughly doubles zone size on a typical fleet — size memory and zone-transfer bandwidth accordingly before enabling it broadly.
 
