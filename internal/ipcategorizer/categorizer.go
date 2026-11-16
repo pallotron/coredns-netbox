@@ -119,7 +119,7 @@ type DeviceDNSRecords struct {
 	DeviceName string
 	PrimaryIP  *netboxclient.IPRecord // Management IP for base hostname
 	BMCIP      *netboxclient.IPRecord // BMC IP for -bmc hostname
-	Zone       string                  // DNS zone (extracted from device name)
+	Zone       string                 // DNS zone (extracted from device name)
 }
 
 // isLinkLocal reports whether addr is IPv4 169.254.0.0/16 or IPv6
@@ -277,9 +277,10 @@ func DeviceDNSToRecords(deviceDNS map[string]*DeviceDNSRecords, formatter NameFo
 
 // extractZone extracts the DNS zone from a device name
 // Examples: dc1-site13a-r101-prod-hv-01 -> dc1-site.example.com
-//           dc2-m21-r101-prod-hv-01 -> dc2-m.example.com
-//           ams01-r101-pdu-left-01 -> ams01.example.com
-//           txdr-iah13a-r301-lab-dev-hv-01 -> txdr-lab-dev.example.com
+//
+//	dc2-m21-r101-prod-hv-01 -> dc2-m.example.com
+//	ams01-r101-pdu-left-01 -> ams01.example.com
+//	txdr-iah13a-r301-lab-dev-hv-01 -> txdr-lab-dev.example.com
 func (c *Categorizer) extractZone(deviceName string) string {
 	parts := strings.Split(deviceName, "-")
 	if len(parts) < 2 {

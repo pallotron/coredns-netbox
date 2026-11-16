@@ -365,8 +365,6 @@ func parseZoneList(s string) []string {
 	return zones
 }
 
-
-
 func showStatistics(records []netboxclient.IPRecord, cat *ipcategorizer.Categorizer, reverseZones zonediscovery.ZoneMap) {
 	totalRecords := len(records)
 	withDevice := 0

@@ -168,7 +168,7 @@ func TestHybridOOBIPOverridesBMCHeuristic(t *testing.T) {
 	records := []netboxclient.IPRecord{
 		{ID: 20, Address: "172.16.9.1", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "eno1"},
 		{ID: 21, Address: "10.9.0.21", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "idrac-dedicated"}, // bmc-pattern match
-		{ID: 22, Address: "10.9.0.22", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "oob-eth0"},       // published oob_ip target; not bmc-pattern-named
+		{ID: 22, Address: "10.9.0.22", Family: 4, DeviceName: "dc1-site13a-r110-prod-hv-08", InterfaceName: "oob-eth0"},        // published oob_ip target; not bmc-pattern-named
 	}
 	devices := []netboxclient.DeviceRecord{
 		{Name: "dc1-site13a-r110-prod-hv-08", Status: "active", PrimaryIP4ID: 20, OOBIPID: 22},
@@ -289,7 +289,7 @@ func TestHybridDuplicateNameLaterPrimaryKeepsEarlierOOB(t *testing.T) {
 		{ID: 5, Address: "172.16.20.5", Family: 4, DeviceName: name, InterfaceName: "eth0"},
 	}
 	devices := []netboxclient.DeviceRecord{
-		{Name: name, Status: "active", OOBIPID: 6},       // dcim device: oob_ip only
+		{Name: name, Status: "active", OOBIPID: 6},      // dcim device: oob_ip only
 		{Name: name, Status: "active", PrimaryIP4ID: 5}, // VM: primary_ip4 only
 	}
 

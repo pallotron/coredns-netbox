@@ -2,14 +2,14 @@ package netboxwebhook
 
 import (
 	"bytes"
-	"errors"
-	"strings"
 	"crypto/hmac"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"

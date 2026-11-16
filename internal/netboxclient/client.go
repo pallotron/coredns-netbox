@@ -41,11 +41,11 @@ const (
 // IPRecord is a simplified representation of a Netbox IP address with DNS info.
 type IPRecord struct {
 	DNSName       string `json:"dns_name"`
-	Address       string `json:"address"` // IP address without CIDR prefix
-	Family        int    `json:"family"` // 4 or 6
-	DeviceName    string `json:"device_name,omitempty"` // Device name from assigned_object.device.name
+	Address       string `json:"address"`                  // IP address without CIDR prefix
+	Family        int    `json:"family"`                   // 4 or 6
+	DeviceName    string `json:"device_name,omitempty"`    // Device name from assigned_object.device.name
 	InterfaceName string `json:"interface_name,omitempty"` // Interface name from assigned_object.name
-	VRF           string `json:"vrf,omitempty"` // VRF name
+	VRF           string `json:"vrf,omitempty"`            // VRF name
 	TTL           uint32 `json:"ttl,omitempty"`
 	// Type is "" for address records (A/AAAA per Family) or RecordTypeCNAME
 	// for aliases. CNAME records leave Address/Family empty and carry the

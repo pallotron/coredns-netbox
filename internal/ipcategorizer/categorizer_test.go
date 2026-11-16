@@ -36,7 +36,7 @@ func TestNewCategorizer_Valid(t *testing.T) {
 
 func TestNewCategorizer_InvalidRegex(t *testing.T) {
 	tests := []struct {
-		name string
+		name                                         string
 		bmc, loopback, dataplane, mgmtVRF, mgmtIface string
 	}{
 		{"bad BMC", "[invalid", defaultLoopback, defaultDataplane, defaultMgmtVRF, defaultMgmtIface},

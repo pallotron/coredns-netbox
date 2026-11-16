@@ -711,12 +711,12 @@ func countZoneRecords(zm zonediscovery.ZoneMap) map[string]int {
 }
 
 // enrichRecordsWithDeviceNames implements a hybrid approach:
-// - Keep records that already have dns_name populated (qualifying bare names with domainSuffix)
-// - Generate DNS names from device names for records without dns_name, using NetBox's
-//   primary_ip4 as the source of truth and falling back to the regex heuristic (SelectDeviceIPsHybrid)
-// - When a formatter is configured, matching devices get template-rendered canonical names plus CNAME aliases
-// - Optionally generate one per-interface record for every interface-assigned IP without an
-//   explicit dns_name (interfaceRecordsEnabled)
+//   - Keep records that already have dns_name populated (qualifying bare names with domainSuffix)
+//   - Generate DNS names from device names for records without dns_name, using NetBox's
+//     primary_ip4 as the source of truth and falling back to the regex heuristic (SelectDeviceIPsHybrid)
+//   - When a formatter is configured, matching devices get template-rendered canonical names plus CNAME aliases
+//   - Optionally generate one per-interface record for every interface-assigned IP without an
+//     explicit dns_name (interfaceRecordsEnabled)
 func enrichRecordsWithDeviceNames(records []netboxclient.IPRecord, devices []netboxclient.DeviceRecord,
 	categorizer *ipcategorizer.Categorizer, domainSuffix string, formatter *nameformat.Formatter,
 	interfaceRecordsEnabled bool, m *metrics.Sidecar) []netboxclient.IPRecord {
