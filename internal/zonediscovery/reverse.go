@@ -11,7 +11,7 @@ import (
 // ReverseZoneDiscoverer creates reverse DNS zones (in-addr.arpa, ip6.arpa) from IP addresses
 // using statically configured parent zones.
 type ReverseZoneDiscoverer struct {
-	IPv4Zones []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa", "172.16.in-addr.arpa"])
+	IPv4Zones []string // Static IPv4 reverse zones (e.g., ["10.in-addr.arpa", "16.172.in-addr.arpa"])
 	IPv6Zones []string // Static IPv6 reverse zones (e.g., ["8.b.d.0.1.0.0.2.ip6.arpa"])
 }
 
