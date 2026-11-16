@@ -112,9 +112,11 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "(?i)mgmt|oob", cfg.MgmtVRFPattern)
 	assert.Equal(t, "(?i)mgmt|Management|fxp0|^eth[01]|mgt|^net[0-9]|^me[0-9]|^ens[0-9]|^eno[0-9]|^nic[0-9]", cfg.MgmtInterfacePattern)
 
-	// Reverse zones
+	// Reverse zones. in-addr.arpa zones spell octets in reverse:
+	// 16.172.in-addr.arpa covers 172.16.0.0/16 (172.16.in-addr.arpa would
+	// cover 16.172.0.0/16).
 	assert.True(t, cfg.EnableReverseZones)
-	assert.Equal(t, []string{"10.in-addr.arpa", "172.16.in-addr.arpa"}, cfg.ReverseZonesIPv4)
+	assert.Equal(t, []string{"10.in-addr.arpa", "16.172.in-addr.arpa"}, cfg.ReverseZonesIPv4)
 	assert.Nil(t, cfg.ReverseZonesIPv6)
 }
 
@@ -236,7 +238,7 @@ func TestLoad_ReverseZones(t *testing.T) {
 
 		cfg, err := Load()
 		require.NoError(t, err)
-		assert.Equal(t, []string{"10.in-addr.arpa", "172.16.in-addr.arpa"}, cfg.ReverseZonesIPv4)
+		assert.Equal(t, []string{"10.in-addr.arpa", "16.172.in-addr.arpa"}, cfg.ReverseZonesIPv4)
 	})
 
 	t.Run("unset IPv6 returns nil", func(t *testing.T) {

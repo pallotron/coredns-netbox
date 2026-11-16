@@ -63,7 +63,7 @@ go build -o analyzer ./cmd/analyzer/main.go
 
 ### Reverse DNS Options
 - `-enable-reverse-zones` - Enable PTR record preview (default: `true`)
-- `-ipv4-zones <zones>` - Comma-separated list of IPv4 reverse zones (default: `"10.in-addr.arpa,172.16.in-addr.arpa"`)
+- `-ipv4-zones <zones>` - Comma-separated list of IPv4 reverse zones (default: `"10.in-addr.arpa,16.172.in-addr.arpa"`)
 - `-ipv6-zones <zones>` - Comma-separated list of IPv6 reverse zones (default: `""`)
 
 **Note:** Zones must match your IP space. For example:

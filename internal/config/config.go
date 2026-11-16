@@ -162,8 +162,12 @@ func Load() (*Config, error) {
 
 		// Reverse zone defaults
 		EnableReverseZones: envOrDefault("ENABLE_REVERSE_ZONES", "true") == "true",
-		ReverseZonesIPv4:   parseZoneList(envOrDefault("REVERSE_ZONES_IPV4", "10.in-addr.arpa,172.16.in-addr.arpa")),
-		ReverseZonesIPv6:   parseZoneList(envOrDefault("REVERSE_ZONES_IPV6", "")),
+		// in-addr.arpa zones spell octets in reverse: 16.172 covers
+		// 172.16.0.0/16. The old 172.16.in-addr.arpa default covered the
+		// public range 16.172.0.0/16 instead, so no real deployment can
+		// have depended on it.
+		ReverseZonesIPv4: parseZoneList(envOrDefault("REVERSE_ZONES_IPV4", "10.in-addr.arpa,16.172.in-addr.arpa")),
+		ReverseZonesIPv6: parseZoneList(envOrDefault("REVERSE_ZONES_IPV6", "")),
 
 		// gRPC server configuration
 		GRPCAddr:      envOrDefault("GRPC_ADDR", ":8083"),

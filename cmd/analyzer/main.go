@@ -43,7 +43,7 @@ func main() {
 
 	// Reverse zone configuration
 	enableReverseZones := flag.Bool("enable-reverse-zones", true, "Enable PTR record preview")
-	ipv4Zones := flag.String("ipv4-zones", "10.in-addr.arpa,172.16.in-addr.arpa", "Comma-separated list of IPv4 reverse zones")
+	ipv4Zones := flag.String("ipv4-zones", "10.in-addr.arpa,16.172.in-addr.arpa", "Comma-separated list of IPv4 reverse zones")
 	ipv6Zones := flag.String("ipv6-zones", "", "Comma-separated list of IPv6 reverse zones")
 
 	// Name template settings (flags override env vars for dry-run validation)
