@@ -20,11 +20,11 @@ type SelectionStats struct {
 // NetBox's primary_ip4 as the source of truth and the regex heuristic as
 // fallback (spec §2):
 //
-//	1. devices whose primary_ip4 id is present in the fetched (published)
-//	   IP set get that IP as their A record;
-//	2. everything else keeps today's categorizer selection — including
-//	   device names that appear in IP assignments but not in the device
-//	   list, so a partial device fetch can never shrink the zone set.
+//  1. devices whose primary_ip4 id is present in the fetched (published)
+//     IP set get that IP as their A record;
+//  2. everything else keeps today's categorizer selection — including
+//     device names that appear in IP assignments but not in the device
+//     list, so a partial device fetch can never shrink the zone set.
 //
 // BMC: the device's oob_ip is the source of truth when it is set and
 // resolves to a published IP, and always overrides whatever the heuristic

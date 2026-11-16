@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"github.com/miekg/dns"
+	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"

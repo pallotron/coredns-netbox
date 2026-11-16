@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"github.com/pallotron/coredns-netbox/internal/metrics"
 	"github.com/pallotron/coredns-netbox/internal/reloader"
+	pb "github.com/pallotron/coredns-netbox/proto/coredns_netbox/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"

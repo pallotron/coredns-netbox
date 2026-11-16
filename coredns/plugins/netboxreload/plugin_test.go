@@ -17,14 +17,14 @@ import (
 // blankRW satisfies dns.ResponseWriter with no-op implementations.
 type blankRW struct{}
 
-func (blankRW) LocalAddr() net.Addr        { return nil }
-func (blankRW) RemoteAddr() net.Addr       { return nil }
-func (blankRW) WriteMsg(*dns.Msg) error    { return nil }
-func (blankRW) Write([]byte) (int, error)  { return 0, nil }
-func (blankRW) Close() error               { return nil }
-func (blankRW) TsigStatus() error          { return nil }
-func (blankRW) TsigTimersOnly(bool)        {}
-func (blankRW) Hijack()                    {}
+func (blankRW) LocalAddr() net.Addr       { return nil }
+func (blankRW) RemoteAddr() net.Addr      { return nil }
+func (blankRW) WriteMsg(*dns.Msg) error   { return nil }
+func (blankRW) Write([]byte) (int, error) { return 0, nil }
+func (blankRW) Close() error              { return nil }
+func (blankRW) TsigStatus() error         { return nil }
+func (blankRW) TsigTimersOnly(bool)       {}
+func (blankRW) Hijack()                   {}
 
 // responseRecorder captures the DNS message written by ServeDNS.
 type responseRecorder struct {

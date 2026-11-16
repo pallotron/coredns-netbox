@@ -38,3 +38,10 @@ issues:
     - vendor
   max-issues-per-linter: 0
   max-same-issues: 0
+
+# In golangci-lint v2 gofmt is a formatter, not a linter, so linters'
+# enable-all does not cover it — without this section unformatted code
+# passes `make lint`.
+formatters:
+  enable:
+    - gofmt
