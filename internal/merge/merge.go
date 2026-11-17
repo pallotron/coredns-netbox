@@ -95,6 +95,14 @@ func Write(
 	}
 
 	m.ZonesActive.Set(float64(len(mgr.Zones())))
+	m.ZoneRecords.Reset()
+	for zone, c := range stats.RecordCounts {
+		for rtype, n := range map[string]int{"A": c.A, "AAAA": c.AAAA, "CNAME": c.CNAME, "PTR": c.PTR} {
+			if n > 0 {
+				m.ZoneRecords.WithLabelValues(zone, rtype).Set(float64(n))
+			}
+		}
+	}
 	m.LastSuccessfulPollTimestamp.SetToCurrentTime()
 	m.PollTotal.WithLabelValues("success").Inc()
 	m.PollDurationSeconds.Observe(time.Since(pollStart).Seconds())

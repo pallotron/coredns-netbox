@@ -27,6 +27,7 @@ type Sidecar struct {
 	Devices                     *prometheus.GaugeVec
 	InterfaceRecords            prometheus.Gauge
 	PTRUncoveredIPs             *prometheus.GaugeVec
+	ZoneRecords                 *prometheus.GaugeVec
 }
 
 // NewSidecar registers all sidecar metrics with the given Registerer and returns
@@ -69,7 +70,7 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 
 		NetboxRecordsFetched: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "netbox_sidecar_netbox_records_fetched",
-			Help: "Number of IP records returned by Netbox in the last poll.",
+			Help: "IP address objects returned by Netbox in the last poll (input to record generation, not the number of published records - see netbox_sidecar_zone_records).",
 		}),
 
 		NetboxEmptyResponseTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -160,6 +161,11 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 			Name: "netbox_sidecar_ptr_uncovered_ips",
 			Help: "Distinct IPs in the last published poll that no configured reverse zone covers, by address scope (private, public).",
 		}, []string{"scope"}),
+
+		ZoneRecords: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "netbox_sidecar_zone_records",
+			Help: "Data records in each published zone by type (A, AAAA, CNAME, PTR), measured after a successful zone write. Zone-infrastructure records (SOA, apex NS, and the primary NS glue address) are not counted.",
+		}, []string{"zone", "type"}),
 	}
 
 	// Pre-create the refusal series for every scope (see
@@ -200,6 +206,7 @@ func NewSidecar(reg prometheus.Registerer) *Sidecar {
 		m.Devices,
 		m.InterfaceRecords,
 		m.PTRUncoveredIPs,
+		m.ZoneRecords,
 	)
 
 	return m
