@@ -13,6 +13,7 @@ import (
 	"github.com/pallotron/coredns-netbox/internal/zonegen"
 	"github.com/pallotron/coredns-netbox/internal/zonemanager"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,4 +131,95 @@ func TestWrite_NetboxPTRsPreservedWhenNoDynamicConflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "netbox-host.example.org", "non-conflicting Netbox PTR should be preserved")
 	assert.Contains(t, string(content), "dynamic-pod.example.org", "dynamic PTR should also be present")
+}
+
+func TestWrite_ZoneRecordsGauge(t *testing.T) {
+	_, store, mgr, m := newComponents(t)
+
+	reverseDisc := zonediscovery.NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	netboxZones := zonediscovery.ZoneMap{
+		"example.org": {
+			{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+			{DNSName: "a2.example.org", Address: "10.0.0.2", Family: 4},
+			{DNSName: "v6.example.org", Address: "fd00::1", Family: 6},
+			{DNSName: "alias.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "a1.example.org"},
+		},
+		"10.in-addr.arpa": {
+			{DNSName: "a1.example.org", Address: "1.0.0", Family: 4},
+			{DNSName: "a2.example.org", Address: "2.0.0", Family: 4},
+		},
+	}
+
+	_, err := merge.Write(netboxZones, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("example.org", "A")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("example.org", "AAAA")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("example.org", "CNAME")))
+	assert.Equal(t, 2.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("10.in-addr.arpa", "PTR")))
+	// Only observed (zone, type) pairs are emitted: 4 series total.
+	// (The WithLabelValues reads above create the series they touch, so
+	// count BEFORE asserting absence in any new assertions you add.)
+}
+
+func TestWrite_ZoneRecordsGaugeResetsRemovedZones(t *testing.T) {
+	_, store, mgr, m := newComponents(t)
+
+	reverseDisc := zonediscovery.NewReverseZoneDiscoverer([]string{"10.in-addr.arpa"}, nil)
+	withReverse := zonediscovery.ZoneMap{
+		"example.org": {
+			{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+		"10.in-addr.arpa": {
+			{DNSName: "a1.example.org", Address: "1.0.0", Family: 4},
+		},
+	}
+	_, err := merge.Write(withReverse, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
+	require.Equal(t, 2, testutil.CollectAndCount(m.ZoneRecords), "expected A + PTR series after first write")
+
+	// Second write without the reverse zone: its PTR series must disappear,
+	// not flatline at the old value.
+	forwardOnly := zonediscovery.ZoneMap{
+		"example.org": {
+			{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+	}
+	_, err = merge.Write(forwardOnly, store, mgr, m, reverseDisc)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, testutil.CollectAndCount(m.ZoneRecords), "stale zone series must be reset")
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("example.org", "A")))
+}
+
+func TestWrite_ZoneRecordsGaugeKeptOnFailedUpdate(t *testing.T) {
+	dir, store, mgr, m := newComponents(t)
+
+	netboxZones := zonediscovery.ZoneMap{
+		"example.org": {
+			{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+	}
+	_, err := merge.Write(netboxZones, store, mgr, m, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("example.org", "A")))
+
+	// Make the zone dir unwritable so the next write (a new zone file) fails.
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	grown := zonediscovery.ZoneMap{
+		"example.org": {
+			{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+		},
+		"other.example.net": {
+			{DNSName: "b1.other.example.net", Address: "10.0.0.9", Family: 4},
+		},
+	}
+	_, err = merge.Write(grown, store, mgr, m, nil)
+	require.Error(t, err, "write into a read-only zone dir must fail")
+
+	// The gauge still describes the zones actually on disk.
+	assert.Equal(t, 1.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("example.org", "A")))
+	assert.Equal(t, 0.0, testutil.ToFloat64(m.ZoneRecords.WithLabelValues("other.example.net", "A")))
 }
