@@ -619,11 +619,11 @@ func TestGenerateDropsCollidingCNAME(t *testing.T) {
 		{DNSName: "host1.example.org", Address: "10.0.0.1", Family: 4},
 		{DNSName: "host1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "other.example.org"},
 	}
-	content, _, count, err := g.Generate(records)
+	content, _, counts, err := g.Generate(records)
 	require.NoError(t, err)
 	assert.Contains(t, content, "host1 IN A 10.0.0.1")
 	assert.NotContains(t, content, "CNAME", "colliding CNAME must be dropped")
-	assert.Equal(t, 1, count, "count must reflect the post-filter record set, not the input")
+	assert.Equal(t, 1, counts.Total(), "counts must reflect the post-filter record set, not the input")
 }
 
 func TestGenerate_SourceAndAppliedAtDoNotAffectHash(t *testing.T) {
@@ -668,7 +668,7 @@ func TestGenerateDropsUnsafeDNSNames(t *testing.T) {
 			TTL:        300,
 			Type:       ZoneTypeForward,
 		}, "")
-		content, changed, count, err := g.Generate([]netboxclient.IPRecord{
+		content, changed, counts, err := g.Generate([]netboxclient.IPRecord{
 			{DNSName: "good.example.org", Address: "192.0.2.1", Family: 4},
 			{DNSName: "bad name.example.org", Address: "192.0.2.2", Family: 4},
 			{DNSName: "semi;colon.example.org", Address: "192.0.2.3", Family: 4},
@@ -678,7 +678,7 @@ func TestGenerateDropsUnsafeDNSNames(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.True(t, changed)
-		assert.Equal(t, 1, count, "only the safe record survives")
+		assert.Equal(t, 1, counts.Total(), "only the safe record survives")
 		assert.Contains(t, content, "good IN A 192.0.2.1")
 		assert.NotContains(t, content, "injected", "newline injection must not reach the zone")
 		assert.NotContains(t, content, "bad name")
@@ -695,13 +695,13 @@ func TestGenerateDropsUnsafeDNSNames(t *testing.T) {
 			TTL:        300,
 			Type:       ZoneTypeReverse,
 		}, "")
-		content, changed, count, err := g.Generate([]netboxclient.IPRecord{
+		content, changed, counts, err := g.Generate([]netboxclient.IPRecord{
 			{Address: "1", DNSName: "good.example.org", Family: 4},
 			{Address: "2", DNSName: "bad target.example.org", Family: 4},
 		})
 		require.NoError(t, err)
 		require.True(t, changed)
-		assert.Equal(t, 1, count)
+		assert.Equal(t, 1, counts.Total())
 		assert.Contains(t, content, "1 IN PTR good.example.org.")
 		assert.NotContains(t, content, "bad target")
 	})
@@ -714,13 +714,13 @@ func TestGenerateDropsUnsafeDNSNames(t *testing.T) {
 			TTL:        300,
 			Type:       ZoneTypeForward,
 		}, "")
-		content, _, count, err := g.Generate([]netboxclient.IPRecord{
+		content, _, counts, err := g.Generate([]netboxclient.IPRecord{
 			{DNSName: "host1.example.org", Address: "192.0.2.1", Family: 4},
 			{DNSName: "alias.example.org", Type: netboxclient.RecordTypeCNAME,
 				CNAMETarget: "evil target.example.org"},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, 1, count)
+		assert.Equal(t, 1, counts.Total())
 		assert.NotContains(t, content, "alias")
 		assert.NotContains(t, content, "evil target")
 	})
@@ -819,6 +819,81 @@ func TestGeneratorPersistsContentHashAcrossRestart(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, changed, "no persisted fingerprint: first generation writes, as pre-G5")
 	})
+}
+
+func TestGenerate_RecordCountsForward(t *testing.T) {
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+	}, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+		{DNSName: "a2.example.org", Address: "10.0.0.2", Family: 4},
+		{DNSName: "v6.example.org", Address: "fd00::1", Family: 6},
+		{DNSName: "alias.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "a1.example.org"},
+		// G8: unsafe dns_name is dropped at emission and must not be counted.
+		{DNSName: "bad name.example.org", Address: "10.0.0.3", Family: 4},
+		// CNAME colliding with an address record is dropped by
+		// resolveCNAMECollisions and must not be counted.
+		{DNSName: "a1.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "a2.example.org"},
+	}
+
+	_, changed, counts, err := gen.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	assert.Equal(t, RecordCounts{A: 2, AAAA: 1, CNAME: 1}, counts)
+	assert.Equal(t, 4, counts.Total())
+}
+
+func TestGenerate_RecordCountsReverse(t *testing.T) {
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "10.in-addr.arpa",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeReverse,
+	}, "")
+
+	// Reverse records keep Family: 4 — they must count as PTR, not A.
+	records := []netboxclient.IPRecord{
+		{DNSName: "a1.example.org", Address: "1.0.0", Family: 4},
+		{DNSName: "a2.example.org", Address: "2.0.0", Family: 4},
+	}
+
+	_, changed, counts, err := gen.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	assert.Equal(t, RecordCounts{PTR: 2}, counts)
+}
+
+func TestGenerate_RecordCountsReturnedOnUnchangedPath(t *testing.T) {
+	gen := NewGenerator(ZoneConfig{
+		Origin:     "example.org",
+		PrimaryNS:  "ns1.example.org.",
+		AdminEmail: "admin.example.org.",
+		TTL:        300,
+		Type:       ZoneTypeForward,
+	}, "")
+
+	records := []netboxclient.IPRecord{
+		{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+	}
+
+	_, changed, _, err := gen.Generate(records)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	// Same records again: hash matches, changed=false, counts still returned.
+	_, changed, counts, err := gen.Generate(records)
+	require.NoError(t, err)
+	require.False(t, changed)
+	assert.Equal(t, RecordCounts{A: 1}, counts)
 }
 
 // G10 (acceptance matrix N25, and a regression the G5 fix introduced): a

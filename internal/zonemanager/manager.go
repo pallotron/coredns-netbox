@@ -88,7 +88,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 			m.generators[zone] = gen
 		}
 
-		content, changed, count, err := gen.Generate(records)
+		content, changed, counts, err := gen.Generate(records)
 		if err != nil {
 			return stats, fmt.Errorf("generate zone %s: %w", zone, err)
 		}
@@ -108,7 +108,7 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 		} else {
 			stats.Updated++
 		}
-		slog.Info("zone updated", "zone", zone, "records", count)
+		slog.Info("zone updated", "zone", zone, "records", counts.Total())
 	}
 
 	// Remove orphaned zone files and generators

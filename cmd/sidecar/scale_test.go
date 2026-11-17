@@ -148,9 +148,9 @@ func runScalePipeline(t testing.TB, records []netboxclient.IPRecord,
 				TTL:        300,
 				Type:       zoneType,
 			}, "")
-			_, _, count, err := g.Generate(zoneRecords)
+			_, _, counts, err := g.Generate(zoneRecords)
 			require.NoError(t, err)
-			emitted += count
+			emitted += counts.Total()
 		}
 	}
 	return emitted

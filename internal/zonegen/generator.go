@@ -22,6 +22,39 @@ const (
 	ZoneTypeReverse ZoneType = "reverse"
 )
 
+// RecordCounts tallies the data records emitted into one zone, by RR type,
+// after the emission filters (dropUnsafeNames, resolveCNAMECollisions).
+// Zone-infrastructure records — the SOA, the apex NS, and the G3 primary-NS
+// glue address — are not data records and are not counted.
+type RecordCounts struct {
+	A, AAAA, CNAME, PTR int
+}
+
+// Total returns the number of data records across all types.
+func (c RecordCounts) Total() int { return c.A + c.AAAA + c.CNAME + c.PTR }
+
+// countRecords classifies the filtered record slice. Reverse zones emit
+// every record as a PTR regardless of its Family; forward zones classify
+// per record.
+func countRecords(records []netboxclient.IPRecord, zoneType ZoneType) RecordCounts {
+	var c RecordCounts
+	if zoneType == ZoneTypeReverse {
+		c.PTR = len(records)
+		return c
+	}
+	for _, r := range records {
+		switch {
+		case r.Type == netboxclient.RecordTypeCNAME:
+			c.CNAME++
+		case r.Family == 6:
+			c.AAAA++
+		default:
+			c.A++
+		}
+	}
+	return c
+}
+
 // SOATimers holds the SOA refresh/retry/expire/minimum values in seconds.
 // Refresh and retry control how often secondaries poll the primary for
 // updates; expire is how long a secondary keeps serving a zone after the
@@ -160,16 +193,18 @@ func dropUnsafeNames(records []netboxclient.IPRecord, zone string) []netboxclien
 
 // Generate creates a zone file string from the given records.
 // Returns the zone content, whether it changed from the last generation, the
-// number of records in the zone after collision filtering, and any error.
-func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int, error) {
+// per-type counts of the records in the zone after emission filtering, and
+// any error.
+func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, RecordCounts, error) {
 	records = dropUnsafeNames(records, g.config.Origin)
 	if g.config.Type == ZoneTypeForward {
 		records = resolveCNAMECollisions(records, g.config.Origin)
 	}
+	counts := countRecords(records, g.config.Type)
 	hash := g.fingerprint(records)
 	if hash == g.lastHash {
-		slog.Debug("zone unchanged (hash match)", "zone", g.config.Origin, "hash", hash[:8], "records", len(records))
-		return "", false, len(records), nil
+		slog.Debug("zone unchanged (hash match)", "zone", g.config.Origin, "hash", hash[:8], "records", counts.Total())
+		return "", false, counts, nil
 	}
 
 	if g.lastHash != "" {
@@ -252,7 +287,7 @@ func (g *Generator) Generate(records []netboxclient.IPRecord) (string, bool, int
 
 	g.lastHash = hash
 	g.hashFromFile = false
-	return withFingerprints(b.String(), hash), true, len(records), nil
+	return withFingerprints(b.String(), hash), true, counts, nil
 }
 
 // withFingerprints inserts the two fingerprint comments after the $TTL line:
