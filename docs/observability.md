@@ -21,7 +21,7 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_poll_duration_seconds` | Histogram | — | Full poll cycle duration (fetch + discover + write) |
 | `netbox_sidecar_last_successful_poll_timestamp_seconds` | Gauge | — | Unix timestamp of the last successful poll |
 | `netbox_sidecar_netbox_fetch_duration_seconds` | Histogram | `fetch=ip_addresses\|devices` | Duration of each Netbox fetch per poll, including retries: the IP address fetch, and the device and virtual machine fetch |
-| `netbox_sidecar_netbox_records_fetched` | Gauge | — | IP records returned by Netbox in the last poll |
+| `netbox_sidecar_netbox_records_fetched` | Gauge | — | IP address objects returned by Netbox in the last poll — the input to record generation, not the number of published records (that is `netbox_sidecar_zone_records`) |
 | `netbox_sidecar_netbox_empty_response_total` | Counter | — | Polls where Netbox returned zero records |
 | `netbox_sidecar_devices` | Gauge | `source=primary_ip\|fallback\|none` | Devices in the last poll by how their record's address was chosen: NetBox `primary_ip4`, the interface-name fallback, or no primary address found (`none`; the device may still have a `-bmc` record). `fallback` is the NetBox clean-up backlog (devices without a usable `primary_ip4`); a rise in `none` means devices stopped resolving |
 | `netbox_sidecar_interface_records` | Gauge | — | Per-interface address records generated in the last poll (0 unless `interfaceRecords.enabled`) |
@@ -30,6 +30,7 @@ curl http://localhost:8082/metrics | grep netbox_sidecar
 | `netbox_sidecar_shrink_guard_blocked` | Gauge | — | 1 while the shrink guard is refusing to publish; **alert on this** — the zones are frozen until an operator clears it (see [Shrink guard](configuration.md#shrink-guard)) |
 | `netbox_sidecar_shrink_guard_overrides_total` | Counter | — | Refusals suppressed by an operator override (`ForceNetboxPoll{allow_shrink:true}`) |
 | `netbox_sidecar_zones_active` | Gauge | — | Number of DNS zones currently managed |
+| `netbox_sidecar_zone_records` | Gauge | `zone`, `type=A\|AAAA\|CNAME\|PTR` | Data records in each published zone by type, measured after a successful zone write. `sum(netbox_sidecar_zone_records)` is the total record count served, PTRs included; `sum by (type)` and `sum by (zone)` give the breakdowns. Zone-infrastructure records (SOA, apex NS, primary-NS glue address) are not counted. Only observed `(zone, type)` pairs are emitted — absence means zero |
 | `netbox_sidecar_zone_writes_total` | Counter | `op=create\|update\|delete` | Zone file operations |
 | `netbox_sidecar_zone_write_errors_total` | Counter | — | Zone file write failures |
 | `netbox_sidecar_netbox_fetch_retries_total` | Counter | — | Netbox HTTP request retries (excludes first attempt) |
