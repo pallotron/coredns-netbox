@@ -77,7 +77,13 @@ func TestMetricsContainExpectedSeries(t *testing.T) {
 		"netbox_sidecar_netbox_records_fetched",
 		"netbox_sidecar_netbox_empty_response_total",
 		"netbox_sidecar_zones_active",
-		"netbox_sidecar_zone_records",
+		// The bare name also appears in netbox_sidecar_netbox_records_fetched's
+		// HELP text, so it always matches even if this family were never
+		// published. The brace proves an actual series line exists: the
+		// family has no pre-created children and is absent until the first
+		// successful publish, which TestMetricsSuccessfulPoll's environment
+		// guarantees has happened.
+		"netbox_sidecar_zone_records{",
 		"netbox_sidecar_zone_writes_total",
 		"netbox_sidecar_zone_write_errors_total",
 		"netbox_sidecar_netbox_fetch_retries_total",

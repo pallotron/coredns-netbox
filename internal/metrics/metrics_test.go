@@ -38,6 +38,9 @@ func TestNewSidecar_RegistersAllMetrics(t *testing.T) {
 	m.ZonesActive.Set(3)
 	m.ZoneWritesTotal.WithLabelValues("create").Inc()
 	m.ZoneWriteErrorsTotal.Inc()
+	// ZoneRecords is a vec with no pre-created children, so it must be
+	// touched before Gather returns it.
+	m.ZoneRecords.WithLabelValues("example.org", "A").Set(1)
 
 	want := []string{
 		"netbox_sidecar_poll_total",
@@ -54,6 +57,7 @@ func TestNewSidecar_RegistersAllMetrics(t *testing.T) {
 		"netbox_sidecar_zone_write_errors_total",
 		"netbox_sidecar_netbox_fetch_retries_total",
 		"netbox_sidecar_zone_staleness_seconds",
+		"netbox_sidecar_zone_records",
 	}
 
 	got := gather(t, reg)
@@ -233,6 +237,7 @@ func TestSidecarMetricsPassPromlint(t *testing.T) {
 	m.Devices.WithLabelValues("primary_ip").Set(1)
 	m.CoreDNSReloadTotal.WithLabelValues("success").Inc()
 	m.WebhookRequestsTotal.WithLabelValues("ok").Inc()
+	m.ZoneRecords.WithLabelValues("example.org", "A").Set(1)
 
 	problems, err := testutil.GatherAndLint(reg)
 	require.NoError(t, err)
