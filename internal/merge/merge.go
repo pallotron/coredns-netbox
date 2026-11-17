@@ -95,6 +95,10 @@ func Write(
 	}
 
 	m.ZonesActive.Set(float64(len(mgr.Zones())))
+	// Reset-then-set is not atomic against a concurrent scrape: a gather
+	// landing mid-loop can briefly observe a partially repopulated (worst
+	// case empty) vec. The window is sub-millisecond against multi-second
+	// scrape intervals, so alerts on this metric should carry a `for:` duration.
 	m.ZoneRecords.Reset()
 	for zone, c := range stats.RecordCounts {
 		for rtype, n := range map[string]int{"A": c.A, "AAAA": c.AAAA, "CNAME": c.CNAME, "PTR": c.PTR} {
