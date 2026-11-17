@@ -246,3 +246,31 @@ func TestManager_UpdateStats_Deleted(t *testing.T) {
 	require.NoError(t, err, "unexpected error")
 	assert.Equal(t, 1, stats.Deleted, "expected Deleted=1")
 }
+
+func TestUpdate_RecordCountsPopulated(t *testing.T) {
+	mgr := New(t.TempDir(), "ns1.example.org.", "", "admin.example.org.", 300, zonegen.SOATimers{})
+
+	zm := zonediscovery.ZoneMap{
+		"example.org": {
+			{DNSName: "a1.example.org", Address: "10.0.0.1", Family: 4},
+			{DNSName: "alias.example.org", Type: netboxclient.RecordTypeCNAME, CNAMETarget: "a1.example.org"},
+		},
+		"10.in-addr.arpa": {
+			{DNSName: "a1.example.org", Address: "1.0.0", Family: 4},
+		},
+	}
+
+	stats, err := mgr.Update(zm)
+	require.NoError(t, err)
+
+	assert.Equal(t, zonegen.RecordCounts{A: 1, CNAME: 1}, stats.RecordCounts["example.org"])
+	assert.Equal(t, zonegen.RecordCounts{PTR: 1}, stats.RecordCounts["10.in-addr.arpa"])
+
+	// Second update with identical records: zones are unchanged on disk,
+	// but the counts must still be reported for every zone in the map.
+	stats, err = mgr.Update(zm)
+	require.NoError(t, err)
+	assert.Equal(t, zonegen.RecordCounts{A: 1, CNAME: 1}, stats.RecordCounts["example.org"])
+	assert.Equal(t, zonegen.RecordCounts{PTR: 1}, stats.RecordCounts["10.in-addr.arpa"])
+	assert.Len(t, stats.RecordCounts, 2)
+}

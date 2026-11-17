@@ -32,6 +32,11 @@ type UpdateStats struct {
 	Updated     int
 	Deleted     int
 	WriteErrors int
+	// RecordCounts holds the per-type data-record counts each generator
+	// reported, keyed by zone origin — every zone in the ZoneMap, unchanged
+	// zones included. On an error return the map covers only the zones
+	// processed before the failure.
+	RecordCounts map[string]zonegen.RecordCounts
 }
 
 // New creates a new zone Manager. Zero-value soa timers fall back to
@@ -52,6 +57,7 @@ func New(zoneDir, primaryNS, primaryNSIP, adminEmail string, ttl uint32, soa zon
 // zone, writes them to disk, and removes orphaned zone files.
 func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 	var stats UpdateStats
+	stats.RecordCounts = make(map[string]zonegen.RecordCounts, len(zoneMap))
 	activeZones := make(map[string]bool)
 
 	// Sort zone names for deterministic output
@@ -92,6 +98,8 @@ func (m *Manager) Update(zoneMap zonediscovery.ZoneMap) (UpdateStats, error) {
 		if err != nil {
 			return stats, fmt.Errorf("generate zone %s: %w", zone, err)
 		}
+
+		stats.RecordCounts[zone] = counts
 
 		if !changed {
 			slog.Info("zone unchanged", "zone", zone)
