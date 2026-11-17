@@ -3,13 +3,18 @@
 package e2e
 
 import (
+	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,20 +26,31 @@ func sidecarMetricsURL() string {
 	return "http://127.0.0.1:18082/metrics"
 }
 
+// fetchMetricsErr retrieves the /metrics page, returning errors instead of
+// failing the test — safe to call from retry loops and goroutines.
+func fetchMetricsErr() (string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(sidecarMetricsURL())
+	if err != nil {
+		return "", fmt.Errorf("GET %s: %w", sidecarMetricsURL(), err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s: HTTP %d", sidecarMetricsURL(), resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read body: %w", err)
+	}
+	return string(body), nil
+}
+
 // fetchMetrics retrieves the /metrics page and returns the body as a string.
 func fetchMetrics(t *testing.T) string {
 	t.Helper()
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(sidecarMetricsURL())
-	require.NoError(t, err, "GET %s failed", sidecarMetricsURL())
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode, "expected HTTP 200, got %d", resp.StatusCode)
-
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err, "read body")
-	return string(body)
+	body, err := fetchMetricsErr()
+	require.NoError(t, err)
+	return body
 }
 
 // TestMetricsEndpointReachable verifies that the /metrics endpoint returns HTTP 200.
@@ -61,6 +77,7 @@ func TestMetricsContainExpectedSeries(t *testing.T) {
 		"netbox_sidecar_netbox_records_fetched",
 		"netbox_sidecar_netbox_empty_response_total",
 		"netbox_sidecar_zones_active",
+		"netbox_sidecar_zone_records",
 		"netbox_sidecar_zone_writes_total",
 		"netbox_sidecar_zone_write_errors_total",
 		"netbox_sidecar_netbox_fetch_retries_total",
@@ -97,4 +114,117 @@ func TestMetricsZonesActive(t *testing.T) {
 		}
 	}
 	require.Fail(t, "netbox_sidecar_zones_active line not found in /metrics output")
+}
+
+// zoneRecordsLineRe matches one netbox_sidecar_zone_records sample in the
+// Prometheus text exposition format. Labels are emitted alphabetically, so
+// type precedes zone.
+var zoneRecordsLineRe = regexp.MustCompile(`^netbox_sidecar_zone_records\{type="([^"]+)",zone="([^"]+)"\} ([0-9.e+]+)$`)
+
+// scrapeZoneRecords parses the gauge into zone -> type -> count. It returns
+// an error rather than failing the test — safe to call from retry loops and
+// goroutines.
+func scrapeZoneRecords() (map[string]map[string]int, error) {
+	body, err := fetchMetricsErr()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]map[string]int)
+	for _, line := range strings.Split(body, "\n") {
+		matches := zoneRecordsLineRe.FindStringSubmatch(line)
+		if matches == nil {
+			continue
+		}
+		rtype, zone := matches[1], matches[2]
+		v, err := strconv.ParseFloat(matches[3], 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse value in %q: %w", line, err)
+		}
+		if out[zone] == nil {
+			out[zone] = make(map[string]int)
+		}
+		out[zone][rtype] = int(v)
+	}
+	return out, nil
+}
+
+// axfrTypeCounts counts the data records a zone transfer serves, excluding
+// zone infrastructure: the SOA (AXFR envelopes carry it twice), the apex NS,
+// and the G3 primary-NS glue address — an A record owned by the SOA MNAME
+// that zonegen emits from PRIMARY_NS_IP and that the gauge does not count.
+// (Fixture assumption: NetBox does not itself hold a record named like the
+// primary NS; if it ever does, zonegen suppresses the glue and this exclusion
+// would undercount A by one.)
+func axfrTypeCounts(zone string) (map[string]int, error) {
+	rrs, err := axfrRecordsErr(zone)
+	if err != nil {
+		return nil, err
+	}
+
+	var mname string
+	for _, rr := range rrs {
+		if soa, ok := rr.(*dns.SOA); ok {
+			mname = soa.Ns
+			break
+		}
+	}
+
+	counts := make(map[string]int)
+	for _, rr := range rrs {
+		switch v := rr.(type) {
+		case *dns.SOA, *dns.NS:
+			continue
+		case *dns.A:
+			if v.Hdr.Name == mname {
+				continue // primary-NS glue
+			}
+			counts["A"]++
+		case *dns.AAAA:
+			if v.Hdr.Name == mname {
+				continue
+			}
+			counts["AAAA"]++
+		case *dns.CNAME:
+			counts["CNAME"]++
+		case *dns.PTR:
+			counts["PTR"]++
+		}
+	}
+	return counts, nil
+}
+
+// TestZoneRecordsMatchAXFR asserts the invariant issue #111 exists for: the
+// published-record gauge agrees, per zone and per type, with what an AXFR of
+// that zone actually serves. Eventually-wrapped because a background poll can
+// land between the metrics scrape and the zone transfer.
+func TestZoneRecordsMatchAXFR(t *testing.T) {
+	waitForPrimary(t)
+
+	var lastDiff string
+	ok := assert.Eventually(t, func() bool {
+		metricCounts, err := scrapeZoneRecords()
+		if err != nil {
+			lastDiff = err.Error()
+			return false
+		}
+		if len(metricCounts) == 0 {
+			lastDiff = "no netbox_sidecar_zone_records series scraped yet"
+			return false
+		}
+		for zone, want := range metricCounts {
+			got, err := axfrTypeCounts(zone)
+			if err != nil {
+				lastDiff = err.Error()
+				return false
+			}
+			if !maps.Equal(want, got) {
+				lastDiff = fmt.Sprintf("zone %s: metrics=%v axfr=%v", zone, want, got)
+				return false
+			}
+		}
+		return true
+	}, 60*time.Second, 2*time.Second, "gauge and AXFR disagree")
+	if !ok {
+		t.Logf("last disagreement: %s", lastDiff)
+	}
 }
