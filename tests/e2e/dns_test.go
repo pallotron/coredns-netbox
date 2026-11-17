@@ -624,20 +624,32 @@ func TestPrimaryNSHasARecord(t *testing.T) {
 	require.True(t, found, "expected 192.0.2.53 in A answers for ns1.mycompany.com")
 }
 
-// axfrRecords returns every RR in the zone, for assertions that need rdata
-// rather than just owner names.
-func axfrRecords(t *testing.T, zone string) []dns.RR {
-	t.Helper()
+// axfrRecordsErr returns every RR in the zone, with errors returned rather
+// than failing the test — safe to call from retry loops and goroutines.
+func axfrRecordsErr(zone string) ([]dns.RR, error) {
 	tr := new(dns.Transfer)
 	m := new(dns.Msg)
 	m.SetAxfr(dns.Fqdn(zone))
 	env, err := tr.In(m, dnsServer())
-	require.NoError(t, err, "AXFR of %s", zone)
+	if err != nil {
+		return nil, fmt.Errorf("AXFR of %s: %w", zone, err)
+	}
 	var out []dns.RR
 	for e := range env {
-		require.NoError(t, e.Error, "AXFR envelope error")
+		if e.Error != nil {
+			return nil, fmt.Errorf("AXFR envelope error for %s: %w", zone, e.Error)
+		}
 		out = append(out, e.RR...)
 	}
+	return out, nil
+}
+
+// axfrRecords returns every RR in the zone, for assertions that need rdata
+// rather than just owner names.
+func axfrRecords(t *testing.T, zone string) []dns.RR {
+	t.Helper()
+	out, err := axfrRecordsErr(zone)
+	require.NoError(t, err)
 	return out
 }
 
