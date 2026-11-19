@@ -166,7 +166,7 @@ func Load() (*Config, error) {
 		// 172.16.0.0/16. The old 172.16.in-addr.arpa default covered the
 		// public range 16.172.0.0/16 instead, so no real deployment can
 		// have depended on it.
-		ReverseZonesIPv4: parseZoneList(envOrDefault("REVERSE_ZONES_IPV4", "10.in-addr.arpa,16.172.in-addr.arpa")),
+		ReverseZonesIPv4: parseZoneList(envOrDefault("REVERSE_ZONES_IPV4", "10.in-addr.arpa,16.172.in-addr.arpa,17.172.in-addr.arpa,18.172.in-addr.arpa,19.172.in-addr.arpa,20.172.in-addr.arpa,21.172.in-addr.arpa,22.172.in-addr.arpa,23.172.in-addr.arpa,24.172.in-addr.arpa,25.172.in-addr.arpa,26.172.in-addr.arpa,27.172.in-addr.arpa,28.172.in-addr.arpa,29.172.in-addr.arpa,30.172.in-addr.arpa,31.172.in-addr.arpa")),
 		ReverseZonesIPv6: parseZoneList(envOrDefault("REVERSE_ZONES_IPV6", "")),
 
 		// gRPC server configuration
