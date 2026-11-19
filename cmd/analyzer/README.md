@@ -63,7 +63,7 @@ go build -o analyzer ./cmd/analyzer/main.go
 
 ### Reverse DNS Options
 - `-enable-reverse-zones` - Enable PTR record preview (default: `true`)
-- `-ipv4-zones <zones>` - Comma-separated list of IPv4 reverse zones (default: `"10.in-addr.arpa,16.172.in-addr.arpa"`)
+- `-ipv4-zones <zones>` - Comma-separated list of IPv4 reverse zones (default: `"10.in-addr.arpa,16.172.in-addr.arpa,17.172.in-addr.arpa,18.172.in-addr.arpa,19.172.in-addr.arpa,20.172.in-addr.arpa,21.172.in-addr.arpa,22.172.in-addr.arpa,23.172.in-addr.arpa,24.172.in-addr.arpa,25.172.in-addr.arpa,26.172.in-addr.arpa,27.172.in-addr.arpa,28.172.in-addr.arpa,29.172.in-addr.arpa,30.172.in-addr.arpa,31.172.in-addr.arpa"` — all of RFC 1918)
 - `-ipv6-zones <zones>` - Comma-separated list of IPv6 reverse zones (default: `""`)
 
 **Note:** Zones must match your IP space. For example:
@@ -158,11 +158,19 @@ Instead of dynamically creating many small zones, you configure a few large zone
 ```
 
 **Finding Your Zones:**
-If you're not sure which zones to configure, run the analyzer with a broad zone and check the output:
+If you're not sure which zones to configure, run the analyzer with a broad zone and check which /16s actually hold addresses:
 ```bash
-# Start with /8 coverage
+# Discovery only -- 172.in-addr.arpa is the whole 172.0.0.0/8
 ./analyzer -file all_ips.json -ipv4-zones "10.in-addr.arpa,172.in-addr.arpa" -stats
 ```
+
+Use that output to pick the zones you serve; do not copy `172.in-addr.arpa`
+into a served zone list. RFC 1918 is `172.16.0.0/12`, so the private range is
+the sixteen zones `16.172.in-addr.arpa` through `31.172.in-addr.arpa` (the
+default). A served `172.in-addr.arpa` makes you authoritative for public space
+as well -- `172.32.0.0/11` is assigned to T-Mobile -- so queries for addresses
+you do not own get answered out of your zone instead of being resolved
+properly.
 
 ## Examples
 

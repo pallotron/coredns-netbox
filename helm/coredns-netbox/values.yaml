@@ -136,9 +136,27 @@ reverseZones:
   # IPv4 examples:
   #   10.in-addr.arpa - covers all of 10.0.0.0/8
   #   16.172.in-addr.arpa,17.172.in-addr.arpa - covers 172.16.0.0/16 and 172.17.0.0/16
+  #   RFC 1918's 172.16.0.0/12 is the sixteen zones 16.172..31.172 (the default
+  #   below). Do NOT use a bare 172.in-addr.arpa: that is 172.0.0.0/8 and makes
+  #   you authoritative for public space too (172.32.0.0/11 is T-Mobile's).
   ipv4:
     - "10.in-addr.arpa"
     - "16.172.in-addr.arpa"
+    - "17.172.in-addr.arpa"
+    - "18.172.in-addr.arpa"
+    - "19.172.in-addr.arpa"
+    - "20.172.in-addr.arpa"
+    - "21.172.in-addr.arpa"
+    - "22.172.in-addr.arpa"
+    - "23.172.in-addr.arpa"
+    - "24.172.in-addr.arpa"
+    - "25.172.in-addr.arpa"
+    - "26.172.in-addr.arpa"
+    - "27.172.in-addr.arpa"
+    - "28.172.in-addr.arpa"
+    - "29.172.in-addr.arpa"
+    - "30.172.in-addr.arpa"
+    - "31.172.in-addr.arpa"
   # IPv6 examples (reverse nibble notation):
   #   b.8.0.d.0.1.2.0.ip6.arpa - covers 2001:db8::/32
   ipv6: []
